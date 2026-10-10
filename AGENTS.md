@@ -58,6 +58,7 @@ A missing client hook is **not** permission to push `main`. The hook is bypassab
 - 可编辑原型源在 `prototype/`，Vue 承载在 `src/`，数据合成在 `scripts/`。不要直接维护生成的 `public/portal.html`。
 - Node.js 20+、Python 3.10+；`npm ci` 后执行 `npm run build`。相关交互验证为 `npm test`，浏览器配置见 README。
 - `archive/` 与 `artifacts/` 为本地历史和证据，不提交；原始资料、运行授权记录、机器配置不可自动纳入 Git。
-- 默认中文。提交使用 `type(scope): 中文标题`，正文包含 `Co-Authored-By: Codex <noreply@openai.com>`；推送前取得用户明确确认，确认范围内不重复询问。
+- 默认中文。提交使用 `type(scope): 中文标题`，正文包含 `Co-Authored-By: Codex <noreply@openai.com>`。
+- 用户于 2026-10-10 明确授权“之后提交完直接推送到github”：本项目已授权任务在验证并提交后，直接推送对应 GitHub `origin` 主题分支，无需逐次确认。该授权不扩大任务范围，不包含直接推送 `main`、force、合并 PR、部署或阶段验收。
 - 保留已有未提交变更，不修改其他人的范围；不自行合并、部署或宣布验收。
 - 用户通过浏览器查看原型，对话中只给简洁说明或链接，不嵌入原型页面。
