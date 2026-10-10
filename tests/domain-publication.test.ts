@@ -317,7 +317,7 @@ test("source outages are recorded and retry resumes the confirmed registration",
 });
 
 test("confirmation cannot overwrite a newer app revision", async (t) => {
-  const { fixture, service } = await setup(t);
+  const { fixture, db, service } = await setup(t);
   const initial = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-0007");
   await service.confirm(initial.id, initial.ticket, { revision: initial.revision, digest: initial.digest! });
 
@@ -333,9 +333,37 @@ test("confirmation cannot overwrite a newer app revision", async (t) => {
   const staleC = await service.confirm(candidateC.id, candidateC.ticket, { revision: candidateC.revision, digest: candidateC.digest! });
   assert.equal(staleC.status, "failed");
   assert.equal(staleC.error?.code, "REVISION_CONFLICT");
+  assert.equal(staleC.nextAction, "submit_again");
+  const failedCandidate = await db.query<{ confirmed_at: Date | string | null }>(
+    "SELECT confirmed_at FROM publications WHERE id = $1",
+    [candidateC.id],
+  );
+  assert.equal(failedCandidate.rows[0]?.confirmed_at, null);
+  await assert.rejects(service.retry(candidateC.id, candidateC.ticket), (error: unknown) =>
+    error instanceof DomainError && error.code === "REVISION_CONFLICT",
+  );
   const current = await service.app(publishedB.appId!);
   assert.equal(current.revision, 2);
   assert.equal(current.manifest.name, "自动化方案 B");
+});
+
+test("returned full-width tags can be sent back as exact filters", async (t) => {
+  const { fixture, service } = await setup(t);
+  fixture.setVersion(COMMIT_A, manifest({ tags: ["ＡＩ"] }));
+  const preview = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-0012");
+  const published = await service.confirm(preview.id, preview.ticket, {
+    revision: preview.revision,
+    digest: preview.digest!,
+  });
+  assert.equal(published.status, "registered");
+
+  const tags = await service.list();
+  assert.ok(tags.tags.includes("ＡＩ"));
+  const fullWidthTag = tags.tags.find((tag) => tag === "ＡＩ");
+  assert.ok(fullWidthTag);
+  const filtered = await service.list({ tags: [fullWidthTag] });
+  assert.equal(filtered.total, 1);
+  assert.equal(filtered.items[0]?.manifest.tags[0], "ＡＩ");
 });
 
 test("confirmation detects a changed preview source and requires a new candidate", async (t) => {
@@ -368,4 +396,25 @@ test("PGlite requires an explicit mode and persistent paths survive reopening", 
   const result = await reopened.query<{ app_key: string }>("SELECT app_key FROM catalog_apps WHERE project_id = $1", ["1"]);
   assert.equal(result.rows[0]?.app_key, "persistent");
   await reopened.close();
+});
+
+test("the lifecycle cleanup method clears encrypted GitLab tokens after publication expiry", async (t) => {
+  const { db, service } = await setup(t);
+  const preview = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-0013");
+  const before = await db.query<{ token_ciphertext: string | null }>(
+    "SELECT token_ciphertext FROM publications WHERE id = $1",
+    [preview.id],
+  );
+  assert.ok(before.rows[0]?.token_ciphertext);
+  assert.notEqual(before.rows[0]?.token_ciphertext, GITLAB_TOKEN);
+
+  await db.query("UPDATE publications SET expires_at = now() - interval '1 second' WHERE id = $1", [preview.id]);
+  await service.cleanupExpiredTokens();
+
+  const after = await db.query<{
+    token_ciphertext: string | null;
+    token_iv: string | null;
+    token_auth_tag: string | null;
+  }>("SELECT token_ciphertext, token_iv, token_auth_tag FROM publications WHERE id = $1", [preview.id]);
+  assert.deepEqual(after.rows[0], { token_ciphertext: null, token_iv: null, token_auth_tag: null });
 });

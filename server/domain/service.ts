@@ -61,6 +61,7 @@ export interface ServiceConfig {
 }
 
 export interface PlazaService {
+  cleanupExpiredTokens(): Promise<void>;
   submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult>;
   publication(id: string, ticket: string): Promise<PublicationView>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
@@ -300,13 +301,15 @@ export function createService(config: ServiceConfig): PlazaService {
     retryAllowed = true,
   ): Promise<PublicationRecord> {
     const failure = safeFailure(error);
-    const nextAction = failure.code === "SOURCE_MISMATCH" || failure.code === "VALIDATION_FAILED" || failure.code === "AUTH_TOKEN_INVALID"
+    const mustSubmitAgain = failure.code === "SOURCE_MISMATCH" || failure.code === "VALIDATION_FAILED" ||
+      failure.code === "AUTH_TOKEN_INVALID" || failure.code === "REVISION_CONFLICT";
+    const nextAction = mustSubmitAgain
       ? "submit_again"
       : retryAllowed ? "retry" : "submit_again";
     await config.db.query(
       `UPDATE publications
           SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
-              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID') THEN NULL ELSE confirmed_at END,
+              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT') THEN NULL ELSE confirmed_at END,
               updated_at = now()
         WHERE id = $1 AND status <> 'registered'`,
       [id, failure.code, failure.message, nextAction],
@@ -502,6 +505,8 @@ export function createService(config: ServiceConfig): PlazaService {
   }
 
   const service: PlazaService = {
+    cleanupExpiredTokens,
+
     async submit(input, gitlabToken, idempotencyKey) {
       await cleanupExpiredTokens();
       validateSubmitInput(input, gitlabToken, idempotencyKey);
@@ -592,7 +597,7 @@ export function createService(config: ServiceConfig): PlazaService {
       if (record.status === "preview_ready") return recordView(record);
       if (record.status === "cancelled") throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
       if (record.next_action === "submit_again") {
-        throw new DomainError(409, "SOURCE_MISMATCH", "当前候选需要重新提交并生成新的预览。");
+        throw new DomainError(409, record.error_code ?? "SOURCE_MISMATCH", record.error_message ?? "当前候选需要重新提交并生成新的预览。");
       }
       try {
         const source = await assertAuthorAndSource(record);
@@ -761,7 +766,7 @@ function notFound(): DomainError {
 }
 
 function normalizeTag(value: string): string {
-  return value.normalize("NFKC").trim().toLocaleLowerCase("zh-CN");
+  return value.trim().toLocaleLowerCase("zh-CN");
 }
 
 function searchTokens(query: string): string[][] {
