@@ -6,6 +6,8 @@
 
 **尚未接入真实 GitLab、AI 检索、发布服务或应用安装。** Mock 资料与状态用于设计评审，不代表真实项目交付。
 
+架构提案见[架构设计](docs/architecture/architecture.md)与[资料契约](docs/architecture/data-contract.md)。它们用于评审正式系统的边界和流程，尚未冻结；其中的技术建议不代表服务已经接通。
+
 ## 本地运行
 
 需要 Node.js 20+、Python 3.10+（命令名 `python`）。在仓库根目录执行：
@@ -33,6 +35,7 @@ npm run preview
 | `scripts/` | 数据合成与静态入口生成 |
 | `tests/` | 应用详情、接入、平台演示及发布流程检查 |
 | `docs/product/` | 能力边界与现有交互设计说明 |
+| `docs/architecture/` | 架构提案、资料契约、Schema 与虚构结构样例 |
 | `docs/ops/` | 初始化事实、待发布的控制面草稿 |
 | `.fuxi/` | 原有 AdminSpec 和编译来源记录 |
 | `archive/` | 旧任务完整本地归档，不入 Git |
@@ -56,7 +59,7 @@ npm test
 - 代码权威仓库：[Dylan5237/ai-app-plaza](https://github.com/Dylan5237/ai-app-plaza)，唯一写入远端 `origin`。
 - 使用 [agent-project-ops](https://github.com/Dylan5237/agent-project-ops)，固定版本见 `.agent-project-ops/PIN`；入口为 `AGENTS.md`。
 - 本地初始化、历史迁移与后续产品阶段分开记录。当前 GitHub 控制面和 Fleet 登记状态见 [初始化记录](docs/ops/initialization.md)。
-- 新克隆先通过 Git Bash 执行 `bash .agent-project-ops/scripts/install-hooks.sh`；新产品阶段需在 GitHub 完成 Freeze，推送前按用户约定取得明确确认。
+- 新克隆先通过 Git Bash 执行 `bash .agent-project-ops/scripts/install-hooks.sh`；新产品阶段需在 GitHub 完成 Freeze。已授权任务提交后直接推送 `origin` 主题分支，授权边界见 `AGENTS.md`，合并、部署与验收另行处理。
 - [能力边界](docs/product/capability-boundaries.md) · [交互设计说明](docs/product/prototype-design.md)
 
 此前发布的原型：[伏羲平台 v1.8.0](http://192.168.2.145:16088/api/s/tU22pwVr)。本次迁移不触发平台重新发布；在线状态以平台实际内容为准。
