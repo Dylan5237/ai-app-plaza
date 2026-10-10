@@ -57,6 +57,6 @@ npm test
 - 使用 [agent-project-ops](https://github.com/Dylan5237/agent-project-ops)，固定版本见 `.agent-project-ops/PIN`；入口为 `AGENTS.md`。
 - 本地初始化、历史迁移与后续产品阶段分开记录。当前 GitHub 控制面和 Fleet 登记状态见 [初始化记录](docs/ops/initialization.md)。
 - 新克隆先通过 Git Bash 执行 `bash .agent-project-ops/scripts/install-hooks.sh`；新产品阶段需在 GitHub 完成 Freeze，推送前按用户约定取得明确确认。
-- [能力边界](docs/product/capability-boundaries.md) · [交互设计说明](docs/product/prototype-design.md)
+- [需求说明（评审草稿）](docs/product/requirements.md) · [能力边界](docs/product/capability-boundaries.md) · [交互设计说明](docs/product/prototype-design.md)
 
 此前发布的原型：[伏羲平台 v1.8.0](http://192.168.2.145:16088/api/s/tU22pwVr)。本次迁移不触发平台重新发布；在线状态以平台实际内容为准。

@@ -1,6 +1,6 @@
 # 项目初始化记录
 
-日期：2026-10-10。此文件是本地初始化证据；GitHub Command Center 建立后，阶段状态以该 Issue 为准。
+日期：2026-10-10。此文件记录初始化事实；当前状态以 [Command Center #1](https://github.com/Dylan5237/ai-app-plaza/issues/1) 为准。
 
 ## 已核对的起点
 
@@ -23,13 +23,14 @@
 
 验证结论见同目录下 `migration-verification.md`。本次仅建立可复现原型基线，不新增产品能力，不代表 Phase Freeze、PHASE ACCEPT 或生产验收。
 
-## 待完成的远端初始化
+## 远端初始化结果
 
-用户约定推送前须明确确认；当前尚未推送代码，也未创建远端控制面。已准备：
+用户明确确认后，已完成首次空仓推送并读回远端：`main=b64d06abf14b992c5b011b9018bd7557dbc31eff`，包含治理绑定与原型迁移两项提交。已创建 APO 标签、[Command Center #1](https://github.com/Dylan5237/ai-app-plaza/issues/1) 与[首个待冻结 Phase #2](https://github.com/Dylan5237/ai-app-plaza/issues/2)。
 
-1. 首次推送：`git push -u origin main`。执行前重新确认远端仍为空，禁止覆盖已有引用。
-2. 按 APO 字典创建标签，创建 Command Center 与首个 backlog Phase，并互相补充实际链接。
-3. 按实际 Command Center 编号准备 `Dylan5237/agent-project-ops` 的 `fleet/REGISTRY.md` 单行登记 PR。仅提出登记，不合并该 PR。
-4. 核对 Fleet 镜像；无法访问镜像时，在 Command Center 写明 `BLOCKED:`，不声称已纳入晨报扫描。
+[Fleet 登记 PR #63](https://github.com/Dylan5237/agent-project-ops/pull/63) 仅新增本项目一行，已关联业务控制面，保持 OPEN 待审核。晨报运行镜像未核验，控制面已记录 `BLOCKED:`；当前不能声称已纳入晨报扫描。
 
-可审阅正文：[Command Center 草稿](github-command-center.md)、[首个 Phase 草稿](github-phase-1.md)、[Fleet 登记草稿](fleet-registration.md)。首个 Phase 为提案，不因创建 Issue 自动冻结或开始实现。
+2026-10-10 进一步核对固定版本 [ADR 0002](https://github.com/Dylan5237/agent-project-ops/blob/21983f17eccae3beb844fa0fec3f7e7e1e10746e/docs/adr/0002-canonical-fleet-index.md) 的具体口径：登记步骤允许已打开的 PR 关联业务控制面，无法核验镜像时记录缺口。该条件已满足。此前将镜像核验列为需求提案整理的阻塞条件过严，现予修正；仓库初始化与登记提案已经就绪，晨报运行接入继续独立跟踪。
+
+用户授权初始化后整理需求文档，现由 [Docs #3](https://github.com/Dylan5237/ai-app-plaza/issues/3) 跟踪[需求草稿](../product/requirements.md)。此项是提案准备，不实施功能，不替 Disposer Freeze 或 Accept，Phase #2 继续保持 backlog / freeze:pending。
+
+同目录的 [Command Center 草稿](github-command-center.md)、[首个 Phase 草稿](github-phase-1.md)、[Fleet 登记草稿](fleet-registration.md) 保留为初始化时的提案快照；实际编号、状态与最新正文以链接的 GitHub Issue / PR 为准。
