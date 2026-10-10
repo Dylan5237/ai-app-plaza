@@ -1,0 +1,86 @@
+{
+  "app": {
+    "id": "ai-tool-library",
+    "outputMode": "alignment",
+    "prototypeSpec": "tiangong",
+    "runtime": "vite-vue3",
+    "runtimeProfile": "vue3-element-plus",
+    "title": "AI 工具库"
+  },
+  "pages": [
+    {
+      "columns": [
+        {
+          "field": "name",
+          "label": "工具名称"
+        },
+        {
+          "field": "category",
+          "label": "类型"
+        },
+        {
+          "field": "owner",
+          "label": "分享人"
+        },
+        {
+          "field": "evidenceLabel",
+          "label": "资料状态"
+        }
+      ],
+      "entity": "tool",
+      "filters": [
+        {
+          "component": "el-input",
+          "field": "name",
+          "label": "工具或用途",
+          "placeholder": "搜索工具、用途或分享人"
+        },
+        {
+          "component": "el-select",
+          "field": "category",
+          "label": "工具类型",
+          "options": [
+            {
+              "label": "Skill",
+              "value": "Skill"
+            },
+            {
+              "label": "CLI与脚本",
+              "value": "CLI与脚本"
+            },
+            {
+              "label": "平台",
+              "value": "平台"
+            },
+            {
+              "label": "知识与模板",
+              "value": "知识与模板"
+            },
+            {
+              "label": "API与MCP",
+              "value": "API与MCP"
+            },
+            {
+              "label": "工作流",
+              "value": "工作流"
+            },
+            {
+              "label": "插件与集成",
+              "value": "插件与集成"
+            },
+            {
+              "label": "待确认",
+              "value": "待确认"
+            }
+          ]
+        }
+      ],
+      "id": "tool-directory",
+      "kind": "list",
+      "route": "/tools",
+      "sampleRows": [],
+      "title": "AI 工具目录"
+    }
+  ],
+  "schemaVersion": "adminspec/1"
+}

@@ -1,0 +1,87 @@
+[
+  {
+    "id": "heap-hunter",
+    "capability": "排查 Vue 前端内存泄漏",
+    "keywords": ["Vue 内存泄漏", "前端内存问题", "内存泄漏排查", "Chrome 堆快照", "堆快照对比", "CI 内存检查", "memory leak"]
+  },
+  {
+    "id": "code-remold",
+    "capability": "批量整改多个代码仓库",
+    "keywords": ["批量代码整改", "多仓代码改造", "代码扫描整改", "按规则改代码", "整改计划预览", "代码改写审批", "独立 MR"]
+  },
+  {
+    "id": "zoebrowser-plugin-skill",
+    "capability": "根据接口文档开发浏览器插件",
+    "keywords": ["浏览器插件开发", "接口文档生成插件", "厂商接口转插件", "C++ 插件", "JavaScript 插件", "JS 插件", "DLL 插件", "DLL 导出核验"]
+  },
+  {
+    "id": "intelligent-inspection",
+    "capability": "根据链路数据定位异常原因",
+    "keywords": ["Trace ID 排障", "事务 ID 诊断", "链路异常定位", "根因分析", "智能巡检", "观测数据诊断", "证据链", "时序图"]
+  },
+  {
+    "id": "config-page-assistant",
+    "capability": "根据业务规则制作配置页面",
+    "keywords": ["配置页面制作", "配置页生成", "低代码页面", "业务规则生成页面", "复用页面模板", "复用组件", "页面契约"]
+  },
+  {
+    "id": "integration-plugin",
+    "capability": "生成 Mock 并测试接口",
+    "keywords": ["接口 Mock", "Mock 生成", "接口测试", "API 测试", "接口自测", "接口用例", "请求响应比对", "联调证据"]
+  },
+  {
+    "id": "document-to-markdown",
+    "capability": "将多格式文档转换为 Markdown",
+    "keywords": ["多格式转 Markdown", "文档转 Markdown", "文档转 MD", "DOCX 转 Markdown", "Word 转 Markdown", "HTML 转 Markdown", "PDF 转 Markdown", "CHM 转 Markdown", "MD 转 Markdown", "TXT 转 Markdown", "图片和引用资源"]
+  },
+  {
+    "id": "sky-tools",
+    "capability": "处理代码检索、CI 与部署运维任务",
+    "keywords": ["GitLab 检索", "查找代码", "CI 日志分析", "流水线故障", "服务器检查", "项目初始化", "版本发布", "部署任务", "运维排障"]
+  },
+  {
+    "id": "research-skill",
+    "capability": "开展需求调研并形成可追溯报告",
+    "keywords": ["需求调研", "调研计划", "用户访谈", "问卷调研", "观察记录", "调研提纲", "证据追溯", "调研报告"]
+  },
+  {
+    "id": "intelligent-data-workbench",
+    "capability": "查询、同步并核对数据",
+    "keywords": ["数据库查表", "找表", "问数", "SQL 起草", "数据查询", "跨库同步", "同步排障", "数据对账", "数据质量", "数据脱敏"]
+  },
+  {
+    "id": "auroraflow",
+    "capability": "管理需求调研、设计与评审（规划中）",
+    "keywords": ["需求工作台", "需求调研管理", "产品设计管理", "技术设计管理", "需求评审", "阶段门禁", "版本留痕", "规划中的需求流程"]
+  },
+  {
+    "id": "data-governance",
+    "capability": "将非结构化资料整理为标准记录",
+    "keywords": ["非结构化资料结构化", "文本抽取字段", "资料转业务记录", "数据标准化", "业务字典映射", "字段标准映射", "人工校对", "知识反馈"]
+  },
+  {
+    "id": "task-execution-tracker",
+    "capability": "记录长任务进度并支持续做",
+    "keywords": ["长任务跟踪", "任务进度记录", "任务拆解", "中断后继续", "任务续跑", "接续记录", "执行进度"]
+  },
+  {
+    "id": "mermaid-diagram",
+    "capability": "根据描述生成流程或架构图",
+    "keywords": ["Mermaid 图", "Mermaid 流程图", "流程图生成", "架构图生成", "时序图", "设计文档配图", "图表渲染检查"]
+  },
+  {
+    "id": "deepseek-harness",
+    "capability": "组织代码生成、自测与多智能体协作",
+    "keywords": ["代码生成与自测", "AI 助手代码任务", "多智能体协作", "Agent 协作", "智能体任务面板", "任务产物记录", "协作记录"]
+  },
+  {
+    "id": "docx-to-md-enhanced",
+    "capability": "将 Word 转为 Markdown 并处理文档元素",
+    "keywords": ["Word 转 Markdown", "Word 转 MD", "DOCX 转 Markdown", "DOCX 转 MD", "保留 Word 表格", "保留代码块", "Word 图片转 Markdown", "Markdown 配套资源"]
+  },
+  {
+    "id": "meow-workflow-log-analysis",
+    "capability": "定位多智能体工作流失败环节",
+    "keywords": ["多智能体日志分析", "Agent 工作流日志", "工作流失败排查", "任务失败定位", "工作流错误", "运行日志定位", "失败环节分析"]
+  }
+]

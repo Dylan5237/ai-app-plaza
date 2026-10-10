@@ -50,3 +50,14 @@ A missing client hook is **not** permission to push `main`. The hook is bypassab
 - Multiple remotes / same-history mirror / divergence: load `git-authority-and-projection` before any non-`origin` push.
 - Colleague GitLab / business-files-only share: load `export-remote` or `share-export`; do not register that host as projection.
 - Cannot verify an invariant or remote state: fail closed and record `BLOCKED:` on the active Issue.
+
+## 本项目约定
+
+- 当前为 AI应用广场桌面交互原型，17 项应用资料与流程为 Mock；不能把构建通过、模拟发布或接入提示词当作真实服务可用证据。
+- 产品边界见 `docs/product/capability-boundaries.md`；初始化状态见 `docs/ops/initialization.md`。首次初始化迁入已有成果，后续新功能仍需 Phase Freeze。
+- 可编辑原型源在 `prototype/`，Vue 承载在 `src/`，数据合成在 `scripts/`。不要直接维护生成的 `public/portal.html`。
+- Node.js 20+、Python 3.10+；`npm ci` 后执行 `npm run build`。相关交互验证为 `npm test`，浏览器配置见 README。
+- `archive/` 与 `artifacts/` 为本地历史和证据，不提交；原始资料、运行授权记录、机器配置不可自动纳入 Git。
+- 默认中文。提交使用 `type(scope): 中文标题`，正文包含 `Co-Authored-By: Codex <noreply@openai.com>`；推送前取得用户明确确认，确认范围内不重复询问。
+- 保留已有未提交变更，不修改其他人的范围；不自行合并、部署或宣布验收。
+- 用户通过浏览器查看原型，对话中只给简洁说明或链接，不嵌入原型页面。

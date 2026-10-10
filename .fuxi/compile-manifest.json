@@ -1,0 +1,28 @@
+{
+  "appId": "ai-tool-library",
+  "compiler": "fuxi-adminspec-compiler/1",
+  "mode": "compile",
+  "navHash": "d6aac004f99181fca0966fe50df498db0d0eb3f502e0ccd6916bec2fbb851895",
+  "outputMode": "alignment",
+  "pages": {
+    "tool-directory": {
+      "file": "src/pages/ToolDirectory.vue",
+      "kind": "list",
+      "pageHash": "b513b699c3026cbfa8ee89055fc0023ecda389f67dc2269397c2d3c4c5b8e263"
+    }
+  },
+  "removed": [],
+  "schema": "fuxi-compile-manifest/1",
+  "schemaVersion": "adminspec/1",
+  "skipped": [],
+  "specHash": "07ec3a5fdb4dc41029e51ca2f72db7ce1d3c374b11113cf962adc693667a3f8c",
+  "written": [
+    "README.md",
+    "index.html",
+    "package.json",
+    "src/App.vue",
+    "src/main.js",
+    "src/pages/ToolDirectory.vue",
+    "vite.config.js"
+  ]
+}

@@ -3,3 +3,16 @@ CLAUDE.local.md
 .env
 .env.*
 !.env.example
+
+# Dependencies and generated previews
+node_modules/
+dist/
+generated/
+public/portal.html
+public/assets/lucide.js
+__pycache__/
+*.pyc
+
+# Local historical material and verification output
+archive/
+artifacts/

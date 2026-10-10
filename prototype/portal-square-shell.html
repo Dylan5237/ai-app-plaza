@@ -1,0 +1,548 @@
+<style>
+#ai-tool-portal{--pt-bg:light-dark(#f7f8fa,#181a1f);--pt-panel:light-dark(#fff,#22252b);--pt-text:light-dark(#24272e,#e9ebef);--pt-muted:light-dark(#6b727d,#a9afb9);--pt-line:light-dark(#e5e7eb,#3a3e47);--pt-accent:light-dark(#4263d6,#a0b5ff);--pt-tint:light-dark(#eef2ff,#303a59);--pt-code:light-dark(#f5f6f8,#1c1f25);color:var(--pt-text);background:var(--pt-bg);font:14px/1.55 "Segoe UI","Microsoft YaHei",sans-serif;height:820px;min-width:900px;display:grid;grid-template-rows:58px minmax(0,1fr);border:1px solid var(--pt-line);border-radius:12px;overflow:hidden;isolation:isolate;position:relative}
+html[data-visualize-standalone],html[data-visualize-standalone]>body{height:100%;overflow:hidden}
+html[data-visualize-standalone] #ai-tool-portal{height:100dvh;border:0;border-radius:0}
+#ai-tool-portal *{box-sizing:border-box}
+#ai-tool-portal [hidden]{display:none!important}
+#ai-tool-portal :is(button,input,textarea,select){font:inherit;color:inherit}
+#ai-tool-portal button{cursor:var(--cursor-interaction,pointer)}
+#ai-tool-portal button:disabled{cursor:not-allowed;opacity:.55}
+#ai-tool-portal :is(button,input,textarea,select):focus-visible{outline:2px solid var(--pt-accent);outline-offset:3px}
+#ai-tool-portal :is(h1,h2,h3,p){margin:0;color:inherit}
+#ai-tool-portal h1{font-size:23px;line-height:1.4;font-weight:600}
+#ai-tool-portal h2{font-size:16px;font-weight:600}
+#ai-tool-portal h3{font-size:15px;font-weight:600}
+#ai-tool-portal svg{width:17px;height:17px;flex-shrink:0;stroke-width:1.7}
+#ai-tool-portal .pt-topbar{display:flex;align-items:center;gap:35px;padding:0 106px 0 26px;border-bottom:1px solid var(--pt-line);background:var(--pt-panel)}
+#ai-tool-portal .pt-brand{display:flex;align-items:center;gap:10px;background:none;border:0;padding:0;font-size:16px;font-weight:600}
+#ai-tool-portal .pt-logo{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:var(--pt-accent);color:var(--pt-panel)}
+#ai-tool-portal .pt-nav{display:flex;align-items:center;gap:24px;height:100%}
+#ai-tool-portal .pt-nav button{height:100%;display:flex;align-items:center;gap:6px;padding:0 2px;border:0;border-bottom:2px solid transparent;background:none;font-size:13px;color:var(--pt-muted)}
+#ai-tool-portal .pt-nav button[aria-pressed=true]{color:var(--pt-accent);border-bottom-color:var(--pt-accent)}
+#ai-tool-portal .pt-header-actions{margin-left:auto;display:flex;gap:22px;align-items:center}
+#ai-tool-portal .pt-top-note{font-size:11px;color:var(--pt-muted)}
+#ai-tool-portal .pt-main{width:100%;max-width:1344px;margin:0 auto;display:flex;flex-direction:column;min-width:0;min-height:0;padding:22px 30px 16px;overflow:hidden}
+#ai-tool-portal :is(#pt-home,#pt-detail,#pt-guide){display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}
+#ai-tool-portal .pt-compose{flex-shrink:0;margin-bottom:19px}
+#ai-tool-portal .pt-intro{margin-bottom:24px;text-align:center}
+#ai-tool-portal .pt-intro h1{font-size:27px;letter-spacing:.2px}
+#ai-tool-portal .pt-intro p{margin-top:10px;font-size:14px;color:var(--pt-muted)}
+#ai-tool-portal .pt-demand-label{display:block;font-size:12px;margin-bottom:8px;color:var(--pt-muted)}
+#ai-tool-portal .pt-query-box{display:flex;align-items:center;gap:16px;background:var(--pt-panel);border:1px solid var(--pt-line);border-radius:10px;padding:12px 14px 12px 18px}
+#ai-tool-portal .pt-query-box:focus-within{border-color:var(--pt-accent)}
+#ai-tool-portal .pt-query-box>svg{color:var(--pt-muted)}
+#ai-tool-portal #pt-demand{flex:1;width:100%;min-width:0;height:46px;line-height:23px;resize:none;border:0;padding:0;background:none;font-size:14px;outline:none}
+#ai-tool-portal #pt-demand::placeholder{color:var(--pt-muted)}
+#ai-tool-portal #pt-demand:focus-visible{outline:0}
+#ai-tool-portal .pt-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;padding:6px 13px;border:1px solid var(--pt-line);border-radius:6px;background:var(--pt-panel);font-size:12px;white-space:nowrap}
+#ai-tool-portal .pt-button-primary{background:var(--pt-accent);border-color:var(--pt-accent);color:var(--pt-panel)}
+#ai-tool-portal .pt-query-box .pt-button{min-height:38px;padding:7px 17px;font-size:13px}
+#ai-tool-portal .pt-link{display:inline-flex;align-items:center;gap:5px;border:0;padding:3px 0;background:none;color:var(--pt-accent);font-size:12px;text-align:left}
+#ai-tool-portal .pt-link:hover{text-decoration:underline}
+#ai-tool-portal .pt-query-help{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:8px;color:var(--pt-muted);font-size:11px;min-height:20px}
+#ai-tool-portal .pt-query-help .pt-error{color:light-dark(#b23030,#ffb1b1)}
+#ai-tool-portal .pt-examples{margin-top:27px}
+#ai-tool-portal .pt-examples-title{font-size:12px;color:var(--pt-muted);margin-bottom:10px}
+#ai-tool-portal .pt-example-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+#ai-tool-portal .pt-example{display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:11px 13px;border:1px solid var(--pt-line);border-radius:7px;background:var(--pt-panel);font-size:13px}
+#ai-tool-portal .pt-example svg{color:var(--pt-muted);width:14px;height:14px}
+#ai-tool-portal .pt-example:hover{color:var(--pt-accent);border-color:var(--pt-accent)}
+#ai-tool-portal .pt-browse-all{display:flex;justify-content:center;margin-top:20px}
+#ai-tool-portal #pt-home.is-landing{padding-top:clamp(20px,7vh,70px);overflow:auto}
+#ai-tool-portal #pt-home.is-landing .pt-compose{width:100%;max-width:780px;margin:0 auto}
+#ai-tool-portal #pt-home.is-landing #pt-demand{height:69px}
+#ai-tool-portal #pt-home.is-landing .pt-query-box{align-items:flex-end;padding:18px}
+#ai-tool-portal #pt-home.is-landing .pt-query-box>svg{align-self:flex-start;margin-top:3px}
+#ai-tool-portal #pt-home:not(.is-landing) .pt-intro,#ai-tool-portal #pt-home:not(.is-landing) .pt-examples,#ai-tool-portal #pt-home:not(.is-landing) .pt-browse-all{display:none}
+#ai-tool-portal #pt-results{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}
+#ai-tool-portal .pt-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:13px;flex-shrink:0}
+#ai-tool-portal .pt-results-title{display:flex;align-items:center;gap:9px}
+#ai-tool-portal .pt-results-title span,#ai-tool-portal .pt-results-context{font-size:12px;color:var(--pt-muted)}
+#ai-tool-portal .pt-directory-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:2px}
+#ai-tool-portal .pt-grid{display:grid;grid-template-columns:repeat(var(--pt-columns,3),minmax(0,1fr));gap:14px;align-content:start}
+#ai-tool-portal .pt-tool{display:flex;flex-direction:column;min-width:0;min-height:208px;padding:17px 18px;background:var(--pt-panel);border:1px solid var(--pt-line);border-radius:9px}
+#ai-tool-portal .pt-card-top{display:flex;align-items:flex-start;gap:8px}
+#ai-tool-portal .pt-title-button{flex:1;min-width:0;background:none;border:0;padding:1px 0;text-align:left;font-size:16px;font-weight:600;line-height:24px;overflow-wrap:anywhere}
+#ai-tool-portal .pt-title-button:hover{color:var(--pt-accent)}
+#ai-tool-portal .pt-icon-button{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;flex-shrink:0;padding:4px;border:0;border-radius:5px;background:none;color:var(--pt-muted)}
+#ai-tool-portal .pt-icon-button:hover,#ai-tool-portal .pt-icon-button[aria-pressed=true]{color:var(--pt-accent);background:var(--pt-tint)}
+#ai-tool-portal .pt-description{font-size:13px;line-height:21px;color:var(--pt-muted);margin:9px 0 12px;overflow-wrap:anywhere}
+#ai-tool-portal .pt-outcome{font-size:12px;line-height:20px;padding-top:10px;border-top:1px solid var(--pt-line);overflow-wrap:anywhere}
+#ai-tool-portal .pt-outcome span{color:var(--pt-muted);margin-right:7px}
+#ai-tool-portal .pt-matches{font-size:11px;color:var(--pt-muted);margin-top:8px;overflow-wrap:anywhere}
+#ai-tool-portal .pt-card-bottom{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-top:auto;padding-top:13px}
+#ai-tool-portal .pt-tool-source{min-width:0;flex:1;font-size:11px;color:var(--pt-muted);overflow-wrap:anywhere}
+#ai-tool-portal .pt-readiness{display:block;font-size:11px;color:var(--pt-muted);margin-top:3px}
+#ai-tool-portal .pt-card-bottom .pt-link{flex-shrink:0}
+#ai-tool-portal .pt-pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:12px;min-height:30px;flex-shrink:0;color:var(--pt-muted);font-size:11px}
+#ai-tool-portal .pt-pagination-controls{display:flex;gap:5px}
+#ai-tool-portal .pt-page-button{min-width:28px;min-height:28px;border:1px solid var(--pt-line);border-radius:5px;background:var(--pt-panel);padding:2px 6px;font-size:12px}
+#ai-tool-portal .pt-page-button[aria-current=page]{background:var(--pt-accent);color:var(--pt-panel);border-color:var(--pt-accent)}
+#ai-tool-portal .pt-empty{grid-column:1/-1;padding:55px 22px;text-align:center;color:var(--pt-muted)}
+#ai-tool-portal .pt-empty h3{font-size:17px;color:var(--pt-text)}
+#ai-tool-portal .pt-empty p{margin:10px 0 18px;font-size:13px}
+#ai-tool-portal .pt-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+#ai-tool-portal .pt-back{align-self:flex-start;margin-bottom:17px}
+#ai-tool-portal .pt-detail-header{display:flex;align-items:flex-start;gap:24px;margin-bottom:18px;flex-shrink:0}
+#ai-tool-portal .pt-detail-heading{flex:1;min-width:0}
+#ai-tool-portal .pt-detail-description{font-size:14px;color:var(--pt-muted);margin-top:8px;max-width:850px}
+#ai-tool-portal .pt-detail-title{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+#ai-tool-portal .pt-detail-meta{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--pt-muted)}
+#ai-tool-portal .pt-detail-meta .pt-tags{margin:0}
+#ai-tool-portal .pt-detail-meta>span{display:inline-flex;align-items:center;gap:6px}
+#ai-tool-portal .pt-detail-side-meta{display:flex;align-items:center;gap:18px;padding-top:5px}
+#ai-tool-portal .pt-detail-body{display:grid;grid-template-columns:minmax(0,7fr) minmax(275px,3fr);gap:20px;min-height:0;flex:1;padding:2px}
+#ai-tool-portal .pt-detail-main,#ai-tool-portal .pt-start-panel{min-height:0;overflow:auto;overscroll-behavior:contain;background:var(--pt-panel);border:1px solid var(--pt-line);border-radius:12px;padding:24px;align-self:start;max-height:100%}
+#ai-tool-portal .pt-detail-main{display:grid;gap:14px;padding:20px 22px}
+#ai-tool-portal .pt-detail-section p{font-size:13px;line-height:1.7;color:var(--pt-muted);margin-top:7px}
+#ai-tool-portal .pt-detail-section h2{font-size:14px;display:flex;align-items:center;gap:8px}
+#ai-tool-portal .pt-detail-section h2 svg{color:var(--pt-muted);width:16px;height:16px}
+#ai-tool-portal .pt-detail-io{display:grid;grid-template-columns:1fr 1fr;gap:24px;border-top:1px solid var(--pt-line);padding-top:14px}
+#ai-tool-portal .pt-detail-list{list-style:none;padding:0;margin:8px 0 0;display:grid;gap:5px;font-size:13px;line-height:1.65}
+#ai-tool-portal .pt-detail-list li{display:flex;align-items:baseline;gap:9px;overflow-wrap:anywhere}
+#ai-tool-portal .pt-detail-list li::before{content:'•';color:var(--pt-muted);flex-shrink:0}
+#ai-tool-portal .pt-project-info{border-top:1px solid var(--pt-line);padding-top:12px;font-size:12px}
+#ai-tool-portal .pt-project-info summary{cursor:var(--cursor-interaction,pointer);color:var(--pt-muted);width:fit-content;padding:3px 0}
+#ai-tool-portal .pt-project-info[open] summary{margin-bottom:9px;color:var(--pt-text)}
+#ai-tool-portal .pt-project-info .pt-source-row{font-size:12px;grid-template-columns:82px minmax(0,1fr);padding:8px 0}
+#ai-tool-portal .pt-start-panel{padding:22px;display:grid;gap:18px}
+#ai-tool-portal .pt-entry-status{font-size:12px;color:var(--pt-muted);display:flex;gap:7px;align-items:center;margin-top:8px}
+#ai-tool-portal .pt-entry-status::before{content:'';width:6px;height:6px;background:currentColor;border-radius:50%}
+#ai-tool-portal .pt-entry-status.is-ready{color:light-dark(#26834a,#89d8a5)}
+#ai-tool-portal .pt-start-description{font-size:13px;line-height:1.85;color:var(--pt-muted);margin-top:10px}
+#ai-tool-portal .pt-start-note{padding:13px 14px;background:var(--pt-code);border-radius:7px;font-size:12px;line-height:1.8;color:var(--pt-muted)}
+#ai-tool-portal .pt-start-note strong{display:block;font-size:12px;font-weight:500;color:var(--pt-text);margin-bottom:4px}
+#ai-tool-portal .pt-start-panel .pt-button-primary{width:100%;justify-content:center;min-height:38px;text-decoration:none}
+#ai-tool-portal .pt-start-panel .pt-link{font-size:12px}
+#ai-tool-portal .pt-start-contact{border-top:1px solid var(--pt-line);padding-top:15px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;color:var(--pt-muted)}
+#ai-tool-portal .pt-entry-select{width:100%;margin-top:7px;border:1px solid var(--pt-line);background:var(--pt-panel);border-radius:6px;padding:8px;font-size:13px}
+#ai-tool-portal .pt-entry-steps{margin:10px 0 0;padding-left:19px;font-size:13px;line-height:1.8}
+#ai-tool-portal .pt-entry-steps li+li{margin-top:8px}
+#ai-tool-portal .pt-usage-guide{font-size:13px}
+#ai-tool-portal .pt-usage-guide>summary{font-size:14px;font-weight:500;color:var(--pt-text)}
+#ai-tool-portal .pt-usage-guide[open]>summary{margin-bottom:7px}
+#ai-tool-portal .pt-usage-context{color:var(--pt-muted);font-size:12px;line-height:1.7;margin:6px 0}
+#ai-tool-portal .pt-usage-context strong{font-weight:500;color:var(--pt-text)}
+#ai-tool-portal .pt-usage-guide .pt-entry-steps{margin-top:8px;line-height:1.7}
+#ai-tool-portal .pt-usage-guide .pt-entry-steps li+li{margin-top:4px}
+#ai-tool-portal .pt-consult{width:560px;max-width:calc(100% - 48px);max-height:calc(100% - 56px);padding:24px;border:1px solid var(--pt-line);border-radius:12px;background:var(--pt-panel);color:var(--pt-text);box-shadow:0 20px 70px #0003}
+#ai-tool-portal .pt-consult::backdrop{background:#0005}
+#ai-tool-portal .pt-consult-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:12px}
+#ai-tool-portal .pt-consult p{font-size:13px;color:var(--pt-muted);line-height:1.8;margin-bottom:14px}
+#ai-tool-portal .pt-consult textarea{width:100%;height:190px;resize:vertical;max-height:35vh;border:1px solid var(--pt-line);border-radius:7px;background:var(--pt-code);padding:13px;font-size:13px;line-height:1.8}
+#ai-tool-portal .pt-consult-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px}
+#ai-tool-portal .pt-consult-message{font-size:12px;color:var(--pt-muted)}
+#ai-tool-portal .pt-demo{width:760px;max-width:calc(100% - 64px);max-height:calc(100% - 48px);padding:0;border:1px solid var(--pt-line);border-radius:12px;background:var(--pt-panel);color:var(--pt-text);box-shadow:0 20px 70px #0003;overflow:auto}
+#ai-tool-portal .pt-demo::backdrop{background:#20263266}
+#ai-tool-portal .pt-agent-access{width:820px;max-width:calc(100% - 64px);max-height:calc(100dvh - 48px);border:1px solid var(--pt-line);border-radius:12px;padding:24px;background:var(--pt-panel);color:var(--pt-text);box-shadow:0 20px 70px #0003}
+#ai-tool-portal .pt-agent-access::backdrop{background:#20263266}
+#ai-tool-portal .pt-agent-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+#ai-tool-portal .pt-agent-meta{display:flex;gap:10px;align-items:center;font-size:13px;margin-top:10px}
+#ai-tool-portal .pt-agent-intro{font-size:13px;color:var(--pt-muted);margin:8px 0 16px}
+#ai-tool-portal .pt-agent-label{display:flex;align-items:center;justify-content:space-between;font-size:12px;margin-bottom:8px;color:var(--pt-muted)}
+#ai-tool-portal .pt-agent-text{display:block;width:100%;height:min(370px,calc(100dvh - 282px));min-height:200px;resize:none;border:1px solid var(--pt-line);border-radius:8px;background:var(--pt-code);padding:14px 16px;font-size:13px;line-height:1.8;white-space:pre-wrap}
+#ai-tool-portal .pt-agent-footer{display:flex;gap:16px;align-items:center;justify-content:space-between;margin-top:18px}
+#ai-tool-portal .pt-agent-message{font-size:12px;color:var(--pt-muted)}
+#ai-tool-portal .pt-agent-footer .pt-button{flex-shrink:0}
+#ai-tool-portal.is-platform-demo{display:block;overflow:hidden}
+#ai-tool-portal.is-platform-demo>.pt-topbar,#ai-tool-portal.is-platform-demo>.pt-main{display:none}
+#ai-tool-portal .pt-platform-page{display:block;position:static;width:900px;max-width:calc(100% - 64px);max-height:calc(100% - 64px);margin:32px auto;box-shadow:none}
+#ai-tool-portal .pt-platform-page .pt-demo-head a{text-decoration:none}
+#ai-tool-portal .pt-demo-head{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 24px;border-bottom:1px solid var(--pt-line)}
+#ai-tool-portal .pt-demo-head h2{display:flex;align-items:center;gap:10px}
+#ai-tool-portal .pt-demo-badge{font-size:11px;font-weight:400;background:var(--pt-code);color:var(--pt-muted);padding:2px 7px;border-radius:4px}
+#ai-tool-portal .pt-demo-body{padding:20px 24px 24px;display:grid;gap:18px}
+#ai-tool-portal .pt-demo-note{font-size:12px;color:var(--pt-muted);line-height:1.7}
+#ai-tool-portal .pt-demo-progress{display:flex;align-items:center;gap:16px;padding:0;margin:0;list-style:none;font-size:12px;color:var(--pt-muted)}
+#ai-tool-portal .pt-demo-progress li{display:flex;align-items:center;gap:7px;flex:1}
+#ai-tool-portal .pt-demo-progress li::before{content:attr(data-step);display:grid;place-items:center;width:22px;height:22px;border:1px solid var(--pt-line);border-radius:50%;font-size:11px;flex-shrink:0}
+#ai-tool-portal .pt-demo-progress li[aria-current=step]{color:var(--pt-accent)}
+#ai-tool-portal .pt-demo-progress li[aria-current=step]::before{background:var(--pt-tint);border-color:var(--pt-accent)}
+#ai-tool-portal .pt-demo-field{display:grid;gap:8px;font-size:13px}
+#ai-tool-portal .pt-demo-field input,#ai-tool-portal .pt-demo-field select,#ai-tool-portal .pt-demo-field textarea{width:100%;padding:10px 12px;border:1px solid var(--pt-line);border-radius:6px;background:var(--pt-panel);font-size:13px}
+#ai-tool-portal .pt-demo-field textarea{height:115px;resize:vertical;line-height:1.8}
+#ai-tool-portal .pt-demo-section{display:grid;gap:10px;font-size:13px;line-height:1.8}
+#ai-tool-portal .pt-demo-section h3{font-size:14px}
+#ai-tool-portal .pt-demo-result{padding:16px 18px;border-radius:8px;background:var(--pt-code);font-size:13px;line-height:1.8}
+#ai-tool-portal .pt-demo-result h3{display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:8px}
+#ai-tool-portal .pt-demo-files{margin:0;padding-left:20px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.9}
+#ai-tool-portal .pt-demo-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--pt-line);padding-top:16px}
+#ai-tool-portal .pt-demo-footer .pt-actions{margin-left:auto}
+#ai-tool-portal .pt-demo-copy-state{font-size:12px;line-height:1.6;color:var(--pt-muted);max-width:330px}
+@media(max-height:740px){#ai-tool-portal .pt-detail-main{gap:12px;padding:18px 20px}#ai-tool-portal .pt-start-panel{gap:14px;padding:20px}#ai-tool-portal .pt-detail-io{padding-top:12px}#ai-tool-portal #pt-detail>.pt-back{margin-bottom:12px}}
+#ai-tool-portal .pt-detail-tabs{display:flex;gap:25px;border-bottom:1px solid var(--pt-line);margin-bottom:18px;flex-shrink:0}
+#ai-tool-portal .pt-detail-tab{border:0;border-bottom:2px solid transparent;padding:9px 0;background:none;color:var(--pt-muted);font-size:13px}
+#ai-tool-portal .pt-detail-tab[aria-selected=true]{color:var(--pt-accent);border-bottom-color:var(--pt-accent)}
+#ai-tool-portal .pt-detail-layout,#ai-tool-portal .pt-guide-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:2px}
+#ai-tool-portal .pt-use-layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:20px;align-items:start}
+#ai-tool-portal .pt-methods{display:grid;gap:6px}
+#ai-tool-portal .pt-method{display:flex;align-items:center;gap:8px;min-height:39px;text-align:left;font-size:12px;padding:8px 10px;background:none;border:1px solid transparent;border-radius:6px}
+#ai-tool-portal .pt-method[aria-pressed=true]{background:var(--pt-panel);border-color:var(--pt-line);color:var(--pt-accent)}
+#ai-tool-portal .pt-box{padding:20px;background:var(--pt-panel);border:1px solid var(--pt-line);border-radius:8px;min-width:0}
+#ai-tool-portal .pt-box p{font-size:13px;color:var(--pt-muted);margin-top:8px}
+#ai-tool-portal .pt-box .pt-actions{margin-top:18px}
+#ai-tool-portal .pt-section-label{display:block;color:var(--pt-muted);font-size:12px;margin:16px 0 6px}
+#ai-tool-portal .pt-bullet{margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.75}
+#ai-tool-portal .pt-bullet li{margin:3px 0;overflow-wrap:anywhere}
+#ai-tool-portal .pt-use-note{display:flex;gap:8px;align-items:flex-start;margin-top:16px;padding:10px 12px;border-radius:6px;background:var(--pt-code);color:var(--pt-muted);font-size:12px}
+#ai-tool-portal .pt-use-note svg{margin-top:1px}
+#ai-tool-portal .pt-overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+#ai-tool-portal .pt-source-row{display:grid;grid-template-columns:90px minmax(0,1fr);gap:16px;padding:11px 0;border-bottom:1px solid var(--pt-line);font-size:13px}
+#ai-tool-portal .pt-source-row:last-child{border:0}
+#ai-tool-portal .pt-source-row span:first-child{color:var(--pt-muted)}
+#ai-tool-portal .pt-source-row span:last-child{overflow-wrap:anywhere}
+#ai-tool-portal .pt-guide-stages{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+#ai-tool-portal .pt-guide-stage{padding:20px;background:var(--pt-panel);border:1px solid var(--pt-line);border-radius:8px}
+#ai-tool-portal .pt-guide-stage>span{color:var(--pt-accent);font-size:13px;display:block;margin-bottom:12px}
+#ai-tool-portal .pt-guide-stage p,#ai-tool-portal .pt-guide-help{font-size:13px;color:var(--pt-muted);line-height:1.8;margin-top:9px}
+#ai-tool-portal .pt-guide-help{margin-top:20px}
+#ai-tool-portal .pt-code{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--pt-code);padding:14px;border-radius:6px;font-size:12px;line-height:1.7}
+#ai-tool-portal .pt-status{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);background:var(--pt-panel);color:var(--pt-text);border:1px solid var(--pt-line);box-shadow:0 3px 12px #0001;padding:9px 16px;border-radius:7px;z-index:10;font-size:12px}
+#ai-tool-portal .pt-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-height:740px){#ai-tool-portal .pt-main{padding-top:18px}#ai-tool-portal #pt-home.is-landing{padding-top:22px}#ai-tool-portal .pt-tool{min-height:195px;padding:14px 16px}#ai-tool-portal .pt-description{margin-top:7px;margin-bottom:9px}#ai-tool-portal .pt-compose{margin-bottom:13px}}
+
+#ai-tool-portal .pt-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
+#ai-tool-portal .pt-tag{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--pt-line);border-radius:5px;padding:2px 7px;background:var(--pt-code);font-size:11px;line-height:20px;max-width:100%;overflow-wrap:anywhere;text-align:left}
+#ai-tool-portal .pt-tag:hover,#ai-tool-portal .pt-tag[aria-pressed=true]{color:var(--pt-accent);background:var(--pt-tint);border-color:var(--pt-accent)}
+#ai-tool-portal .pt-tag svg{width:12px;height:12px}
+#ai-tool-portal .pt-browse-all{gap:22px}
+#ai-tool-portal .pt-filter-row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:12px;flex-shrink:0}
+#ai-tool-portal .pt-filter-anchor{position:relative;flex-shrink:0}
+#ai-tool-portal .pt-filter-selected{display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-width:0;flex:1}
+#ai-tool-portal .pt-filter-hint{color:var(--pt-muted);font-size:11px;margin-right:3px}
+#ai-tool-portal .pt-tag-picker{position:absolute;top:calc(100% + 7px);left:0;width:420px;max-width:calc(100vw - 68px);z-index:6;background:var(--pt-panel);border:1px solid var(--pt-line);border-radius:8px;padding:14px;box-shadow:0 8px 25px #0002}
+#ai-tool-portal .pt-picker-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:10px}
+#ai-tool-portal .pt-tag-search,#ai-tool-portal .pt-editor-field{width:100%;border:1px solid var(--pt-line);border-radius:6px;padding:8px 10px;background:var(--pt-panel);font-size:13px}
+#ai-tool-portal .pt-picker-options{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:11px 0;min-height:142px;align-content:start}
+#ai-tool-portal .pt-picker-option{display:flex;align-items:center;gap:7px;border:1px solid transparent;border-radius:5px;padding:4px 7px;background:none;text-align:left;font-size:12px;min-width:0;overflow-wrap:anywhere}
+#ai-tool-portal .pt-picker-option[aria-pressed=true]{background:var(--pt-tint);color:var(--pt-accent)}
+#ai-tool-portal .pt-picker-option span{flex:1}
+#ai-tool-portal .pt-picker-option small{color:var(--pt-muted)}
+#ai-tool-portal .pt-picker-footer{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--pt-muted)}
+#ai-tool-portal .pt-picker-footer div{display:flex;gap:8px;align-items:center}
+#ai-tool-portal .pt-tag-editor{max-width:790px}
+#ai-tool-portal .pt-editor-description{margin-bottom:18px!important}
+#ai-tool-portal .pt-editor-label{display:block;font-size:12px;color:var(--pt-muted);margin:14px 0 7px}
+#ai-tool-portal .pt-editor-add{display:flex;gap:8px;margin-top:10px}
+#ai-tool-portal .pt-editor-help{font-size:11px!important}
+#ai-tool-portal .pt-editor-message{font-size:12px;margin-top:10px;color:var(--pt-accent);min-height:19px}
+
+/* Compact project cards follow the Fuxi gallery hierarchy: title, summary, tags, author. */
+#ai-tool-portal .pt-main{max-width:1504px;padding-left:26px;padding-right:26px}
+#ai-tool-portal #pt-home:not(.is-landing) .pt-demand-label{display:none}
+#ai-tool-portal #pt-home:not(.is-landing) .pt-query-box{padding:7px 12px;gap:12px}
+#ai-tool-portal #pt-home:not(.is-landing) #pt-demand{height:26px;line-height:26px}
+#ai-tool-portal #pt-home:not(.is-landing) .pt-query-box .pt-button{min-height:32px;padding:4px 13px;font-size:12px}
+#ai-tool-portal #pt-home:not(.is-landing) .pt-query-help{margin-top:4px}
+#ai-tool-portal #pt-home:not(.is-landing) .pt-compose{margin-bottom:12px}
+#ai-tool-portal .pt-toolbar{margin-bottom:9px}
+#ai-tool-portal .pt-filter-row{margin-bottom:10px}
+#ai-tool-portal .pt-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-content:start}
+#ai-tool-portal .pt-tool{height:var(--pt-card-height,210px);min-height:190px;padding:15px 15px 12px;border-radius:12px;box-shadow:0 1px 3px light-dark(#17203309,#0002);transition:box-shadow .16s,border-color .16s;cursor:var(--cursor-interaction,pointer)}
+#ai-tool-portal .pt-tool:hover{border-color:light-dark(#cbd0d9,#555c69);box-shadow:0 4px 12px light-dark(#2026320c,#0003)}
+#ai-tool-portal .pt-card-top{gap:7px;min-height:42px;flex-shrink:0}
+#ai-tool-portal .pt-title-button{font-size:15px;line-height:21px;padding:0;font-weight:600;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;align-self:flex-start}
+#ai-tool-portal .pt-card-top .pt-icon-button{width:23px;height:23px;padding:3px;margin-top:-2px}
+#ai-tool-portal .pt-card-top .pt-icon-button svg{width:15px;height:15px}
+#ai-tool-portal .pt-tool .pt-description{font-size:12px;line-height:19px;height:38px;min-height:38px;margin:8px 0 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#ai-tool-portal .pt-tag{border:1px solid var(--pt-line);border-radius:5px;background:var(--pt-code);color:light-dark(#626975,#b7bec9);font-size:11px;line-height:19px;padding:0 7px;min-height:21px}
+#ai-tool-portal .pt-tag:hover{background:light-dark(#edeff3,#30343c);border-color:light-dark(#cbd0d9,#555c69);color:var(--pt-text)}
+#ai-tool-portal .pt-tag[aria-pressed=true]{background:var(--pt-tint);border-color:var(--pt-accent);color:var(--pt-accent)}
+#ai-tool-portal .pt-card-tags{flex-wrap:nowrap;gap:5px;margin-top:11px;min-height:21px;flex-shrink:0;overflow:hidden}
+#ai-tool-portal .pt-card-tags .pt-tag{flex:0 1 auto;min-width:0;max-width:100%}
+#ai-tool-portal .pt-card-tags .pt-tag-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#ai-tool-portal .pt-card-tags .pt-tag-more{flex:0 0 auto;background:var(--pt-code);color:var(--pt-muted);border-color:var(--pt-line)}
+#ai-tool-portal .pt-card-bottom{border-top:1px solid var(--pt-line);padding-top:10px;margin-top:auto;gap:8px;align-items:center;min-height:29px}
+#ai-tool-portal .pt-card-author{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--pt-muted);min-width:0}
+#ai-tool-portal .pt-card-author>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#ai-tool-portal .pt-card-author svg{width:13px;height:13px}
+#ai-tool-portal .pt-card-state{font-size:11px;color:var(--pt-muted);white-space:nowrap;flex-shrink:0}
+#ai-tool-portal .pt-card-state.is-planned{color:light-dark(#967033,#dbb674)}
+#ai-tool-portal .pt-pagination{margin-top:10px}
+@media(max-height:740px){#ai-tool-portal .pt-main{padding-top:16px;padding-bottom:12px}#ai-tool-portal .pt-tool{padding:14px 14px 11px}}
+@media(prefers-reduced-motion:reduce){#ai-tool-portal .pt-tool{transition:none}}
+
+#ai-tool-portal .pt-card-top{gap:8px}
+#ai-tool-portal .pt-title-button{font-size:14px;line-height:21px}
+#ai-tool-portal .pt-card-version{flex-shrink:0;white-space:nowrap;font-size:11px;font-weight:500;line-height:20px;padding:0 6px;border-radius:5px;background:light-dark(#f0f1f3,#343841);color:light-dark(#646c78,#c1c7d0)}
+#ai-tool-portal .pt-card-dates{display:flex;flex-direction:column;align-items:flex-end;gap:1px;flex-shrink:0;color:light-dark(#a0aec0,#a0aec0);text-align:right;line-height:1.25}
+#ai-tool-portal .pt-card-dates>time{white-space:nowrap}
+#ai-tool-portal .pt-created{font-size:10px;opacity:.82}
+#ai-tool-portal .pt-updated{font-size:12px}
+#ai-tool-portal .pt-card-bottom{padding-top:8px;min-height:40px;gap:5px}
+#ai-tool-portal .pt-author-actions{display:flex;align-items:center;gap:2px;min-width:0}
+#ai-tool-portal .pt-author-actions .pt-icon-button{width:22px;height:24px;padding:3px}
+#ai-tool-portal .pt-author-actions .pt-icon-button svg{width:14px;height:14px}
+#ai-tool-portal .pt-topbar{gap:30px}
+#ai-tool-portal .pt-share-head{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-shrink:0;margin-bottom:16px}
+#ai-tool-portal .pt-share-head p{font-size:13px;color:var(--pt-muted);margin-top:6px}
+#ai-tool-portal .pt-share-badge{white-space:nowrap;font-size:11px;color:var(--pt-muted);background:var(--pt-code);border:1px solid var(--pt-line);border-radius:5px;padding:4px 8px}
+#ai-tool-portal .pt-share-progress{display:flex;gap:28px;list-style:none;margin:0 0 18px;padding:0;font-size:13px;flex-shrink:0;color:var(--pt-muted)}
+#ai-tool-portal .pt-share-progress li{display:flex;align-items:center;gap:8px}
+#ai-tool-portal .pt-share-progress li span{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;border:1px solid var(--pt-line);font-size:12px}
+#ai-tool-portal .pt-share-progress [aria-current=step]{color:var(--pt-accent)}
+#ai-tool-portal .pt-share-progress [aria-current=step] span{background:var(--pt-tint);border-color:var(--pt-accent)}
+#ai-tool-portal .pt-share-body{display:grid;grid-template-columns:minmax(0,7fr) minmax(290px,3fr);gap:20px;min-height:0;flex:1;padding:2px}
+#ai-tool-portal .pt-share-panel{min-width:0;min-height:0;max-height:100%;overflow:auto;overscroll-behavior:contain;background:var(--pt-panel);border:1px solid var(--pt-line);border-radius:12px;padding:22px;align-self:start}
+#ai-tool-portal .pt-share-compose{display:flex;flex-direction:column;align-self:stretch;gap:12px;overflow:hidden}
+#ai-tool-portal .pt-share-text{width:100%;flex:1;min-height:150px;resize:none;border:1px solid var(--pt-line);border-radius:8px;background:var(--pt-code);padding:13px 15px;font-size:13px;line-height:1.75}
+#ai-tool-portal .pt-share-caption{font-size:12px;color:var(--pt-muted);line-height:1.75}
+#ai-tool-portal .pt-share-foot{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:16px;flex-shrink:0;font-size:12px;color:var(--pt-muted)}
+#ai-tool-portal .pt-share-compose .pt-share-foot{margin:0}
+#ai-tool-portal .pt-share-foot .pt-button{flex-shrink:0}
+#ai-tool-portal .pt-share-steps{display:grid;gap:20px;list-style:none;margin:20px 0 0;padding:0;font-size:13px}
+#ai-tool-portal .pt-share-steps li{display:flex;gap:10px;align-items:flex-start}
+#ai-tool-portal .pt-share-steps svg{color:var(--pt-muted);margin-top:2px}
+#ai-tool-portal .pt-share-steps p{font-size:12px;color:var(--pt-muted);margin-top:4px;line-height:1.7}
+#ai-tool-portal .pt-share-wait{margin-top:24px;padding-top:18px;border-top:1px solid var(--pt-line);font-size:12px;color:var(--pt-muted);line-height:1.8}
+#ai-tool-portal .pt-share-wait .pt-link{margin-top:12px}
+#ai-tool-portal .pt-share-preview .pt-detail-io{margin-top:16px}
+#ai-tool-portal .pt-share-preview .pt-tags{margin:12px 0 16px}
+#ai-tool-portal .pt-share-preview .pt-detail-title h2{font-size:20px}
+#ai-tool-portal .pt-share-preview .pt-detail-section h2{font-size:13px;margin-bottom:5px}
+#ai-tool-portal .pt-share-preview .pt-detail-section p,#ai-tool-portal .pt-share-preview .pt-detail-list{font-size:13px;line-height:1.7}
+#ai-tool-portal .pt-share-preview .pt-detail-title{margin:10px 0 8px}
+#ai-tool-portal .pt-share-preview .pt-detail-section{margin-top:14px}
+#ai-tool-portal .pt-share-preview .pt-detail-io .pt-detail-section{margin:0}
+#ai-tool-portal .pt-share-facts{margin:16px 0 0;display:grid;gap:13px;font-size:13px}
+#ai-tool-portal .pt-share-facts>div{display:grid;grid-template-columns:62px minmax(0,1fr);gap:12px}
+#ai-tool-portal .pt-share-facts dt{color:var(--pt-muted)}
+#ai-tool-portal .pt-share-facts dd{margin:0;overflow-wrap:anywhere}
+#ai-tool-portal .pt-share-files{margin-top:18px;padding-top:16px;border-top:1px solid var(--pt-line);font-size:12px;color:var(--pt-muted);line-height:1.8}
+#ai-tool-portal .pt-share-result-heading{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+#ai-tool-portal .pt-share-result-heading svg{color:var(--pt-accent);width:22px;height:22px}
+#ai-tool-portal .pt-share-results{list-style:none;margin:18px 0 0;padding:0}
+#ai-tool-portal .pt-share-results li{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:10px;align-items:start;padding:14px 0;border-top:1px solid var(--pt-line);font-size:13px}
+#ai-tool-portal .pt-share-results li>svg{color:var(--pt-muted);margin-top:2px}
+#ai-tool-portal .pt-share-results li p{font-size:12px;color:var(--pt-muted);margin-top:4px;line-height:1.65}
+#ai-tool-portal .pt-share-result-state{font-size:12px;color:var(--pt-muted);white-space:nowrap}
+#ai-tool-portal .pt-share-results .is-failed{color:light-dark(#a95c24,#e9b47a)}
+#ai-tool-portal .pt-share-next{display:grid;gap:16px}
+#ai-tool-portal .pt-share-next .pt-button-primary{justify-content:center}
+@media(max-height:740px){#ai-tool-portal .pt-share-panel{padding:18px 20px}#ai-tool-portal .pt-share-head{margin-bottom:12px}#ai-tool-portal .pt-share-progress{margin-bottom:12px}#ai-tool-portal .pt-share-results li{padding:11px 0}}
+</style>
+<div id="ai-tool-portal">
+  <header class="pt-topbar">
+    <button class="pt-brand" data-home aria-label="AI应用广场首页"><span class="pt-logo"><i data-lucide="layers" aria-hidden="true"></i></span>AI应用广场</button>
+    <nav class="pt-nav" aria-label="主导航"><button data-nav="discover" aria-pressed="true">能力发现</button><button data-nav="favorites" aria-pressed="false">我的收藏 <span id="pt-fav-count">0</span></button></nav>
+    <div class="pt-header-actions"><span class="pt-top-note">示例数据 · 交互原型</span><button class="pt-link" data-nav="guide"><i data-lucide="plus" aria-hidden="true"></i>分享我的AI应用</button></div>
+  </header>
+  <main class="pt-main">
+    <section id="pt-home" class="is-landing" aria-label="能力发现">
+      <div class="pt-compose" id="pt-compose">
+        <div class="pt-intro"><h1>描述所需能力</h1><p>从工作目标出发，找到适用的工具与方法。</p></div>
+        <form id="pt-demand-form"><label for="pt-demand" class="pt-demand-label">需求描述</label><div class="pt-query-box"><i data-lucide="search" aria-hidden="true"></i><textarea id="pt-demand" maxlength="800" placeholder="例如：将 Word 转为 Markdown，并保留表格和图片。"></textarea><button type="submit" class="pt-button pt-button-primary">查找能力 <i data-lucide="arrow-up-right" aria-hidden="true"></i></button></div><div class="pt-query-help"><span id="pt-query-note">按已登记的能力与用途匹配 · 支持 Ctrl + Enter</span><button class="pt-link" type="button" id="pt-new-query" hidden>重新描述</button></div><span class="pt-sr-only" id="pt-query-error" role="alert"></span></form>
+        <div class="pt-examples"><div class="pt-examples-title">常见需求</div><div class="pt-example-grid" id="pt-examples"></div></div>
+        <div class="pt-browse-all"><button class="pt-link" data-tag-browse><i data-lucide="tags" aria-hidden="true"></i>按标签筛选</button><button class="pt-link" data-browse>浏览全部能力 <span id="pt-catalog-count">17</span><i data-lucide="arrow-right" aria-hidden="true"></i></button></div>
+      </div>
+      <section id="pt-results" aria-label="能力结果" hidden><div class="pt-toolbar"><div class="pt-results-title"><h2 id="pt-results-title">匹配结果</h2><span id="pt-results-count"></span></div><button class="pt-link" id="pt-browse-link" data-browse>浏览全部能力</button></div><div class="pt-filter-row"><div class="pt-filter-anchor"><button class="pt-button" id="pt-tag-toggle" aria-expanded="false" aria-controls="pt-tag-picker"><i data-lucide="tags" aria-hidden="true"></i>标签筛选</button><div class="pt-tag-picker" id="pt-tag-picker" hidden><div class="pt-picker-head"><span>标签由作者自定义 · 多选同时包含</span><button class="pt-icon-button" id="pt-tag-close" aria-label="关闭标签筛选"><i data-lucide="x" aria-hidden="true"></i></button></div><label class="pt-sr-only" for="pt-tag-search">搜索标签</label><input class="pt-tag-search" id="pt-tag-search" placeholder="搜索作者标签"><div id="pt-tag-options" class="pt-picker-options"></div><div class="pt-picker-footer"><span id="pt-tag-page-text"></span><div><button class="pt-link" id="pt-tag-prev">上一页</button><button class="pt-link" id="pt-tag-next">下一页</button><button class="pt-button" id="pt-tag-done">完成</button></div></div></div></div><div class="pt-filter-selected" id="pt-selected-tags"></div></div><div class="pt-directory-scroll"><div class="pt-grid" id="pt-tools"></div></div><div class="pt-pagination"><span id="pt-page-summary"></span><nav class="pt-pagination-controls" id="pt-page-controls" aria-label="结果分页"></nav></div></section>
+    </section>
+    <section id="pt-detail" hidden aria-label="能力详情"></section>
+    <section id="pt-guide" hidden aria-label="分享我的AI应用"></section>
+  </main>
+  <dialog id="pt-consult" class="pt-consult" aria-labelledby="pt-consult-title"><div class="pt-consult-heading"><h2 id="pt-consult-title">向作者咨询</h2><button class="pt-icon-button" data-close-consult aria-label="关闭咨询内容"><i data-lucide="x" aria-hidden="true"></i></button></div><p id="pt-consult-description"></p><label class="pt-sr-only" for="pt-consult-text">可编辑的咨询内容</label><textarea id="pt-consult-text"></textarea><div class="pt-consult-footer"><span id="pt-consult-message" class="pt-consult-message" role="status">仅生成咨询草稿，不会自动发送。</span><button class="pt-button pt-button-primary" data-copy-consult><i data-lucide="copy" aria-hidden="true"></i>复制内容</button></div></dialog>
+  <dialog id="pt-agent-access" class="pt-agent-access" aria-labelledby="pt-agent-title"><div class="pt-agent-heading"><h2 id="pt-agent-title">接入我的Agent</h2><button class="pt-icon-button" data-close-agent aria-label="关闭接入提示词"><i data-lucide="x" aria-hidden="true"></i></button></div><div class="pt-agent-meta"><span id="pt-agent-project"></span><span class="pt-card-version" id="pt-agent-version"></span></div><p class="pt-agent-intro">复制以下提示词，发送给你正在使用的 Agent，由它完成安装、配置与验证。</p><label class="pt-agent-label" for="pt-agent-text"><span>接入提示词</span><span id="pt-agent-source"></span></label><textarea id="pt-agent-text" class="pt-agent-text" readonly spellcheck="false"></textarea><div class="pt-agent-footer"><span class="pt-agent-message" id="pt-agent-message" role="status"></span><button class="pt-button pt-button-primary" data-copy-agent><i data-lucide="copy" aria-hidden="true"></i>复制接入提示词</button></div></dialog>
+  <section id="pt-platform-demo" class="pt-demo pt-platform-page" aria-label="存量代码改造平台示例" hidden></section>
+  <dialog id="pt-share-prompt" class="pt-agent-access" aria-labelledby="pt-share-prompt-title"><div class="pt-agent-heading"><h2 id="pt-share-prompt-title">交给Agent调整</h2><button class="pt-icon-button" data-share-close aria-label="关闭提示词"><i data-lucide="x" aria-hidden="true"></i></button></div><p class="pt-agent-intro" id="pt-share-prompt-note"></p><label class="pt-agent-label" for="pt-share-context-text">完整提示词 · 演示上下文</label><textarea id="pt-share-context-text" class="pt-agent-text" readonly spellcheck="false"></textarea><div class="pt-agent-footer"><span id="pt-share-context-message" class="pt-agent-message" role="status"></span><button class="pt-button pt-button-primary" data-share-copy-context><i data-lucide="copy" aria-hidden="true"></i>复制提示词</button></div></dialog>
+  <div id="pt-status" class="pt-status" role="status" hidden></div><div id="pt-live" class="pt-sr-only" aria-live="polite"></div>
+</div>
+<script type="application/json" id="pt-data">[]</script>
+<script type="application/json" id="pt-user-copy">[]</script>
+<script type="application/json" id="pt-capabilities">[]</script>
+<script type="application/json" id="pt-project-metadata">{}</script>
+<script>
+(()=>{
+  const root=document.getElementById('ai-tool-portal'),$=s=>root.querySelector(s);
+  const tools=JSON.parse(document.getElementById('pt-data').textContent);
+  const projectMetadata=new Map(JSON.parse(document.getElementById('pt-project-metadata').textContent).projects.map(x=>[x.id,x]));
+  const copies=new Map(JSON.parse(document.getElementById('pt-user-copy').textContent).map(x=>[x.id,x]));
+  const capabilities=new Map(JSON.parse(document.getElementById('pt-capabilities').textContent).map(x=>[x.id,x]));
+  const copy=t=>copies.get(t.id),cap=t=>capabilities.get(t.id)||{capability:t.name,keywords:[]};
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const ico=n=>`<i data-lucide="${n}" aria-hidden="true"></i>`;
+  const iconRender=()=>globalThis.lucide?.createIcons({attrs:{width:16,height:16}});
+
+  const examples=['将 Word 转为 Markdown，保留表格和图片','排查 Vue 页面内存泄漏','根据描述生成流程图','根据业务规则制作配置页面','查询并同步数据库中的数据','整理需求调研和访谈报告'];
+  const state={schema:5,nav:'discover',draft:'',query:'',browsing:false,page:1,favorites:[],selected:null,tab:'overview',method:0,share:{stage:'prompt',outcome:'idle',progress:0,copied:false,added:false},selectedTags:[],authorTags:{}};
+  let columns=4,pageSize=8,resizeFrame,toastTimer;
+  let tagPickerOpen=false,tagSearch='',tagPage=1;
+  let demo={kind:null,projectId:null,step:0,task:''};
+  const tagKey=value=>String(value).trim().replace(/\s+/g,' ').toLocaleLowerCase();
+  function cleanTags(values){const seen=new Set();return (Array.isArray(values)?values:[]).filter(x=>typeof x==='string').map(x=>x.trim().replace(/\s+/g,' ')).filter(x=>x&&[...x].length<=24&&!seen.has(tagKey(x))&&seen.add(tagKey(x))).slice(0,8)}
+  function tagsOf(t){return Object.hasOwn(state.authorTags,t.id)?state.authorTags[t.id]:t.tags}
+  function catalogTags(){const map=new Map();tools.forEach(t=>tagsOf(t).forEach(label=>{const key=tagKey(label);if(!map.has(key))map.set(key,{key,label,count:0});map.get(key).count++}));return [...map.values()].sort((a,b)=>b.count-a.count||a.label.localeCompare(b.label,'zh-CN'))}
+  function tagButtons(t){return tagsOf(t).length?`<div class="pt-tags" aria-label="作者标签">${tagsOf(t).map(label=>`<button class="pt-tag" data-filter-tag="${esc(label)}" aria-label="按标签 ${esc(label)} 筛选">${esc(label)}</button>`).join('')}</div>`:''}
+  function matches(){return baseMatches().filter(({t})=>state.selectedTags.every(label=>tagsOf(t).some(tag=>tagKey(tag)===tagKey(label))))}
+  function renderTagFilter(){
+    $('#pt-tag-toggle').setAttribute('aria-expanded',String(tagPickerOpen));$('#pt-tag-picker').hidden=!tagPickerOpen;
+    $('#pt-selected-tags').innerHTML=state.selectedTags.length?`<span class="pt-filter-hint">同时包含</span>${state.selectedTags.map(label=>`<button class="pt-tag" aria-pressed="true" data-remove-filter="${esc(label)}" aria-label="取消标签 ${esc(label)}">${esc(label)}${ico('x')}</button>`).join('')}<button class="pt-link" data-clear-tags>清空标签</button>`:'<span class="pt-filter-hint">按作者标签进一步筛选</span>';
+    renderTagOptions();iconRender();
+  }
+  function renderTagOptions(){const all=catalogTags().filter(x=>tagKey(x.label).includes(tagKey(tagSearch))),pages=Math.max(1,Math.ceil(all.length/10));tagPage=Math.min(tagPage,pages);$('#pt-tag-options').innerHTML=all.slice((tagPage-1)*10,tagPage*10).map(x=>`<button class="pt-picker-option" data-toggle-tag="${esc(x.label)}" aria-pressed="${state.selectedTags.some(t=>tagKey(t)===x.key)}">${ico(state.selectedTags.some(t=>tagKey(t)===x.key)?'check-square':'square')}<span>${esc(x.label)}</span><small>${x.count}</small></button>`).join('')||'<span class="pt-filter-hint">没有匹配的作者标签</span>';$('#pt-tag-page-text').textContent=`${all.length} 个标签 · ${tagPage} / ${pages}`;$('#pt-tag-prev').disabled=tagPage===1;$('#pt-tag-next').disabled=tagPage===pages;iconRender()}
+  function toggleTag(label){const exists=state.selectedTags.some(x=>tagKey(x)===tagKey(label));if(!exists&&state.selectedTags.length>=8){status('最多同时筛选 8 个标签');return}state.selectedTags=exists?state.selectedTags.filter(x=>tagKey(x)!==tagKey(label)):[...state.selectedTags,label];state.page=1;renderTagFilter();renderCards();$('#pt-live').textContent=`筛选后 ${matches().length} 项能力`;save()}
+  function closeTagPicker(){tagPickerOpen=false;renderTagFilter()}
+
+  const standalone=document.documentElement.hasAttribute('data-visualize-standalone');
+  const stopWords=new Set(['我想','我要','我们','需要','想要','帮我','一个','一种','可以','能够','什么','这个','工具','能力','查找','找到','使用','进行','完成','希望','能否','相关','一些','一下','然后','以及','并且','怎么','如何','支持','生成','处理','实现','根据','提供','将','转为','转成','转换','保留']);
+  const segmenter=typeof Intl.Segmenter==='function'?new Intl.Segmenter('zh-CN',{granularity:'word'}):null;
+  stopWords.add('描述');
+  // Preserve registered capability terms such as 流程图 and 内存泄漏 when generic segmentation splits them.
+  const capabilityTerms=[...new Set([...capabilities.values()].flatMap(c=>c.keywords.flatMap(k=>k.toLowerCase().match(/[a-z0-9+#]+|[\u4e00-\u9fff]+/g)||[])))].filter(x=>x.length>1&&!stopWords.has(x));
+  function tokens(value){const s=value.toLowerCase();const parts=segmenter?[...segmenter.segment(s)].filter(x=>x.isWordLike).map(x=>x.segment):s.match(/[a-z0-9+#]+|[\u4e00-\u9fff]{2,}/g)||[];const terms=[...new Set([...parts,...capabilityTerms.filter(x=>s.includes(x))].filter(x=>x.length>1&&!stopWords.has(x)))];return terms.filter(x=>!terms.some(other=>other!==x&&other.includes(x)));}
+  function baseMatches(){
+    if(state.nav==='favorites')return tools.filter(t=>state.favorites.includes(t.id)).map(t=>({t,hits:[]}));
+    if(state.browsing)return tools.map(t=>({t,hits:[]}));
+    if(!state.query)return [];
+    const q=state.query.toLowerCase(),terms=tokens(q);
+    const ranked=tools.map(t=>{const c=cap(t),p=copy(t),primary=[c.capability,p.summary,...c.keywords,...tagsOf(t)].join(' ').toLowerCase(),secondary=[t.name,t.technicalName,p.outcome,...t.inputs,...t.outputs].join(' ').toLowerCase();const hits=terms.filter(term=>primary.includes(term)||secondary.includes(term));const score=hits.reduce((n,term)=>n+(primary.includes(term)?3:1),0)+c.keywords.filter(k=>q.includes(k.toLowerCase())).length*5;return {t,hits,score};}).filter(r=>r.score>0);
+    const max=Math.max(0,...ranked.map(r=>r.score));
+    return ranked.filter(r=>r.score>=Math.max(2,max*.42)).sort((a,b)=>b.score-a.score||Number(a.t.id==='auroraflow')-Number(b.t.id==='auroraflow'));
+  }
+  function restore(saved){
+    const p=saved?.privateContent;if(!p||![3,4,5].includes(p.schema))return;
+    if(p.schema===5&&p.share){const s=p.share;state.share={stage:['prompt','preview','result'].includes(s.stage)?s.stage:'prompt',outcome:['idle','running','success','partial'].includes(s.outcome)?s.outcome:'idle',progress:Math.min(3,Math.max(0,Number(s.progress)||0)),copied:!!s.copied,added:!!s.added};if(state.share.outcome==='running'){state.share.stage=state.share.progress>=2?'result':'preview';state.share.outcome=state.share.progress>=2?'partial':'idle'}}
+    syncSharedApplication();state.favorites=Array.isArray(p.favorites)?p.favorites.filter(id=>tools.some(t=>t.id===id)):[];
+    state.selectedTags=cleanTags(p.selectedTags);state.authorTags={};if(p.authorTags&&typeof p.authorTags==='object')tools.forEach(t=>{if(Array.isArray(p.authorTags[t.id]))state.authorTags[t.id]=cleanTags(p.authorTags[t.id])});
+    state.nav=['discover','favorites','guide'].includes(p.nav)?p.nav:'discover';state.draft=String(p.draft||'').slice(0,800);state.query=String(p.query||'').slice(0,800);state.browsing=!!p.browsing;state.page=Math.max(1,Number(p.page)||1);state.selected=tools.some(t=>t.id===p.selected)?p.selected:null;state.tab=['overview','use','source'].includes(p.tab)?p.tab:'overview';state.method=Math.max(0,Number(p.method)||0);
+  }
+  function save(){const snapshot={modelContent:{portalView:state.nav,capabilityNeed:state.query||null,selectedTool:state.selected,selectedTags:state.selectedTags,publicationStage:state.share.stage},privateContent:{...state}};window.openai?.setWidgetState?.(snapshot).catch(()=>{});if(standalone)try{localStorage.setItem('ai-tool-portal-v3',JSON.stringify(snapshot))}catch{}}
+  function status(message){clearTimeout(toastTimer);$('#pt-status').textContent=message;$('#pt-status').hidden=!message;if(message)toastTimer=setTimeout(()=>$('#pt-status').hidden=true,3200)}
+  function renderNav(){root.querySelectorAll('[data-nav]').forEach(b=>b.setAttribute('aria-pressed',String(state.nav===b.dataset.nav)));$('#pt-fav-count').textContent=state.favorites.length;$('#pt-catalog-count').textContent=tools.length;}
+  const projectName=t=>t.name.replace(/（规划）$/, '');
+  function favorite(t){return `<button class="pt-icon-button" data-favorite="${esc(t.id)}" aria-label="${state.favorites.includes(t.id)?'取消收藏':'收藏'}${esc(cap(t).capability)}" aria-pressed="${state.favorites.includes(t.id)}">${ico('bookmark')}</button>`}
+  function cardTags(t){const tags=tagsOf(t),limit=tags.length>3?2:3;return `<div class="pt-tags pt-card-tags" aria-label="作者标签">${tags.slice(0,limit).map(label=>`<button class="pt-tag" data-filter-tag="${esc(label)}" aria-label="按标签 ${esc(label)} 筛选"><span class="pt-tag-label">${esc(label)}</span></button>`).join('')}${tags.length>limit?`<button class="pt-tag pt-tag-more" data-open="${esc(t.id)}" aria-label="查看全部 ${tags.length} 个标签">+${tags.length-limit}</button>`:''}</div>`}
+  function card({t}){const m=projectMetadata.get(t.id);return `<article class="pt-tool" data-tool="${esc(t.id)}" aria-label="${esc(projectName(t))}"><div class="pt-card-top"><button class="pt-title-button" data-open="${esc(t.id)}" aria-label="查看 ${esc(projectName(t))}">${esc(projectName(t))}</button><span class="pt-card-version" aria-label="项目版本 ${esc(m.version)}">v${esc(m.version)}</span></div><p class="pt-description">${esc(copy(t).summary)}</p>${cardTags(t)}<div class="pt-card-bottom"><div class="pt-author-actions"><span class="pt-card-author" aria-label="作者 ${esc(t.owner)}">${ico('user-round')}<span>${esc(copy(t).helpLabel)}</span></span>${favorite(t)}</div><div class="pt-card-dates"><time class="pt-created" datetime="${esc(m.createdAt)}" aria-label="创建时间 ${esc(m.createdAt)}">${esc(m.createdAt)}</time><time class="pt-updated" datetime="${esc(m.updatedAt)}" aria-label="最后更新时间 ${esc(m.updatedAt)}">${esc(m.updatedAt)}</time></div></div></article>`}
+  function renderCards(){
+    if($('#pt-results').hidden||$('#pt-home').hidden)return;
+    const found=matches(),pane=$('.pt-directory-scroll'),h=pane.clientHeight;
+    columns=4;pageSize=8;$('#pt-tools').style.setProperty('--pt-card-height',`${Math.min(226,Math.max(190,Math.floor((h-18)/2)))}px`);
+    function draw(){const pages=Math.max(1,Math.ceil(found.length/pageSize));state.page=Math.min(state.page,pages);const offset=(state.page-1)*pageSize;$('#pt-tools').style.setProperty('--pt-columns',columns);$('#pt-tools').innerHTML=found.length?found.slice(offset,offset+pageSize).map(card).join(''):`<div class="pt-empty"><h3>${state.selectedTags.length?'没有符合条件的能力':state.nav==='favorites'?'暂无收藏':'暂未找到匹配能力'}</h3><p>${state.selectedTags.length?'试试减少标签，或清空标签保留当前搜索。':state.nav==='favorites'?'在能力结果中收藏常用工具，方便再次访问。':'请补充工作目标、输入材料或预期产出。'}</p>${state.selectedTags.length?'<button class="pt-button" data-clear-tags>清空标签</button>':'<button class="pt-button" data-browse>浏览全部能力</button>'}</div>`;$('#pt-page-summary').textContent=found.length?`${offset+1}–${Math.min(offset+pageSize,found.length)} / ${found.length} 项`:'暂无结果';$('#pt-page-controls').innerHTML=pages>1?Array.from({length:pages},(_,i)=>`<button class="pt-page-button" data-page="${i+1}" ${state.page===i+1?'aria-current="page"':''}>${i+1}</button>`).join(''):'';}
+    draw();
+    $('#pt-results-title').textContent=state.nav==='favorites'?'我的收藏':state.browsing?'全部能力':'匹配结果';$('#pt-results-count').textContent=`${found.length} 项`;$('#pt-browse-link').hidden=state.browsing;pane.scrollTop=0;iconRender();
+  }
+  function renderHome(){const landing=state.nav==='discover'&&!state.query&&!state.browsing;$('#pt-home').classList.toggle('is-landing',landing);$('#pt-compose').hidden=state.nav==='favorites';$('#pt-results').hidden=landing;$('#pt-demand').value=state.draft;$('#pt-new-query').hidden=landing;$('#pt-query-note').classList.remove('pt-error');$('#pt-query-note').textContent='按已登记的能力与用途匹配 · 支持 Ctrl + Enter';$('#pt-query-error').textContent='';renderTagFilter();renderCards();}
+  function submit(){const value=$('#pt-demand').value.trim();if(!value){$('#pt-query-note').textContent='请填写工作目标或预期产出。';$('#pt-query-note').classList.add('pt-error');$('#pt-query-error').textContent='请填写工作目标或预期产出。';$('#pt-demand').focus();return}Object.assign(state,{nav:'discover',draft:value,query:value,browsing:false,page:1,selected:null});render();$('#pt-live').textContent=`已找到 ${matches().length} 项相关能力`;save();}
+  function home(){tagPickerOpen=false;Object.assign(state,{nav:'discover',draft:'',query:'',browsing:false,page:1,selected:null,selectedTags:[]});render();save();}
+  function browse(){tagPickerOpen=false;Object.assign(state,{nav:'discover',draft:'',query:'',browsing:true,page:1,selected:null,selectedTags:[]});render();save();}
+  // Entries are actionable only when their registered target or instructions exist.
+  // The delivery form alone never establishes that an application is available.
+  function entryUrl(value){try{const url=new URL(value);return ['http:','https:'].includes(url.protocol)?url.href:null}catch{return null}}
+  function accessMode(t,m){return m?.accessMode||projectMetadata.get(t.id)?.accessMode||'agent'}
+  function platformUrl(m){if(m?.demo&&m.demoKind==='app'){const id=m.demoProjectId;if(!projectMetadata.get(id)?.platformDemo)return null;const url=new URL('portal.html',standalone?location.href:'http://192.168.2.145:16088/preview/mv0rucyluos3nt/');url.searchParams.set('platform-demo',id);return url.href}return entryUrl(m?.url)}
+  function detailEntries(t){return (projectMetadata.get(t.id)?.entries||t.entries||[]).filter(m=>m.status!=='unavailable'&&(accessMode(t,m)==='platform'?platformUrl(m):m.onboardingPrompt?.trim()))}
+  const detailList=items=>`<ul class="pt-detail-list">${(items?.length?items:['尚未登记']).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  function detailEntryState(t){
+    const metadata=projectMetadata.get(t.id)||{},planned=metadata.lifecycle==='planned',entries=planned?[]:detailEntries(t);
+    state.method=Math.max(0,Math.min(state.method,entries.length-1));
+    return {planned,entries,m:entries[state.method]};
+  }
+  function usageGuide(t,{planned,m}){
+    return `<details class="pt-project-info pt-usage-guide" id="pt-entry-guide" open><summary>使用步骤与说明</summary><p class="pt-usage-context"><strong>${planned?'当前建议':'开始之前'}：</strong>${esc(copy(t).firstStep)}</p>${m?.requirements?.length?`<p class="pt-usage-context"><strong>使用条件：</strong>${m.requirements.map(esc).join('；')}</p>`:''}${m?.steps?.length?`<ol class="pt-entry-steps">${m.steps.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>`:m?.description?`<p class="pt-usage-context">${esc(m.description)}</p>`:''}${m?.command||m?.content?`<pre class="pt-code" id="pt-entry-copy-text">${esc(m.command||m.content)}</pre>`:''}</details>`;
+  }
+  function startPanel(t,{planned,entries,m}){
+    const ready=!!m;
+    const platform=accessMode(t,m)==='platform';
+    const statusLabel=planned?'方案阶段':ready?(m.demo?'交互示例':platform?'平台链接已提供':'接入提示词已提供'):(platform?'平台链接待提供':'接入提示词待提供');
+    const primary=platform&&ready?`<a class="pt-button pt-button-primary" href="${esc(platformUrl(m))}" target="_blank" rel="noopener noreferrer">打开平台${ico('arrow-up-right')}</a>`:`<button class="pt-button pt-button-primary" ${ready?'data-agent-access':'disabled'}>${ico(platform?'external-link':'bot')}${platform?'打开平台':'接入我的Agent'}</button>`;
+    return `<aside class="pt-start-panel" aria-label="使用入口"><div><h2>使用入口</h2><span class="pt-entry-status ${ready?'is-ready':''}">${statusLabel}</span></div>${entries.length>1?`<label class="pt-section-label" style="margin:0" for="pt-entry-select">选择使用入口<select id="pt-entry-select" class="pt-entry-select">${entries.map((entry,i)=>`<option value="${i}" ${i===state.method?'selected':''}>${esc(entry.label||'使用入口')}</option>`).join('')}</select></label>`:''}${primary}<div class="pt-start-contact"><span>作者 · ${esc(copy(t).helpLabel||t.owner)}</span><button class="pt-link" data-consult>使用咨询${ico('arrow-up-right')}</button></div></aside>`;
+  }
+  function openAgentAccess(){
+    const t=tools.find(t=>t.id===state.selected);if(!t)return;
+    const {m}=detailEntryState(t);if(!m||accessMode(t,m)!=='agent'||!m.onboardingPrompt?.trim())return;
+    const metadata=projectMetadata.get(t.id);
+    $('#pt-agent-project').textContent=projectName(t);$('#pt-agent-version').textContent=`v${metadata.version}`;
+    $('#pt-agent-source').textContent=m.demo?'设计示例':'作者提供';$('#pt-agent-text').value=m.onboardingPrompt;
+    $('#pt-agent-message').textContent=m.demo?'Mock 提示词：用于体验接入流程，不执行真实安装。':'接入由你的 Agent 执行，完成后查看验证结果。';
+    $('#pt-agent-access').showModal();$('#pt-agent-text').scrollTop=0;
+  }
+  async function copyAgentPrompt(){
+    const field=$('#pt-agent-text'),message=$('#pt-agent-message');let copied=false;
+    try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(field.value);copied=true}}catch{}
+    if(!copied){field.focus();field.select();try{copied=document.execCommand('copy')}catch{}}
+    message.textContent=copied?'已复制，粘贴到你的 Agent 对话即可。':'已选中完整提示词，请按 Ctrl + C 复制。';
+  }
+  function renderDetail(){
+    const t=tools.find(t=>t.id===state.selected);if(!t)return;
+    const entry=detailEntryState(t);
+    const metadata=projectMetadata.get(t.id)||{},version=metadata.version?`v${metadata.version}`:'版本未登记';
+    const dates=[['createdAt','pt-created','创建时间'],['updatedAt','pt-updated','最后更新时间']].map(([key,cls,label])=>metadata[key]?`<time class="${cls}" datetime="${esc(metadata[key])}" aria-label="${label} ${esc(metadata[key])}">${esc(metadata[key])}</time>`:`<span class="${cls}">${label}未登记</span>`).join('');
+    const sourceRows=[['项目版本',version],['创建时间',metadata.createdAt||'未登记'],['更新时间',metadata.updatedAt||'未登记'],['作者',t.owner],['项目仓库',metadata.repository||t.source],['源码与文档',metadata.documentationSummary||'README、应用资料与 Agent 接入说明（示例）'],['首次任务',t.exampleTask||'用一份示例文档验证 Markdown 和图片输出'],['验证方法',metadata.verification||'确认示例输出完整并核对引用资源'],['使用边界',(t.boundaries||['示例内容用于流程设计，不代表实际业务验证']).join('；')],['数据说明','完整 Mock 资料，不代表真实项目发布信息']];
+    $('#pt-detail').innerHTML=`<button class="pt-link pt-back" data-back>${ico('arrow-left')}${state.nav==='favorites'?'返回我的收藏':'返回能力结果'}</button><header class="pt-detail-header"><div class="pt-detail-heading"><div class="pt-detail-title"><h1>${esc(projectName(t))}</h1><span class="pt-card-version" aria-label="项目版本 ${esc(metadata.version||'未登记')}">${esc(version)}</span></div><p class="pt-detail-description">${esc(copy(t).summary)}</p><div class="pt-detail-meta"><span>${ico('user-round')}${esc(copy(t).helpLabel||t.owner)}</span>${tagButtons(t)}</div></div><div class="pt-detail-side-meta"><div class="pt-card-dates">${dates}</div>${favorite(t)}</div></header><div class="pt-detail-body"><article class="pt-detail-main"><section class="pt-detail-section"><h2>${ico('scan-line')}适用场景</h2><p>${esc(t.scenario)}</p></section><div class="pt-detail-io"><section class="pt-detail-section"><h2>${ico('folder-input')}准备材料</h2>${detailList(t.inputs)}</section><section class="pt-detail-section"><h2>${ico('file-check-2')}预期产出</h2>${detailList(t.outputs)}</section></div>${usageGuide(t,entry)}<details class="pt-project-info" id="pt-project-info"><summary>项目资料与使用边界</summary>${sourceRows.map(([label,value])=>`<div class="pt-source-row"><span>${esc(label)}</span><span>${esc(value)}</span></div>`).join('')}${t.needs?.length?`<div class="pt-source-row"><span>待确认事项</span><span>${t.needs.map(esc).join('；')}</span></div>`:''}</details></article>${startPanel(t,entry)}</div>`;
+    iconRender();
+  }
+  function saveDemoFile(name,blob){if(!standalone)return false;const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name;root.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);return true}
+  /* PT_PLATFORM_DEMO */
+  function openConsult(){
+    const t=tools.find(t=>t.id===state.selected);if(!t)return;
+    const planned=projectMetadata.get(t.id)?.lifecycle==='planned';
+    $('#pt-consult-description').textContent=`复制以下内容后，通过你已有的沟通渠道联系 ${copy(t).helpLabel||t.owner}。`;
+    $('#pt-consult-text').value=`你好，我想了解「${projectName(t)}」。\n\n我的需求：${state.query||'（请补充你的工作目标）'}\n\n${planned?'希望了解当前方案进展、适用范围和可体验的时间。':'请提供适用的使用入口、环境与权限要求，以及首次使用指引。'}\n\n谢谢。`;
+    $('#pt-consult-message').textContent='仅生成咨询草稿，不会自动发送。';
+    $('#pt-consult').showModal();
+  }
+  async function copyText(text,field,message){
+    try{if(!navigator.clipboard?.writeText)throw Error('Clipboard unavailable');await navigator.clipboard.writeText(text);if(message)message.textContent='已复制，可粘贴到沟通工具。';else status('已复制')}
+    catch{if(field){field.focus();field.select();if(message)message.textContent='已选中内容，请按 Ctrl + C 复制。'}else status('请展开说明，选择并复制内容。')}
+  }
+  /* PT_PUBLISHER_FLOW */
+  function render(){syncSharedApplication();renderNav();$('#pt-home').hidden=!!state.selected||state.nav==='guide';$('#pt-detail').hidden=!state.selected;$('#pt-guide').hidden=!!state.selected||state.nav!=='guide';if(!state.selected)$('#pt-detail').replaceChildren();if(state.nav!=='guide')$('#pt-guide').replaceChildren();if(state.selected)renderDetail();else if(state.nav==='guide')renderGuide();else renderHome();iconRender();}
+  root.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b){const card=e.target.closest('[data-tool]');if(card&&root.contains(card)&&!window.getSelection()?.toString()){state.selected=card.dataset.tool;state.tab='overview';state.method=0;render();save()}return}if(!root.contains(b)||b.disabled)return;
+    if(!b.closest('.pt-filter-anchor'))tagPickerOpen=false;
+    if(b.hasAttribute('data-home')||b.id==='pt-new-query'){home();$('#pt-demand').focus()}
+    else if(b.hasAttribute('data-tag-browse')){browse();tagPickerOpen=true;renderTagFilter();$('#pt-tag-search').focus()}
+    else if(b.id==='pt-tag-toggle'){tagPickerOpen=!tagPickerOpen;renderTagFilter();if(tagPickerOpen)$('#pt-tag-search').focus()}
+    else if(['pt-tag-close','pt-tag-done'].includes(b.id)){closeTagPicker();$('#pt-tag-toggle').focus()}
+    else if(b.id==='pt-tag-prev'||b.id==='pt-tag-next'){tagPage+=b.id==='pt-tag-prev'?-1:1;renderTagOptions()}
+    else if(b.hasAttribute('data-toggle-tag'))toggleTag(b.dataset.toggleTag);
+    else if(b.hasAttribute('data-remove-filter'))toggleTag(b.dataset.removeFilter);
+    else if(b.hasAttribute('data-clear-tags')){state.selectedTags=[];state.page=1;renderTagFilter();renderCards();save()}
+    else if(b.hasAttribute('data-filter-tag')){const label=b.dataset.filterTag;state.selectedTags=cleanTags([...state.selectedTags,label]);state.selected=null;state.page=1;if(state.nav==='guide'){state.nav='discover';state.browsing=true;state.query='';state.draft=''}tagPickerOpen=false;render();save()}
+    else if(b.hasAttribute('data-share-copy')){state.share.copied=await copySharePrompt($('#pt-publish-text'),$('#pt-publish-copy-message'));save()}
+    else if(b.hasAttribute('data-share-preview')){state.share.stage='preview';renderGuide();save()}
+    else if(b.hasAttribute('data-share-prompt')){state.share.stage='prompt';renderGuide();save()}
+    else if(b.hasAttribute('data-share-adjust'))openShareContext('adjust');
+    else if(b.hasAttribute('data-share-repair'))openShareContext('repair');
+    else if(b.hasAttribute('data-share-close'))$('#pt-share-prompt').close();
+    else if(b.hasAttribute('data-share-copy-context'))await copySharePrompt($('#pt-share-context-text'),$('#pt-share-context-message'));
+    else if(b.hasAttribute('data-share-publish'))await publishDemo('success');
+    else if(b.hasAttribute('data-share-fail'))await publishDemo('partial');
+    else if(b.hasAttribute('data-share-retry'))await publishDemo('success',true);
+    else if(b.hasAttribute('data-share-restart')){Object.assign(state.share,{stage:'prompt',outcome:'idle',progress:0,copied:false});renderGuide();save()}
+    else if(b.hasAttribute('data-share-view')){syncSharedApplication();Object.assign(state,{nav:'discover',selected:shareApp.id,browsing:true,draft:'',query:'',selectedTags:[],page:Math.ceil(tools.length/pageSize),method:0});render();save()}
+    else if(b.hasAttribute('data-browse'))browse();
+    else if(b.hasAttribute('data-example')){$('#pt-demand').value=examples[Number(b.dataset.example)];submit()}
+    else if(b.dataset.nav){state.nav=b.dataset.nav;state.selected=null;state.page=1;render();save()}
+    else if(b.dataset.open){state.selected=b.dataset.open;state.tab='overview';state.method=0;render();save()}
+    else if(b.hasAttribute('data-back')){state.selected=null;if(state.nav==='guide')state.nav='discover';render();save()}
+    else if(b.dataset.favorite){const id=b.dataset.favorite;state.favorites=state.favorites.includes(id)?state.favorites.filter(x=>x!==id):[...state.favorites,id];render();save()}
+    else if(b.dataset.page){state.page=Number(b.dataset.page);renderCards();save()}
+    else if(b.hasAttribute('data-agent-access'))openAgentAccess();
+    else if(b.hasAttribute('data-close-agent'))$('#pt-agent-access').close();
+    else if(b.hasAttribute('data-copy-agent'))await copyAgentPrompt();
+    else if(b.hasAttribute('data-demo-restart')){demo.step=0;renderPlatformDemo()}
+    else if(b.hasAttribute('data-demo-next')){demo.step=Math.min(2,demo.step+1);renderPlatformDemo()}
+    else if(b.hasAttribute('data-demo-back')){demo.step=Math.max(0,demo.step-1);renderPlatformDemo()}
+    else if(b.hasAttribute('data-demo-report'))downloadPlatformReport();
+    else if(b.hasAttribute('data-consult'))openConsult();
+    else if(b.hasAttribute('data-close-consult'))$('#pt-consult').close();
+    else if(b.hasAttribute('data-copy-consult'))await copyText($('#pt-consult-text').value,$('#pt-consult-text'),$('#pt-consult-message'));
+    else if(b.hasAttribute('data-project-info')){const panel=$('#pt-project-info');panel.open=true;panel.scrollIntoView({block:'nearest'});panel.querySelector('summary').focus()}
+    else if(b.dataset.tab){state.tab=b.dataset.tab;renderDetail();save()}
+    else if(b.hasAttribute('data-method')){state.method=Number(b.dataset.method);renderDetail();save()}
+  });
+  root.addEventListener('change',e=>{if(e.target.id==='pt-entry-select'){state.method=Number(e.target.value);renderDetail();$('#pt-entry-select')?.focus();save()}else if(e.target.id==='pt-demo-task')demo.task=e.target.value;});
+  root.addEventListener('keydown',e=>{if(e.key==='Escape'&&tagPickerOpen){closeTagPicker();$('#pt-tag-toggle').focus()}});
+  document.addEventListener('click',e=>{if(tagPickerOpen&&!e.composedPath().some(node=>node.classList?.contains('pt-filter-anchor')||node.hasAttribute?.('data-tag-browse')))closeTagPicker()});
+  $('#pt-tag-search').addEventListener('input',e=>{tagSearch=e.target.value;tagPage=1;renderTagOptions()});
+  $('#pt-demand-form').addEventListener('submit',e=>{e.preventDefault();submit()});
+  $('#pt-demand').addEventListener('input',e=>{state.draft=e.target.value;$('#pt-query-error').textContent='';$('#pt-query-note').classList.remove('pt-error');$('#pt-query-note').textContent=state.query&&state.draft.trim()!==state.query?'需求已修改，点击“查找能力”更新结果。':'按已登记的能力与用途匹配 · 支持 Ctrl + Enter'});
+  $('#pt-demand').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();submit()}});
+  document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)){e.preventDefault();state.nav='discover';state.selected=null;render();$('#pt-demand').focus()}});
+  window.addEventListener('openai:set_globals',e=>{if(e.detail?.globals?.widgetState){restore(e.detail.globals.widgetState);render()}});
+  new ResizeObserver(()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(renderCards)}).observe($('.pt-directory-scroll'));
+  $('#pt-examples').innerHTML=examples.map((text,i)=>`<button type="button" class="pt-example" data-example="${i}">${esc(text)}${ico('arrow-up-right')}</button>`).join('');
+  if(standalone)try{restore(JSON.parse(localStorage.getItem('ai-tool-portal-v3')))}catch{}
+  restore(window.openai?.widgetState);render();
+  if(standalone){const id=new URLSearchParams(location.search).get('platform-demo'),m=projectMetadata.get(id);if(m?.platformDemo){root.classList.add('is-platform-demo');demo={kind:'app',projectId:id,step:0,task:m.platformDemo.tasks[0]};renderPlatformDemo();$('#pt-platform-demo').hidden=false;document.title=tools.find(t=>t.id===id).name+' · Mock 工作台'}}
+})();
+</script>

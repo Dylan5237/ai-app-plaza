@@ -1,0 +1,25 @@
+{
+  "name": "ai-app-plaza",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "generate": "python scripts/apply_compact_portal.py && node scripts/build_fuxi_portal.cjs",
+    "dev": "npm run generate && vite --host 127.0.0.1",
+    "build": "npm run generate && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node tests/mock-v13-qa.cjs && node tests/publisher-v13-qa.cjs"
+  },
+  "dependencies": {
+    "element-plus": "2.11.8",
+    "lucide": "1.17.0",
+    "vue": "3.5.41"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "4.6.2",
+    "playwright": "1.62.1",
+    "vite": "5.4.21"
+  }
+}

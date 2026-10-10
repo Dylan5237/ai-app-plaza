@@ -1,0 +1,121 @@
+[
+  {
+    "id": "heap-hunter",
+    "summary": "排查 Vue 内存泄漏，分析堆快照，并在 CI 中检查新增问题。",
+    "helpLabel": "钟晓英",
+    "outcome": "问题位置清单、HTML 或 JSON 检测报告、CI 检查结果",
+    "firstStep": "先准备 Vue 项目源码；如做前后对比，再备堆快照和可选基线。"
+  },
+  {
+    "id": "code-remold",
+    "summary": "按统一规则批量整改多个代码仓库，先查看改动计划，再确认执行。",
+    "helpLabel": "郭梓萌",
+    "outcome": "改动计划、代码差异、独立合并请求与整改报告",
+    "firstStep": "先明确代码仓库和整改范围，备好模板；执行改写前需人工审批计划。"
+  },
+  {
+    "id": "zoebrowser-plugin-skill",
+    "summary": "把接口文档与 DLL 转为浏览器插件工程，附带测试页面。",
+    "helpLabel": "许晓晨",
+    "outcome": "插件工程、JavaScript 包、测试页与 DLL 核验结果",
+    "firstStep": "先整理插件名称、项目地址和接口文档；如涉及 DLL，也一并准备。"
+  },
+  {
+    "id": "intelligent-inspection",
+    "summary": "根据 Trace ID 或问题描述，查找异常原因并整理诊断依据。",
+    "helpLabel": "阮胜",
+    "outcome": "诊断报告、证据链与置信度、时序图和治理报告",
+    "firstStep": "先准备 Trace ID、事务 ID 或问题描述，并确认观测数据的访问条件。"
+  },
+  {
+    "id": "config-page-assistant",
+    "summary": "把业务规则转为配置页面，复用已有模板和组件。",
+    "helpLabel": "陈圣",
+    "outcome": "页面契约、预览入口、组件需求记录与页面更新结果",
+    "firstStep": "先整理业务规则与页面需求；组件信息和低代码平台接入条件需另行确认。"
+  },
+  {
+    "id": "integration-plugin",
+    "summary": "生成 Mock 和接口测试用例，对照请求、响应和运行日志。",
+    "helpLabel": "方晓茹",
+    "outcome": "Mock 写回回执、测试用例、请求响应与证据索引",
+    "firstStep": "先准备接口定义、Mock 节点和测试链路，再确认插件宿主及所需权限。"
+  },
+  {
+    "id": "document-to-markdown",
+    "summary": "把多种格式的文档转为 Markdown，整理图片和引用资源。",
+    "helpLabel": "许晓晨",
+    "outcome": "Markdown 文档及图片、引用资源",
+    "firstStep": "先准备待转换的文档，并查看支持格式、容量限制和转换边界说明。"
+  },
+  {
+    "id": "sky-tools",
+    "summary": "集中查找代码、阅读 CI 日志、检查服务器和处理部署任务。",
+    "helpLabel": "柯尧麒",
+    "outcome": "检索和诊断结果、部署配置、操作记录",
+    "firstStep": "先明确项目、版本和目标环境；查询或部署前需确认 GitLab 与服务器权限。"
+  },
+  {
+    "id": "research-skill",
+    "summary": "组织调研计划、访谈记录和结论，形成可追溯的调研报告。",
+    "helpLabel": "邓鹏",
+    "outcome": "调研计划与提纲、证据记录、可追溯报告",
+    "firstStep": "先明确调研目标，整理背景材料和访谈、问卷或观察记录。"
+  },
+  {
+    "id": "intelligent-data-workbench",
+    "summary": "查表、问数、同步数据，定位同步问题并核对结果。",
+    "helpLabel": "柯尧麒",
+    "outcome": "查询或同步结果、诊断与对账报告、表关系记录",
+    "firstStep": "先明确数据库和表范围、查询或同步需求，并确认相应数据访问权限。"
+  },
+  {
+    "id": "auroraflow",
+    "summary": "规划中的需求工作台，用于串联调研、设计、评审和版本记录。",
+    "helpLabel": "邓鹏",
+    "outcome": "规划中的需求与设计文档、评审意见和版本记录",
+    "firstStep": "先整理需求过程记录、相关知识和评审意见；当前材料仅描述规划范围。"
+  },
+  {
+    "id": "data-governance",
+    "summary": "将非结构化资料整理为业务记录，关联字典标准并人工校对。",
+    "helpLabel": "陈航飞",
+    "outcome": "结构化记录、标准对应关系、知识反馈与操作指引",
+    "firstStep": "先准备文本资料、业务字典和标准，并明确人工审核与修订要求。"
+  },
+  {
+    "id": "task-execution-tracker",
+    "summary": "拆解长任务并记录进度，方便中断后继续。",
+    "helpLabel": "方晓茹",
+    "outcome": "任务进度与接续记录",
+    "firstStep": "先写清长任务目标和当前进度；工具来源、入口及版本仍需确认。"
+  },
+  {
+    "id": "mermaid-diagram",
+    "summary": "根据流程或架构描述生成 Mermaid 图，检查渲染结果。",
+    "helpLabel": "方晓茹",
+    "outcome": "Mermaid 图与渲染结果",
+    "firstStep": "先描述要表达的流程或设计关系；工具来源、版本和实际入口仍待确认。"
+  },
+  {
+    "id": "deepseek-harness",
+    "summary": "在 AI 助手中组织代码生成、自测和多智能体协作。",
+    "helpLabel": "方晓茹",
+    "outcome": "任务产物与协作记录",
+    "firstStep": "先整理任务目标与所需工具配置，并确认宿主来源、版本和连接权限。"
+  },
+  {
+    "id": "docx-to-md-enhanced",
+    "summary": "将 Word 文档转为 Markdown，处理表格、代码和图片。",
+    "helpLabel": "方晓茹",
+    "outcome": "Markdown 文档及配套资源",
+    "firstStep": "先准备待转换的 Word 文档；使用前需确认工具来源、版本和支持条件。"
+  },
+  {
+    "id": "meow-workflow-log-analysis",
+    "summary": "分析多智能体工作流日志，定位任务失败的环节。",
+    "helpLabel": "方晓茹",
+    "outcome": "工作流问题定位结论",
+    "firstStep": "先准备待分析的工作流日志，并确认工具来源、运行入口及支持范围。"
+  }
+]

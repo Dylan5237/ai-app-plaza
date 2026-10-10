@@ -1,0 +1,830 @@
+[
+  {
+    "id": "heap-hunter",
+    "name": "Heap Hunter 前端内存检测",
+    "technicalName": "heap-leak-detector",
+    "forms": [
+      "Skill",
+      "CLI与脚本"
+    ],
+    "roles": [
+      "研发",
+      "测试"
+    ],
+    "scenario": "检查 Vue 源码中的泄漏风险，分析 Chrome 堆快照，在提交或 CI 中检查新增问题。",
+    "owner": "钟晓英",
+    "tags": [
+      "前端",
+      "内存分析",
+      "CI"
+    ],
+    "evidenceLabel": "源码可见｜检测引擎未运行",
+    "inputs": [
+      "项目源码",
+      "单份或三阶段堆快照",
+      "可选比较基线"
+    ],
+    "outputs": [
+      "文件与行号问题清单",
+      "HTML / JSON 报告",
+      "CI 检查结果"
+    ],
+    "source": "前端内存抓手-钟晓英.zip",
+    "needs": [
+      "正式仓库、版本和内部使用范围",
+      "支持宿主与安装步骤",
+      "Node / Python 规则差异及手册缺失项说明"
+    ],
+    "methods": [
+      {
+        "type": "install",
+        "label": "Skill 安装"
+      },
+      {
+        "type": "command",
+        "label": "本地命令行"
+      },
+      {
+        "type": "command",
+        "label": "CI 接入"
+      },
+      {
+        "type": "download",
+        "label": "工具包与源码"
+      },
+      {
+        "type": "read",
+        "label": "离线手册"
+      }
+    ]
+  },
+  {
+    "id": "code-remold",
+    "name": "存量代码改造平台",
+    "technicalName": "",
+    "forms": [
+      "平台",
+      "知识与模板"
+    ],
+    "roles": [
+      "研发",
+      "测试",
+      "运维"
+    ],
+    "scenario": "多仓扫描、计划预览与审批、沙箱改写、编译校验、独立 MR 和留痕报告。",
+    "owner": "郭梓萌",
+    "tags": [
+      "代码整改",
+      "GitLab",
+      "研发效能"
+    ],
+    "evidenceLabel": "材料说明｜运行未验证",
+    "inputs": [
+      "代码仓库与范围",
+      "整改模板",
+      "人工批准的改写计划"
+    ],
+    "outputs": [
+      "计划 / Diff",
+      "独立 MR",
+      "整改报告与台账"
+    ],
+    "source": "第三季度AI专题汇报-郭梓萌.pptx",
+    "needs": [
+      "实际平台入口与仓库权限",
+      "真实环境端到端结果",
+      "模板格式和版本信息"
+    ],
+    "methods": [
+      {
+        "type": "visit",
+        "label": "访问整改平台"
+      },
+      {
+        "type": "read",
+        "label": "整改类型与模板"
+      },
+      {
+        "type": "copy",
+        "label": "规则与模板复用"
+      }
+    ]
+  },
+  {
+    "id": "zoebrowser-plugin-skill",
+    "name": "浏览器插件开发 Skill",
+    "technicalName": "create-zoebrowser-plugin",
+    "forms": [
+      "Skill"
+    ],
+    "roles": [
+      "研发",
+      "实施"
+    ],
+    "scenario": "把厂商接口文档与 DLL 转成可编译、可测试的 C++ / JS 插件工程。",
+    "owner": "许晓晨",
+    "tags": [
+      "插件开发",
+      "C++ / JS",
+      "接口文档"
+    ],
+    "evidenceLabel": "材料说明｜运行未验证",
+    "inputs": [
+      "插件名称与项目地址",
+      "接口文档",
+      "可选 DLL"
+    ],
+    "outputs": [
+      "VS2012 插件工程",
+      "JS 包与测试页",
+      "DLL 导出核验结果"
+    ],
+    "source": "AI课题-浏览器插件AI技能-总结-许晓晨.pptx",
+    "needs": [
+      "Skill 仓库与可安装版本",
+      "兼容宿主及依赖要求",
+      "许可、维护责任与可复现示例"
+    ],
+    "methods": [
+      {
+        "type": "install",
+        "label": "Skill 安装"
+      },
+      {
+        "type": "read",
+        "label": "查看技能说明"
+      },
+      {
+        "type": "read",
+        "label": "查看示例工程说明"
+      }
+    ]
+  },
+  {
+    "id": "intelligent-inspection",
+    "name": "智能巡检与根因诊断",
+    "technicalName": "",
+    "forms": [
+      "平台",
+      "API与MCP"
+    ],
+    "roles": [
+      "研发",
+      "运维",
+      "测试"
+    ],
+    "scenario": "以 Trace ID、事务 ID 或自然语言关联业务观测数据，生成根因、证据链和建议。",
+    "owner": "阮胜",
+    "tags": [
+      "智能巡检",
+      "根因诊断",
+      "可观测性"
+    ],
+    "evidenceLabel": "材料称 OpenAPI 已就绪｜接口与运行未核",
+    "inputs": [
+      "Trace ID / 事务 ID",
+      "自然语言问题",
+      "观测数据与代码访问"
+    ],
+    "outputs": [
+      "根因报告",
+      "证据链 / 置信度",
+      "时序图与治理报告"
+    ],
+    "source": "AI Agent 驱动的智能巡检平台-阮胜.pptx",
+    "needs": [
+      "部署入口、环境与账户申请方式",
+      "API 文档与认证方式",
+      "可复核的真实诊断样例"
+    ],
+    "methods": [
+      {
+        "type": "visit",
+        "label": "访问巡检平台"
+      },
+      {
+        "type": "connect",
+        "label": "OpenAPI 接入"
+      },
+      {
+        "type": "read",
+        "label": "诊断能力与边界"
+      }
+    ]
+  },
+  {
+    "id": "config-page-assistant",
+    "name": "配置页面制作助手",
+    "technicalName": "",
+    "forms": [
+      "Skill",
+      "工作流",
+      "插件与集成"
+    ],
+    "roles": [
+      "产品",
+      "研发",
+      "测试"
+    ],
+    "scenario": "分析页面结构、选择模板、匹配真实组件，生成契约并发布配置页；组件完成后原页补录。",
+    "owner": "陈圣",
+    "tags": [
+      "低代码",
+      "页面生成",
+      "业务集成"
+    ],
+    "evidenceLabel": "历史案例截图｜当前运行未验证",
+    "inputs": [
+      "业务规则与页面需求",
+      "组件 Meta",
+      "页面更新意图"
+    ],
+    "outputs": [
+      "页面契约",
+      "预览 / 设计器入口",
+      "组件需求记录",
+      "原位更新结果"
+    ],
+    "source": "配置页面制作助手建设成果-陈圣.pptx",
+    "needs": [
+      "真实 Skill / 助手包及触发方式",
+      "宿主与低代码平台接入条件",
+      "MCP / 脚本依赖及权限"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "对话工作流指引"
+      },
+      {
+        "type": "visit",
+        "label": "低代码平台入口"
+      },
+      {
+        "type": "read",
+        "label": "页面制作案例"
+      }
+    ]
+  },
+  {
+    "id": "integration-plugin",
+    "name": "连接集成测试插件",
+    "technicalName": "",
+    "forms": [
+      "插件与集成"
+    ],
+    "roles": [
+      "研发",
+      "测试"
+    ],
+    "scenario": "在接口上下文中生成并写回 Mock、自测接口、沉淀用例，查看日志、载荷、Diff 等证据。",
+    "owner": "方晓茹",
+    "tags": [
+      "接口测试",
+      "Mock",
+      "研发插件"
+    ],
+    "evidenceLabel": "材料说明｜运行未验证",
+    "inputs": [
+      "接口定义",
+      "Mock 节点",
+      "真实测试链路"
+    ],
+    "outputs": [
+      "Mock 写回回执",
+      "用例库",
+      "请求 / 响应 / 证据索引"
+    ],
+    "source": "连接集成-AI能力建设功能汇报-方晓茹.pptx",
+    "needs": [
+      "宿主入口及插件仓库 / 版本",
+      "安装升级方式和链路权限",
+      "可复现测试报告及阶段边界"
+    ],
+    "methods": [
+      {
+        "type": "install",
+        "label": "插件安装"
+      },
+      {
+        "type": "download",
+        "label": "插件获取方式"
+      },
+      {
+        "type": "read",
+        "label": "宿主与功能说明"
+      }
+    ]
+  },
+  {
+    "id": "document-to-markdown",
+    "name": "文档转 Markdown Skill",
+    "technicalName": "document-to-markdown",
+    "forms": [
+      "Skill"
+    ],
+    "roles": [
+      "产品",
+      "研发",
+      "测试",
+      "实施"
+    ],
+    "scenario": "将厂商文档或历史材料转为便于人和 AI 阅读的 Markdown。",
+    "owner": "许晓晨",
+    "tags": [
+      "文档转换",
+      "Markdown",
+      "知识整理"
+    ],
+    "evidenceLabel": "材料说明｜运行未验证",
+    "inputs": [
+      "DOCX / HTML / PDF / CHM / MD / TXT"
+    ],
+    "outputs": [
+      "Markdown",
+      "图片及引用资源"
+    ],
+    "source": "AI课题-浏览器插件AI技能-总结-许晓晨.pptx",
+    "needs": [
+      "真实包、版本与宿主",
+      "支持格式、容量和质量边界",
+      "线上转换的数据去向与本地依赖"
+    ],
+    "methods": [
+      {
+        "type": "install",
+        "label": "Skill 安装"
+      },
+      {
+        "type": "read",
+        "label": "查看格式与能力说明"
+      }
+    ]
+  },
+  {
+    "id": "sky-tools",
+    "name": "sky-tools 运维工作台",
+    "technicalName": "sky-tools",
+    "forms": [
+      "平台"
+    ],
+    "roles": [
+      "研发",
+      "运维"
+    ],
+    "scenario": "GitLab 检索、版本发布、CI 解读、服务器检查、项目初始化与部署。",
+    "owner": "柯尧麒（参与林旺、阮胜）",
+    "tags": [
+      "运维",
+      "GitLab",
+      "CI"
+    ],
+    "evidenceLabel": "材料说明｜运行未验证",
+    "inputs": [
+      "项目 / 版本 / 环境",
+      "CI 日志",
+      "服务器与 GitLab 权限"
+    ],
+    "outputs": [
+      "检索和诊断结果",
+      "部署配置",
+      "操作审计"
+    ],
+    "source": "统一运维智能工作台_课题汇报-柯尧麒.pptx",
+    "needs": [
+      "运维工作台访问入口",
+      "Skill / MCP 资产与调用边界",
+      "发布、部署和审计的实际操作说明"
+    ],
+    "methods": [
+      {
+        "type": "visit",
+        "label": "访问运维工作台"
+      },
+      {
+        "type": "connect",
+        "label": "MCP 说明（资产待核）"
+      },
+      {
+        "type": "read",
+        "label": "操作与发布边界"
+      }
+    ],
+    "unverifiedForms": [
+      "Skill 资产",
+      "MCP 工具与服务归属"
+    ]
+  },
+  {
+    "id": "research-skill",
+    "name": "需求调研 Skill",
+    "technicalName": "",
+    "forms": [
+      "Skill"
+    ],
+    "roles": [
+      "产品",
+      "实施"
+    ],
+    "scenario": "按计划、采集、报告组织调研，以门禁和血缘引用保证结论可追溯、可续跑。",
+    "owner": "邓鹏",
+    "tags": [
+      "需求调研",
+      "证据追溯",
+      "产品"
+    ],
+    "evidenceLabel": "材料说明｜运行未验证",
+    "inputs": [
+      "调研目标",
+      "背景材料",
+      "访谈 / 问卷 / 观察记录"
+    ],
+    "outputs": [
+      "计划与提纲",
+      "证据记录",
+      "可追溯调研报告"
+    ],
+    "source": "需求调研设计AI助手-邓鹏.html",
+    "needs": [
+      "真实技能包与版本",
+      "兼容宿主与触发方式",
+      "运行样例和校验结果"
+    ],
+    "methods": [
+      {
+        "type": "install",
+        "label": "Skill 安装"
+      },
+      {
+        "type": "read",
+        "label": "查看技能介绍"
+      }
+    ]
+  },
+  {
+    "id": "intelligent-data-workbench",
+    "name": "智能数据工作台",
+    "technicalName": "",
+    "forms": [
+      "平台"
+    ],
+    "roles": [
+      "研发",
+      "运维",
+      "产品"
+    ],
+    "scenario": "跨库同步、找表、问数、SQL 起草、同步排障、质量对账与脱敏。",
+    "owner": "柯尧麒（同一统一运维课题）",
+    "tags": [
+      "数据工作台",
+      "数据库",
+      "数据质量"
+    ],
+    "evidenceLabel": "材料说明｜运行未验证",
+    "inputs": [
+      "数据库与表范围",
+      "查询 / 同步需求",
+      "数据访问权限"
+    ],
+    "outputs": [
+      "查询或同步结果",
+      "诊断 / 对账报告",
+      "表关系与知识记录"
+    ],
+    "source": "统一运维智能工作台_课题汇报-柯尧麒.pptx",
+    "needs": [
+      "数据侧部署入口与权限",
+      "脱敏规则及功能完成范围",
+      "可复核的查询、同步与排障样例"
+    ],
+    "methods": [
+      {
+        "type": "visit",
+        "label": "数据工作台入口（待补）"
+      },
+      {
+        "type": "read",
+        "label": "查看数据库场景与权限说明"
+      }
+    ]
+  },
+  {
+    "id": "auroraflow",
+    "name": "AuroraFlow 需求工作台（规划）",
+    "technicalName": "AuroraFlow",
+    "forms": [
+      "待确认"
+    ],
+    "plannedForms": [
+      "插件与集成",
+      "API与MCP",
+      "工作流",
+      "知识与模板"
+    ],
+    "roles": [
+      "产品",
+      "研发",
+      "测试"
+    ],
+    "scenario": "计划整合需求调研、产品设计、技术设计，管理看板、阶段门禁、评审与版本留痕。",
+    "owner": "邓鹏",
+    "tags": [
+      "需求管理",
+      "工作台",
+      "规划中"
+    ],
+    "evidenceLabel": "规划材料｜尚无可运行工作台",
+    "inputs": [
+      "需求与过程记录",
+      "知识库",
+      "评审意见"
+    ],
+    "outputs": [
+      "规划中的需求 / 设计 / 技术文档",
+      "评审与版本记录"
+    ],
+    "source": "AuroraFlow统一需求工作台-邓鹏.html",
+    "needs": [
+      "MVP 仓库与启动方式",
+      "Obsidian 插件与技能包",
+      "GitLab 项目、权限及已完成范围"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "查看建设方案"
+      },
+      {
+        "type": "read",
+        "label": "查看计划范围与进度"
+      }
+    ]
+  },
+  {
+    "id": "data-governance",
+    "name": "数据中台结构化与标准化治理",
+    "technicalName": "",
+    "forms": [
+      "待确认"
+    ],
+    "plannedForms": [
+      "平台",
+      "插件与集成",
+      "知识与模板"
+    ],
+    "roles": [
+      "数据治理",
+      "研发"
+    ],
+    "scenario": "将非结构化内容抽成字段与记录，关联字典和标准，并通过人工修订回流知识。",
+    "owner": "陈航飞",
+    "tags": [
+      "数据治理",
+      "结构化",
+      "业务标准"
+    ],
+    "evidenceLabel": "材料说明｜建设范围与入口待核",
+    "inputs": [
+      "文本等非结构化资料",
+      "业务字典与标准",
+      "审核反馈"
+    ],
+    "outputs": [
+      "结构化记录",
+      "标准化映射",
+      "知识反馈和 SOP"
+    ],
+    "source": "基于AI的数据中台多模态数据智能结构化与标准化治理体系建设-陈航飞.pptx",
+    "needs": [
+      "已完成与规划功能的分界",
+      "部署入口、支持文件和样本",
+      "抽取质量与人工审核要求"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "查看治理方案与建设范围"
+      },
+      {
+        "type": "visit",
+        "label": "演示或应用入口（待核）"
+      }
+    ]
+  },
+  {
+    "id": "task-execution-tracker",
+    "name": "长任务执行记录工具",
+    "technicalName": "task-execution-tracker",
+    "forms": [
+      "待确认"
+    ],
+    "roles": [
+      "研发",
+      "产品"
+    ],
+    "scenario": "拆步推进长任务，记录进度并支持续跑。",
+    "owner": "方晓茹（团队日常分享）",
+    "tags": [
+      "长任务",
+      "进度记录",
+      "续跑"
+    ],
+    "evidenceLabel": "材料介绍｜来源与入口未确认",
+    "inputs": [
+      "任务目标与过程状态"
+    ],
+    "outputs": [
+      "任务进度与接续记录"
+    ],
+    "source": "连接集成-日常AI工具与使用效果-方晓茹.pptx",
+    "needs": [
+      "工具来源与真实形态",
+      "入口、版本与宿主信息",
+      "运行样例和维护责任"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "查看分享材料"
+      },
+      {
+        "type": "visit",
+        "label": "工具入口（待维护者确认）"
+      }
+    ]
+  },
+  {
+    "id": "mermaid-diagram",
+    "name": "Mermaid 设计画图工具",
+    "technicalName": "mermaid-diagram",
+    "forms": [
+      "待确认"
+    ],
+    "roles": [
+      "研发",
+      "产品",
+      "测试"
+    ],
+    "scenario": "随设计文档生成架构、流程和时序图，并校验渲染。",
+    "owner": "方晓茹（团队日常分享）",
+    "tags": [
+      "Mermaid",
+      "架构图",
+      "设计文档"
+    ],
+    "evidenceLabel": "材料介绍｜来源与入口未确认",
+    "inputs": [
+      "流程或架构描述"
+    ],
+    "outputs": [
+      "Mermaid 图与渲染结果"
+    ],
+    "source": "连接集成-日常AI工具与使用效果-方晓茹.pptx",
+    "needs": [
+      "工具来源与真实形态",
+      "入口、版本与宿主信息",
+      "运行样例和维护责任"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "查看分享材料"
+      },
+      {
+        "type": "visit",
+        "label": "工具入口（待维护者确认）"
+      }
+    ]
+  },
+  {
+    "id": "deepseek-harness",
+    "name": "deepseek-harness Agent 宿主",
+    "technicalName": "deepseek-harness",
+    "forms": [
+      "待确认"
+    ],
+    "plannedForms": [
+      "插件与集成"
+    ],
+    "roles": [
+      "研发",
+      "测试"
+    ],
+    "scenario": "承载代码生成、自测与智能体协作，扩展任务面板等插件。",
+    "owner": "方晓茹（团队日常分享）",
+    "tags": [
+      "Agent 宿主",
+      "代码生成",
+      "测试协作"
+    ],
+    "evidenceLabel": "材料介绍｜来源与入口未确认",
+    "inputs": [
+      "任务与工具配置"
+    ],
+    "outputs": [
+      "任务产物与协作记录"
+    ],
+    "source": "连接集成-日常AI工具与使用效果-方晓茹.pptx",
+    "needs": [
+      "宿主来源与版本",
+      "访问或安装入口",
+      "连接集成插件的实际关系与权限"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "查看宿主说明"
+      },
+      {
+        "type": "visit",
+        "label": "宿主入口（待维护者确认）"
+      }
+    ]
+  },
+  {
+    "id": "docx-to-md-enhanced",
+    "name": "Word 转 Markdown",
+    "technicalName": "docx-to-md-enhanced",
+    "forms": [
+      "待确认"
+    ],
+    "roles": [
+      "研发",
+      "产品",
+      "测试",
+      "实施"
+    ],
+    "scenario": "将 Word 转为 Markdown，材料称保留表格、代码和图片。",
+    "owner": "方晓茹（团队日常分享）",
+    "tags": [
+      "文档转换",
+      "Word",
+      "Markdown"
+    ],
+    "evidenceLabel": "材料介绍｜来源与入口未确认",
+    "inputs": [
+      "Word 文档"
+    ],
+    "outputs": [
+      "Markdown 及资源"
+    ],
+    "source": "连接集成-日常AI工具与使用效果-方晓茹.pptx",
+    "needs": [
+      "工具来源归属与实际形态",
+      "真实包 / 入口、版本与使用条件",
+      "运行样例和维护责任"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "查看能力与待确认事项"
+      },
+      {
+        "type": "visit",
+        "label": "工具入口（待维护者确认）"
+      }
+    ]
+  },
+  {
+    "id": "meow-workflow-log-analysis",
+    "name": "多智能体工作流日志分析",
+    "technicalName": "meow-workflow-log-analysis",
+    "forms": [
+      "待确认"
+    ],
+    "roles": [
+      "研发",
+      "测试"
+    ],
+    "scenario": "分析多智能体工作流日志，定位失败环节。",
+    "owner": "方晓茹（团队日常分享）",
+    "tags": [
+      "工作流日志",
+      "故障定位",
+      "多智能体"
+    ],
+    "evidenceLabel": "材料介绍｜来源与入口未确认",
+    "inputs": [
+      "工作流日志"
+    ],
+    "outputs": [
+      "问题定位结论"
+    ],
+    "source": "连接集成-日常AI工具与使用效果-方晓茹.pptx",
+    "needs": [
+      "工具来源与真实形态",
+      "入口、版本与宿主信息",
+      "运行样例和维护责任"
+    ],
+    "methods": [
+      {
+        "type": "read",
+        "label": "查看分享材料"
+      },
+      {
+        "type": "visit",
+        "label": "工具入口（待维护者确认）"
+      }
+    ]
+  }
+]
