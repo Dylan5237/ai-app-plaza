@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { startHarness } from './helpers/harness.js';
+import { SHA, TOKEN } from './helpers/gitlab-fixture.js';
+
+test('real MCP stdio process can submit/query, but has no confirmation tool', async t => {
+  const harness = await startHarness();
+  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve('node_modules/tsx/dist/cli.mjs'), resolve('server/mcp.ts')], cwd: tmpdir(), env: { ...Object.fromEntries(Object.entries(process.env).filter((pair): pair is [string, string] => pair[1] !== undefined)), PLAZA_URL: harness.origin, GITLAB_TOKEN: TOKEN }, stderr: 'pipe' });
+  const client = new Client({ name: 'plaza-process-test', version: '1.0.0' });
+  let stderr = '';
+  transport.stderr?.on('data', chunk => { stderr += String(chunk); });
+  t.after(async () => { await client.close(); await harness.close(); assert.ok(!stderr.includes(TOKEN)); });
+  await client.connect(transport);
+  const list = await client.listTools();
+  assert.deepEqual(list.tools.map(tool => tool.name).sort(), ['get_agent_instructions', 'get_publish_contract', 'get_publish_status', 'retry_registration', 'submit_candidate'].sort());
+  const response = await client.callTool({ name: 'submit_candidate', arguments: { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, idempotencyKey: randomUUID() } });
+  assert.ok(!response.isError, JSON.stringify(response));
+  const body = JSON.parse((response.content as any[])[0].text);
+  assert.equal(body.status, 'preview_ready');
+  assert.ok(body.previewUrl.startsWith(harness.origin + '/#publish='));
+  const status = await client.callTool({ name: 'get_publish_status', arguments: { publicationId: body.id, ticket: body.ticket } });
+  assert.equal(JSON.parse((status.content as any[])[0].text).status, 'preview_ready');
+  const retry = await client.callTool({ name: 'retry_registration', arguments: { publicationId: body.id, ticket: body.ticket } });
+  assert.equal(JSON.parse((retry.content as any[])[0].text).status, 'preview_ready', 'retry must not act as first confirmation');
+  assert.equal((await harness.service.list()).total, 0);
+  const unknown = await client.callTool({ name: 'confirm_publication', arguments: { publicationId: body.id, ticket: body.ticket } });
+  assert.equal(unknown.isError, true);
+});

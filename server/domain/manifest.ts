@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import * as formatsModule from "ajv-formats";
 import { DomainError } from "./errors.js";
+import { parseTree, type ParseError, type Node as JsonNode } from "jsonc-parser";
 
 export interface WebEntry {
   id: string;
@@ -54,115 +55,24 @@ export function decodeUtf8(bytes: Uint8Array, subject = "文件"): string {
 }
 
 export function parseStrictJson(text: string): unknown {
-  let cursor = 0;
-
-  function fail(): never {
-    throw new DomainError(400, "VALIDATION_FAILED", "Manifest 不是有效 JSON，或包含重复键。");
-  }
-
-  function whitespace(): void {
-    while (cursor < text.length && /[\u0009\u000a\u000d\u0020]/.test(text[cursor]!)) cursor++;
-  }
-
-  function parseString(): string {
-    if (text[cursor] !== '"') return fail();
-    const start = cursor++;
-    while (cursor < text.length) {
-      const code = text.charCodeAt(cursor);
-      if (code === 0x22) {
-        cursor++;
-        try {
-          return JSON.parse(text.slice(start, cursor)) as string;
-        } catch {
-          return fail();
-        }
-      }
-      if (code < 0x20) return fail();
-      if (code === 0x5c) {
-        cursor++;
-        const escaped = text[cursor];
-        if (escaped === "u") {
-          const hex = text.slice(cursor + 1, cursor + 5);
-          if (!/^[0-9a-fA-F]{4}$/.test(hex)) return fail();
-          cursor += 5;
-          continue;
-        }
-        if (!escaped || !/["\\/bfnrt]/.test(escaped)) return fail();
-      }
-      cursor++;
-    }
-    return fail();
-  }
-
-  function parseValue(depth: number): unknown {
-    if (depth > 64) return fail();
-    whitespace();
-    const current = text[cursor];
-    if (current === '"') return parseString();
-    if (current === "{") {
-      cursor++;
-      whitespace();
-      const value: Record<string, unknown> = {};
+  const errors: ParseError[] = [];
+  const tree = parseTree(text, errors, { disallowComments: true, allowTrailingComma: false });
+  const fail = (): never => { throw new DomainError(400, "VALIDATION_FAILED", "Manifest 不是有效 JSON，或包含重复键。"); };
+  if (!tree || errors.length) return fail();
+  function check(node: JsonNode, depth: number): void {
+    if (depth > 64) fail();
+    if (node.type === "object") {
       const keys = new Set<string>();
-      if (text[cursor] === "}") {
-        cursor++;
-        return value;
-      }
-      while (cursor < text.length) {
-        whitespace();
-        const key = parseString();
-        if (keys.has(key)) return fail();
+      for (const property of node.children ?? []) {
+        const key = property.children?.[0]?.value;
+        if (keys.has(key)) fail();
         keys.add(key);
-        whitespace();
-        if (text[cursor++] !== ":") return fail();
-        const member = parseValue(depth + 1);
-        Object.defineProperty(value, key, { value: member, enumerable: true, writable: true, configurable: true });
-        whitespace();
-        if (text[cursor] === "}") {
-          cursor++;
-          return value;
-        }
-        if (text[cursor++] !== ",") return fail();
-      }
-      return fail();
-    }
-    if (current === "[") {
-      cursor++;
-      whitespace();
-      const values: unknown[] = [];
-      if (text[cursor] === "]") {
-        cursor++;
-        return values;
-      }
-      while (cursor < text.length) {
-        values.push(parseValue(depth + 1));
-        whitespace();
-        if (text[cursor] === "]") {
-          cursor++;
-          return values;
-        }
-        if (text[cursor++] !== ",") return fail();
-      }
-      return fail();
-    }
-    for (const [token, value] of [["true", true], ["false", false], ["null", null]] as const) {
-      if (text.startsWith(token, cursor)) {
-        cursor += token.length;
-        return value;
       }
     }
-    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(text.slice(cursor));
-    if (number) {
-      cursor += number[0].length;
-      return Number(number[0]);
-    }
-    return fail();
+    for (const child of node.children ?? []) check(child, depth + 1);
   }
-
-  const value = parseValue(0);
-  whitespace();
-  if (cursor !== text.length) return fail();
-  return value;
+  check(tree, 0);
+  return JSON.parse(text);
 }
 
 export function validateRepoPath(value: unknown, label: string): string {

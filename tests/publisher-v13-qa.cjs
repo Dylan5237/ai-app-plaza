@@ -16,7 +16,7 @@ let browser;
  for(const viewport of [{width:1280,height:720},{width:1024,height:768}]){
   const context=await browser.newContext({viewport,colorScheme:'light'});await context.addInitScript(()=>{window.qaCopy={mode:'api',value:null,exec:null};Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{if(window.qaCopy.mode!=='api')throw Error('denied');window.qaCopy.value=value}}});document.execCommand=()=>{const f=document.activeElement;window.qaCopy.exec=f.value?.slice(f.selectionStart,f.selectionEnd);return window.qaCopy.mode==='legacy'}});
   context.on('page',p=>p.on('pageerror',e=>report.errors.push(e.message)));await context.route('**/*',route=>{const url=route.request().url();if(/^https?:/.test(url)&&new URL(url).origin!==origin){report.externalRequests.push(url);return route.abort()}return route.continue()});
-  const page=await context.newPage();page.setDefaultTimeout(5000);await page.goto(origin+'/');let frame=await getFrame(page);const row={viewport};report.views.push(row);
+  const page=await context.newPage();page.setDefaultTimeout(5000);await page.goto(origin+'/?prototype=1');let frame=await getFrame(page);const row={viewport};report.views.push(row);
   await frame.getByRole('button',{name:'分享我的AI应用',exact:true}).click();
   assert(await frame.locator('#pt-guide input,#pt-guide select,#pt-guide textarea:not([readonly])').count()===0,'Author form present');await layout(frame,'prompt',row);
   await copyModes(frame,'#pt-publish-text','[data-share-copy]','#pt-publish-copy-message');await page.screenshot({path:`artifacts/publisher-v13-prompt-${viewport.width}.png`});

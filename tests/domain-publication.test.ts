@@ -347,9 +347,9 @@ test("confirmation cannot overwrite a newer app revision", async (t) => {
   assert.equal(current.manifest.name, "自动化方案 B");
 });
 
-test("returned full-width tags can be sent back as exact filters", async (t) => {
+test("returned author tags retain compatible characters and whitespace when filtering", async (t) => {
   const { fixture, service } = await setup(t);
-  fixture.setVersion(COMMIT_A, manifest({ tags: ["ＡＩ"] }));
+  fixture.setVersion(COMMIT_A, manifest({ tags: ["ＡＩ", " 文档 "] }));
   const preview = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-0012");
   const published = await service.confirm(preview.id, preview.ticket, {
     revision: preview.revision,
@@ -364,6 +364,7 @@ test("returned full-width tags can be sent back as exact filters", async (t) => 
   const filtered = await service.list({ tags: [fullWidthTag] });
   assert.equal(filtered.total, 1);
   assert.equal(filtered.items[0]?.manifest.tags[0], "ＡＩ");
+  assert.equal((await service.list({ tags: [" 文档 "] })).total, 1);
 });
 
 test("confirmation detects a changed preview source and requires a new candidate", async (t) => {

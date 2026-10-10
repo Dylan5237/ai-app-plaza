@@ -620,7 +620,8 @@ export function createService(config: ServiceConfig): PlazaService {
         throw new DomainError(400, "VALIDATION_FAILED", "page 必须是有效的正整数。");
       }
       const tokens = searchTokens(options.query ?? "");
-      const requestedTags = (options.tags ?? []).map(normalizeTag).filter(Boolean);
+      // Filter the original displayed labels; PostgreSQL applies case folding to both sides.
+      const requestedTags = (options.tags ?? []).filter(tag => tag.trim());
       if (requestedTags.length > 12) throw new DomainError(400, "VALIDATION_FAILED", "一次最多筛选 12 个标签。");
       const filters: string[] = ["s.audience = $1"];
       const params: unknown[] = [config.audience];
@@ -763,10 +764,6 @@ function safeFailure(error: unknown): { code: string; message: string } {
 
 function notFound(): DomainError {
   return new DomainError(404, "PUBLICATION_NOT_FOUND", "发布记录不存在。");
-}
-
-function normalizeTag(value: string): string {
-  return value.trim().toLocaleLowerCase("zh-CN");
 }
 
 function searchTokens(query: string): string[][] {

@@ -171,6 +171,7 @@ export class GitLabSourceReader {
       if (entry.kind === "agent") declaredPaths.add(entry.instructionsPath);
     }
     const documents: Record<string, string> = {};
+    const documentBytes = new Map<string, Uint8Array>();
     let documentBytesTotal = 0;
     for (const filePath of [...declaredPaths].sort()) {
       const bytes = await this.readRegularBlob(projectId, filePath, commitSha, token, MAX_DOCUMENT_BYTES, budget);
@@ -179,6 +180,7 @@ export class GitLabSourceReader {
         throw new DomainError(400, "VALIDATION_FAILED", "共享说明总大小不能超过 512 KiB。");
       }
       documents[filePath] = decodeUtf8(bytes, "共享说明");
+      documentBytes.set(filePath, bytes);
       if (isLfsPointer(bytes)) {
         throw new DomainError(400, "VALIDATION_FAILED", "共享说明不能是 Git LFS 指针文件。");
       }
@@ -186,7 +188,7 @@ export class GitLabSourceReader {
 
     const digest = digestFiles(new Map([
       [manifestPath, manifestBytes],
-      ...[...declaredPaths].map((filePath) => [filePath, Buffer.from(documents[filePath]!, "utf8")] as const),
+      ...documentBytes,
     ]));
     const sourceCreatedAt = validIsoDate(project.created_at);
     if (!sourceCreatedAt) {
@@ -350,6 +352,9 @@ export class GitLabSourceReader {
 }
 
 export function validateProjectId(value: string | number): string {
+  if (typeof value === "number" && !Number.isSafeInteger(value)) {
+    throw new DomainError(400, "VALIDATION_FAILED", "projectId 数值超出安全整数范围，请改用十进制字符串。");
+  }
   const projectId = String(value);
   if (!/^[1-9]\d{0,19}$/.test(projectId)) {
     throw new DomainError(400, "VALIDATION_FAILED", "projectId 必须是有效的 GitLab 项目数字 ID。");

@@ -1,0 +1,95 @@
+import Fastify from 'fastify';
+import staticPlugin from '@fastify/static';
+import rateLimit from '@fastify/rate-limit';
+import { access } from 'node:fs/promises';
+import { z } from 'zod';
+import { createService } from './domain/service.js';
+import { DomainError } from './domain/errors.js';
+import type { Database } from './domain/database.js';
+import type { Config } from './config.js';
+import { publishContract } from './publish-contract.js';
+
+const candidate = z.object({
+  projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
+  appKey: z.string().min(1).max(64), manifestPath: z.string().min(1).max(512),
+  commitSha: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
+  tag: z.string().min(1).max(200).optional(), expectedAppRevision: z.number().int().nonnegative().optional(),
+}).strict();
+const confirmation = z.object({ revision: z.number().int().positive(), digest: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const idValue = z.string().uuid();
+
+export async function createApp(config: Config, db: Database) {
+  const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience });
+  // No request/body/header logging: publication links and GitLab credentials are capabilities.
+  const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false });
+  let cleanupTimer: NodeJS.Timeout | undefined;
+  let cleanupInFlight: Promise<void> | undefined;
+  app.addHook('onReady', async () => {
+    await service.cleanupExpiredTokens();
+    cleanupTimer = setInterval(() => {
+      if (cleanupInFlight) return;
+      cleanupInFlight = service.cleanupExpiredTokens()
+        .catch(() => { console.error('过期发布授权清理未完成，将在下一周期重试'); })
+        .finally(() => { cleanupInFlight = undefined; });
+    }, 60_000);
+    cleanupTimer.unref();
+  });
+  app.addHook('onClose', async () => { clearInterval(cleanupTimer); await cleanupInFlight; });
+  if (config.rateLimit) await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer');
+    if (request.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
+    const requestOrigin = request.headers.origin;
+    if (requestOrigin && requestOrigin !== config.publicOrigin) {
+      return reply.code(403).send({ error: { code: 'ORIGIN_DENIED', message: '请从本门户页面操作' } });
+    }
+    // Host checking also prevents websites using DNS rebinding to address a local portal.
+    if (request.headers.host !== new URL(config.publicOrigin).host) {
+      return reply.code(403).send({ error: { code: 'HOST_DENIED', message: '访问地址与 PUBLIC_ORIGIN 不一致' } });
+    }
+  });
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: 'INVALID_REQUEST', message: '请求字段不符合发布规范' } });
+    if (error instanceof DomainError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+    const status = (error as any).statusCode;
+    if (status === 413) return reply.code(413).send({ error: { code: 'BODY_TOO_LARGE', message: '请求过大，只应提交资料定位' } });
+    if (status === 429) return reply.code(429).send({ error: { code: 'RATE_LIMITED', message: '操作较频繁，请稍后重试' } });
+    if (status === 400 || status === 415) return reply.code(status).send({ error: { code: 'INVALID_REQUEST', message: '请使用有效 JSON 请求' } });
+    return reply.code(500).send({ error: { code: 'SERVICE_UNAVAILABLE', message: '处理未完成，请保留本次发布链接后重试' } });
+  });
+  const ticket = (header?: string) => {
+    if (!header?.startsWith('Bearer ') || header.length > 1024) throw new DomainError(404, 'NOT_FOUND', '未找到本次发布');
+    return header.slice(7);
+  };
+  const publicationId = (params: unknown) => idValue.parse((params as any).id);
+  app.get('/api/health', async () => ({ status: 'ok', mode: config.local ? 'local' : 'configured', loginRequired: false }));
+  app.get('/api/publish-contract', () => publishContract(config));
+  app.get('/api/apps', async (request) => {
+    const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1) }).parse(request.query);
+    const tags = typeof search.tags === 'string' ? [search.tags] : search.tags || [];
+    if (tags.length > 12 || tags.some(t => t.length > 32)) throw new DomainError(400, 'INVALID_REQUEST', '标签筛选超出限制');
+    return service.list({ query: search.query, tags, page: search.page });
+  });
+  app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
+  app.get('/api/apps/:id/instructions/:entryId', (request) => {
+    const params = request.params as any;
+    return service.instructions(idValue.parse(params.id), z.string().min(1).max(64).parse(params.entryId));
+  });
+  app.post('/api/publications', async (request, reply) => {
+    const token = request.headers['x-gitlab-token'];
+    if (typeof token !== 'string' || !token.trim() || token.length > 4096 || /[\r\n]/.test(token)) {
+      throw new DomainError(401, 'GITLAB_AUTH_REQUIRED', '作者 Agent 需要使用已有 GitLab 授权');
+    }
+    const key = z.string().min(16).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['idempotency-key']);
+    const result = await service.submit(candidate.parse(request.body), token, key);
+    return reply.code(201).send(result);
+  });
+  app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
+  app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
+  app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
+  try {
+    await access(config.staticDir);
+    await app.register(staticPlugin, { root: config.staticDir, index: ['index.html'], dotfiles: 'deny' });
+  } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+  return { app, service };
+}
