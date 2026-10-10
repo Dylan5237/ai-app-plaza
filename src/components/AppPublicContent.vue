@@ -58,14 +58,23 @@ function documentContent(key) {
   return { text: reference, path: '' }
 }
 
-function docHtml(key) {
-  const doc = documentContent(key)
+const readmeDocument = computed(() => documentContent('readme'))
+const usageDocument = computed(() => documentContent('usage'))
+
+function documentsMatch() {
+  const readme = readmeDocument.value
+  const usage = usageDocument.value
+  if (readme.path && usage.path && normalizeDocumentPath(readme.path) === normalizeDocumentPath(usage.path)) return true
+  return Boolean(readme.text.trim()) && readme.text.trim() === usage.text.trim()
+}
+
+function docHtml(doc) {
   const baseUrl = repositoryDocumentBase(source.value.projectUrl, source.value.commitSha, doc.path)
   return renderMarkdown(doc.text, { baseUrl })
 }
 
-const readmeHtml = computed(() => docHtml('readme'))
-const usageHtml = computed(() => docHtml('usage'))
+const readmeHtml = computed(() => docHtml(readmeDocument.value))
+const usageHtml = computed(() => documentsMatch() ? '' : docHtml(usageDocument.value))
 
 function safeHttpUrl(value) {
   if (typeof value !== 'string') return ''
