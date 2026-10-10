@@ -6,7 +6,7 @@
 
 **尚未接入真实 GitLab、AI 检索、发布服务或应用安装。** Mock 资料与状态用于设计评审，不代表真实项目交付。
 
-架构提案见[架构设计](docs/architecture/architecture.md)与[资料契约](docs/architecture/data-contract.md)。它们用于评审正式系统的边界和流程，尚未冻结；其中的技术建议不代表服务已经接通。
+正式系统方向见[已确认决策](docs/architecture/decisions-2026-10-10.md)、[架构设计](docs/architecture/architecture.md)与[资料契约](docs/architecture/data-contract.md)。D1—D3 已确认，开发合同尚未冻结，真实服务未接通；原型仍保留旧版发布流程。
 
 ## 本地运行
 

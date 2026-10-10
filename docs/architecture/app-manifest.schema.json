@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AI应用广场资料契约草案 v1",
-  "description": "评审用结构约束；正式收录还需要语义、权限与固定版本来源核验。",
+  "title": "AI应用广场资料契约 v1（待实现）",
+  "description": "D1-D3 已确认；结构校验不替代权限、共享预览与固定来源核验。",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "appKey", "name", "summary", "tags", "maintainers", "capabilities", "examples", "requirements", "limitations", "docs", "entries", "primaryEntry"],
@@ -10,6 +10,7 @@
     "appKey": {"$ref": "#/$defs/key"},
     "name": {"type": "string", "minLength": 1, "maxLength": 80},
     "summary": {"type": "string", "minLength": 1, "maxLength": 240},
+    "projectVersion": {"type": "string", "minLength": 1, "maxLength": 80, "description": "可选的作者维护的正式版本声明；缺省时使用核验 tag 或快照版本，不证明远端运行版本。"},
     "tags": {
       "type": "array", "maxItems": 12, "uniqueItems": true,
       "items": {"type": "string", "minLength": 1, "maxLength": 32}

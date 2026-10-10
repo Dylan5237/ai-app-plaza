@@ -1,5 +1,6 @@
 {
   "schemaVersion": "1",
+  "projectVersion": "1.3.0",
   "appKey": "review-helper",
   "name": "ReviewHelper 变更检查助手",
   "summary": "基于项目约定检查变更，整理有证据的问题清单。",
@@ -13,7 +14,7 @@
   "examples": [{"request": "检查当前分支相对主分支的权限逻辑变更。", "expectedResult": "指出可复现问题、证据与需要人工判断的事项。"}],
   "requirements": ["用户对待评审项目具有读取权限"],
   "limitations": ["检查结果不能证明代码不存在缺陷", "示例未完成真实 Host 兼容性验证"],
-  "docs": {"readme": "README.md", "usage": "docs/usage.md"},
+  "docs": {"readme": "docs/plaza-usage.md", "usage": "docs/plaza-usage.md"},
   "entries": [
     {"id": "skill", "kind": "agent", "label": "本地评审技能", "instructionsPath": "docs/connect-skill.md", "compatibility": ["能加载 Agent Skills 的 Host；接入说明引用 skills/review-helper/SKILL.md", "具体 Host 版本待实测"]},
     {"id": "mcp", "kind": "agent", "label": "远程检查服务", "instructionsPath": "docs/connect-mcp.md", "compatibility": ["支持服务指定传输和认证的 MCP Host", "服务地址与授权流程见固定版本接入说明"]}

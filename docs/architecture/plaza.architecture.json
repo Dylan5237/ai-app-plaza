@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "AI应用广场 · 架构提案",
+    "title": "AI应用广场 · 最小架构",
     "locale": "zh-CN",
     "quality_profile": "showcase",
     "viewBox": [
@@ -35,18 +35,20 @@
           "gitlab-source",
           "plaza-store"
         ],
-        "note": "Agent 整理草稿，作者在网页确认；Agent 上传 GitLab，广场读回核验后收录。"
+        "note": "Agent 按原有授权准备 GitLab 版本；广场读取固定 commit 生成预览，作者确认后收录。"
       },
       {
-        "id": "sync",
-        "label": "来源与同步",
+        "id": "access",
+        "label": "身份与权限",
         "focus": [
-          "gitlab-source",
+          "plaza-web",
+          "plaza-core",
+          "company-identity",
           "gitlab-read",
-          "plaza-sync",
-          "plaza-store"
+          "gitlab-source",
+          "hosted-app"
         ],
-        "note": "Webhook 只是刷新信号；固定 commit 读回对账，新版本不能跳过作者确认。"
+        "note": "内部受众可看已共享资料，源码与目标应用权限独立；普通用户无需 GitLab 账号。"
       }
     ]
   },
@@ -68,8 +70,8 @@
     {
       "id": "plaza-core",
       "type": "backend",
-      "label": "目录与发布服务",
-      "sublabel": "HTTP API · 统一权限与状态",
+      "label": "广场后端",
+      "sublabel": "Node.js / TS · 目录 / 发布 / 核验",
       "pos": [
         400,
         255
@@ -83,7 +85,7 @@
       "id": "gitlab-read",
       "type": "backend",
       "label": "GitLab 读取适配器",
-      "sublabel": "权限 / 固定版本 / 资料核验",
+      "sublabel": "后端内模块 · 只读固定来源",
       "pos": [
         740,
         255
@@ -97,7 +99,7 @@
       "id": "gitlab-source",
       "type": "external",
       "label": "公司 GitLab",
-      "sublabel": "源码 / manifest / tag / Release",
+      "sublabel": "源码 / 资料 / commit · 版本可选",
       "pos": [
         1080,
         255
@@ -111,7 +113,7 @@
       "id": "plaza-mcp",
       "type": "backend",
       "label": "广场 MCP 接口",
-      "sublabel": "草稿回传 / 状态 / 接入资料",
+      "sublabel": "后端内接口 · 候选 / 状态 / 说明",
       "pos": [
         400,
         60
@@ -167,7 +169,7 @@
       "id": "plaza-store",
       "type": "database",
       "label": "PostgreSQL",
-      "sublabel": "资料投影 / 草稿 / 确认 / 审计",
+      "sublabel": "共享快照 / 发布记录 / 收藏",
       "pos": [
         400,
         450
@@ -178,10 +180,10 @@
       ]
     },
     {
-      "id": "plaza-sync",
-      "type": "backend",
-      "label": "同步 Worker",
-      "sublabel": "事件收件箱 / 重试 / 定时对账",
+      "id": "company-identity",
+      "type": "security",
+      "label": "现有统一身份",
+      "sublabel": "覆盖内部受众 · 接入待核验",
       "pos": [
         740,
         450
@@ -204,7 +206,7 @@
       "id": "service-read",
       "from": "plaza-core",
       "to": "gitlab-read",
-      "label": "权限与资料",
+      "label": "核验来源",
       "variant": "emphasis"
     },
     {
@@ -226,7 +228,7 @@
       "id": "agent-mcp",
       "from": "user-agent",
       "to": "plaza-mcp",
-      "label": "草稿 / 查询"
+      "label": "版本定位 / 查询"
     },
     {
       "id": "mcp-service",
@@ -239,7 +241,7 @@
       "id": "agent-push",
       "from": "user-agent",
       "to": "gitlab-source",
-      "label": "授权上传",
+      "label": "先授权上传",
       "variant": "security"
     },
     {
@@ -257,50 +259,36 @@
       "labelDy": 84
     },
     {
-      "id": "source-webhook",
-      "from": "gitlab-source",
-      "to": "plaza-sync",
-      "label": "Webhook",
-      "variant": "dashed"
-    },
-    {
-      "id": "sync-read",
-      "from": "plaza-sync",
-      "to": "gitlab-read",
-      "label": "固定版本对账",
-      "variant": "dashed"
-    },
-    {
-      "id": "sync-store",
-      "from": "plaza-sync",
-      "to": "plaza-store",
-      "label": "更新投影",
-      "variant": "dashed"
+      "id": "identity-check",
+      "from": "plaza-core",
+      "to": "company-identity",
+      "label": "身份校验",
+      "variant": "security"
     }
   ],
   "cards": [
     {
       "dot": "cyan",
-      "title": "广场提供发现与连接",
+      "title": "一个后端，两种使用入口",
       "items": [
-        "网页复制提示词，交给用户自己的 Agent",
-        "Node.js / TypeScript 模块化后端；API 与 Worker 共用数据库"
+        "HTTP 与 MCP 共用逻辑；定时核验同部署",
+        "平台直接打开，其它应用交给用户 Agent 接入"
       ]
     },
     {
       "dot": "emerald",
-      "title": "确认内容，核验来源",
+      "title": "先准备版本，再确认收录",
       "items": [
-        "仅网页作者确认；绑定 revision、commit 与资料摘要",
-        "GitLab 保存原始资料；广场投影不扩大仓库访问权限"
+        "固定 commit 必需；tag / Release 可选",
+        "只共享预览中确认的资料，不授予源码权限"
       ]
     },
     {
       "dot": "amber",
-      "title": "设计提案 · 尚未实施",
+      "title": "方向已确认 · 尚未实施",
       "items": [
-        "当前运行的是 Mock 原型；真实 GitLab / MCP Host 待验证",
-        "Agent 执行上传与安装；已收录不代表已安装"
+        "当前仍为 Mock；GitLab / 统一身份 / Host 待验证",
+        "不增加应用托管、统一审批或通用安装器"
       ]
     }
   ]
