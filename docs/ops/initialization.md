@@ -33,4 +33,10 @@
 
 用户授权初始化后整理需求文档，现由 [Docs #3](https://github.com/Dylan5237/ai-app-plaza/issues/3) 跟踪[需求草稿](../product/requirements.md)。此项是提案准备，不实施功能，不替 Disposer Freeze 或 Accept，Phase #2 继续保持 backlog / freeze:pending。
 
+### 需求方向确认记录（2026-10-10）
+
+用户确认在 Docs #3 的 v0.2 需求提案中采纳本轮方向：首期只面向一个约定的内部受众，广场使用公司现有统一身份（实际身份源待核验），作者 Agent 以 GitLab 项目、固定 commit 和 manifest 路径提交资料定位，由广场生成只读预览，作者确认分享受众和内容后收录。详细规则见[需求说明](../product/requirements.md)。
+
+此确认用于更新需求提案，不代表公司身份或 GitLab 环境已验证，不构成 Phase Freeze、Phase Accept 或功能已实现；Phase #2 继续保持 backlog / freeze:pending。
+
 同目录的 [Command Center 草稿](github-command-center.md)、[首个 Phase 草稿](github-phase-1.md)、[Fleet 登记草稿](fleet-registration.md) 保留为初始化时的提案快照；实际编号、状态与最新正文以链接的 GitHub Issue / PR 为准。
