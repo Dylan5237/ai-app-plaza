@@ -4,6 +4,8 @@
 
 需求依据：[需求草稿 aa30a5b](https://github.com/Dylan5237/ai-app-plaza/blob/aa30a5b8aa61dd58599b993958fe51799eb4c0ce/docs/product/requirements.md)。需求和本方案均未冻结；下文的“采用”表示推荐方案，不代表环境已经接通或实现已经完成。
 
+[交互架构图](plaza-architecture.html)提供“发现与使用”“Agent 分享”“来源与同步”三个聚焦视图，可搜索节点、缩放和导出 SVG / 图片。下载 HTML 后用浏览器打开即可；[图源](plaza.architecture.json)由 Archify 2.17 生成，不依赖广场服务。图中组件与技术栈都是本方案的建议，不表示系统已经实现。
+
 ## 1. 总体建议
 
 采用 **Vue 网页 + 一个模块化后端 + PostgreSQL + GitLab 适配器**。MCP 是同一后端面向 Agent 的接入方式。首期不引入微服务、独立搜索集群、向量数据库或在服务端运行 Agent 的能力。

@@ -1,0 +1,307 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AI应用广场 · 架构提案",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1380,
+      650
+    ],
+    "views": [
+      {
+        "id": "discover",
+        "label": "发现与使用",
+        "focus": [
+          "plaza-web",
+          "plaza-core",
+          "plaza-store",
+          "hosted-app",
+          "user-agent",
+          "user-runtime"
+        ],
+        "note": "用户从能力需求出发；平台入口直接打开，Agent 入口复制提示词交给用户自己的 Agent。"
+      },
+      {
+        "id": "publish",
+        "label": "Agent 分享",
+        "focus": [
+          "user-agent",
+          "plaza-mcp",
+          "plaza-core",
+          "plaza-web",
+          "gitlab-read",
+          "gitlab-source",
+          "plaza-store"
+        ],
+        "note": "Agent 整理草稿，作者在网页确认；Agent 上传 GitLab，广场读回核验后收录。"
+      },
+      {
+        "id": "sync",
+        "label": "来源与同步",
+        "focus": [
+          "gitlab-source",
+          "gitlab-read",
+          "plaza-sync",
+          "plaza-store"
+        ],
+        "note": "Webhook 只是刷新信号；固定 commit 读回对账，新版本不能跳过作者确认。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "plaza-web",
+      "type": "frontend",
+      "label": "广场网页",
+      "sublabel": "Vue · 发现 / 预览 / 确认",
+      "pos": [
+        60,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "plaza-core",
+      "type": "backend",
+      "label": "目录与发布服务",
+      "sublabel": "HTTP API · 统一权限与状态",
+      "pos": [
+        400,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "gitlab-read",
+      "type": "backend",
+      "label": "GitLab 读取适配器",
+      "sublabel": "权限 / 固定版本 / 资料核验",
+      "pos": [
+        740,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "gitlab-source",
+      "type": "external",
+      "label": "公司 GitLab",
+      "sublabel": "源码 / manifest / tag / Release",
+      "pos": [
+        1080,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "plaza-mcp",
+      "type": "backend",
+      "label": "广场 MCP 接口",
+      "sublabel": "草稿回传 / 状态 / 接入资料",
+      "pos": [
+        400,
+        60
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "user-agent",
+      "type": "external",
+      "label": "用户的 Agent",
+      "sublabel": "作者发布 · 使用者接入",
+      "pos": [
+        740,
+        60
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "user-runtime",
+      "type": "external",
+      "label": "用户授权的环境",
+      "sublabel": "Skill / MCP / 本地工具",
+      "pos": [
+        1080,
+        60
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "hosted-app",
+      "type": "external",
+      "label": "平台应用",
+      "sublabel": "独立登录与业务处理",
+      "pos": [
+        60,
+        450
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "plaza-store",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "资料投影 / 草稿 / 确认 / 审计",
+      "pos": [
+        400,
+        450
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "plaza-sync",
+      "type": "backend",
+      "label": "同步 Worker",
+      "sublabel": "事件收件箱 / 重试 / 定时对账",
+      "pos": [
+        740,
+        450
+      ],
+      "size": [
+        220,
+        88
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "web-service",
+      "from": "plaza-web",
+      "to": "plaza-core",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "service-read",
+      "from": "plaza-core",
+      "to": "gitlab-read",
+      "label": "权限与资料",
+      "variant": "emphasis"
+    },
+    {
+      "id": "read-source",
+      "from": "gitlab-read",
+      "to": "gitlab-source",
+      "label": "只读 API",
+      "variant": "emphasis",
+      "labelDy": 10
+    },
+    {
+      "id": "service-store",
+      "from": "plaza-core",
+      "to": "plaza-store",
+      "label": "资料与发布状态",
+      "labelDy": 84
+    },
+    {
+      "id": "agent-mcp",
+      "from": "user-agent",
+      "to": "plaza-mcp",
+      "label": "草稿 / 查询"
+    },
+    {
+      "id": "mcp-service",
+      "from": "plaza-mcp",
+      "to": "plaza-core",
+      "label": "共用业务逻辑",
+      "labelDy": 84
+    },
+    {
+      "id": "agent-push",
+      "from": "user-agent",
+      "to": "gitlab-source",
+      "label": "授权上传",
+      "variant": "security"
+    },
+    {
+      "id": "agent-install",
+      "from": "user-agent",
+      "to": "user-runtime",
+      "label": "安装 / 部署",
+      "variant": "security"
+    },
+    {
+      "id": "web-open",
+      "from": "plaza-web",
+      "to": "hosted-app",
+      "label": "打开平台",
+      "labelDy": 84
+    },
+    {
+      "id": "source-webhook",
+      "from": "gitlab-source",
+      "to": "plaza-sync",
+      "label": "Webhook",
+      "variant": "dashed"
+    },
+    {
+      "id": "sync-read",
+      "from": "plaza-sync",
+      "to": "gitlab-read",
+      "label": "固定版本对账",
+      "variant": "dashed"
+    },
+    {
+      "id": "sync-store",
+      "from": "plaza-sync",
+      "to": "plaza-store",
+      "label": "更新投影",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "广场提供发现与连接",
+      "items": [
+        "网页复制提示词，交给用户自己的 Agent",
+        "Node.js / TypeScript 模块化后端；API 与 Worker 共用数据库"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "确认内容，核验来源",
+      "items": [
+        "仅网页作者确认；绑定 revision、commit 与资料摘要",
+        "GitLab 保存原始资料；广场投影不扩大仓库访问权限"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "设计提案 · 尚未实施",
+      "items": [
+        "当前运行的是 Mock 原型；真实 GitLab / MCP Host 待验证",
+        "Agent 执行上传与安装；已收录不代表已安装"
+      ]
+    }
+  ]
+}
