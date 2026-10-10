@@ -83,6 +83,12 @@ function formatDate(value) {
   if (Number.isNaN(parsed.getTime())) return String(value)
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed)
 }
+
+function formatVersion(value) {
+  if (value === null || value === undefined || value === '') return ''
+  const version = String(value)
+  return /^\d/.test(version) ? `v${version}` : version
+}
 </script>
 
 <template>
@@ -90,7 +96,7 @@ function formatDate(value) {
     <header class="public-app-header">
       <div class="public-app-title-row">
         <h2>{{ manifest.name || '未命名应用' }}</h2>
-        <span v-if="app.version" class="public-app-version">v{{ app.version }}</span>
+        <span v-if="app.version" class="public-app-version">{{ formatVersion(app.version) }}</span>
       </div>
       <p class="public-app-summary">{{ manifest.summary || '暂无应用简介。' }}</p>
       <div class="public-app-meta">
@@ -190,30 +196,32 @@ function formatDate(value) {
 .public-app-content { color: #273449; }
 .public-app-header { padding: 2px 0 18px; border-bottom: 1px solid #e8ebf0; }
 .public-app-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.public-app-title-row h2 { margin: 0; color: #1f2c3d; font-size: 22px; font-weight: 650; line-height: 1.4; }
+.public-app-title-row h2 { min-width: 0; margin: 0; color: #1f2c3d; font-size: 22px; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
 .public-app-version { flex: none; margin-top: 3px; padding: 3px 8px; border: 1px solid #d9e1ee; border-radius: 5px; background: #f5f8fc; color: #526c91; font-size: 12px; line-height: 1.4; }
 .public-app-summary { margin: 9px 0 11px; color: #536174; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
-.public-app-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.public-app-meta { display: flex; min-width: 0; flex-wrap: wrap; gap: 6px; }
 .public-app-author, .public-app-tag { padding: 3px 8px; border: 1px solid #e4e8ee; border-radius: 4px; background: #fafbfc; color: #667386; font-size: 12px; }
+.public-app-author, .public-app-tag { max-width: 100%; overflow-wrap: anywhere; }
 .public-app-dates { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 16px; margin-top: 12px; color: #8993a2; font-size: 12px; }
-.public-app-section { margin-top: 19px; }
+.public-app-section { min-width: 0; margin-top: 19px; }
 .public-app-section h3 { margin: 0 0 11px; color: #2b394c; font-size: 15px; font-weight: 650; }
 .capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.capability-block { min-width: 0; padding: 12px 14px; border: 1px solid #edf0f4; border-radius: 7px; background: #fbfcfd; }
+.capability-block { min-width: 0; padding: 12px 14px; border: 1px solid #edf0f4; border-radius: 7px; background: #fbfcfd; overflow-wrap: anywhere; }
 .capability-wide { grid-column: 1 / -1; }
 .capability-block h4, .doc-section h4, .example-block h4 { margin: 0 0 8px; color: #47566a; font-size: 13px; font-weight: 600; }
 .capability-block ul, .public-app-entry-info ul { margin: 0; padding-left: 18px; color: #536174; font-size: 13px; line-height: 1.7; }
-.example-block { padding: 12px 14px; border: 1px solid #edf0f4; border-radius: 7px; background: #fbfcfd; }
+.example-block { padding: 12px 14px; border: 1px solid #edf0f4; border-radius: 7px; background: #fbfcfd; overflow-wrap: anywhere; }
 .example-block + .example-block { margin-top: 8px; }
 .example-block p { margin: 7px 0 0; color: #536174; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
 .example-block p span { display: inline-block; min-width: 64px; color: #8993a2; }
 .doc-section { padding: 12px 14px; border: 1px solid #edf0f4; border-radius: 7px; background: #fff; }
 .doc-section + .doc-section { margin-top: 9px; }
-.markdown-body { color: #536174; font-size: 13px; line-height: 1.75; overflow-wrap: anywhere; }
+.markdown-body { min-width: 0; color: #536174; font-size: 13px; line-height: 1.75; overflow-wrap: anywhere; }
 .markdown-body :deep(p) { margin: 7px 0; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 14px 0 7px; color: #35445a; font-size: 14px; }
 .markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 20px; }
 .markdown-body :deep(pre) { overflow-x: auto; padding: 10px; border-radius: 5px; background: #f4f6f9; }
+.markdown-body :deep(table) { display: block; max-width: 100%; overflow-x: auto; }
 .markdown-body :deep(code) { font-family: Consolas, monospace; }
 .markdown-body :deep(a) { color: #315fbd; text-decoration: underline; text-underline-offset: 2px; }
 .public-app-source dl { display: grid; gap: 8px; margin: 0; }

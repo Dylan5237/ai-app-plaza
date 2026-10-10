@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import AppPublicContent from '../components/AppPublicContent.vue'
 import { apiRequest } from '../lib/api.js'
@@ -74,6 +74,12 @@ function appName(app) {
 
 function appSummary(app) {
   return app?.manifest?.summary || '暂无应用简介。'
+}
+
+function formatVersion(value) {
+  if (value === null || value === undefined || value === '') return ''
+  const version = String(value)
+  return /^\d/.test(version) ? `v${version}` : version
 }
 
 function appTags(app) {
@@ -278,6 +284,8 @@ function preparePublicationRoute() {
   if (!id) return false
 
   publicationId.value = id
+  detailVisible.value = false
+  shareVisible.value = false
   const ticket = fragment.get('key')
   if (ticket) {
     try {
@@ -296,6 +304,16 @@ function preparePublicationRoute() {
   }
   void loadPublication(id)
   return true
+}
+
+function handleHashChange() {
+  if (preparePublicationRoute()) return
+  if (!publicationId.value) return
+  publicationId.value = ''
+  publication.value = null
+  publicationError.value = ''
+  publicationLoading.value = false
+  void loadCatalog()
 }
 
 async function loadPublication(id = publicationId.value) {
@@ -380,12 +398,15 @@ async function returnToCatalog() {
 }
 
 onMounted(async () => {
+  window.addEventListener('hashchange', handleHashChange)
   if (preparePublicationRoute()) return
 
   const appId = new URLSearchParams(window.location.search).get('app')
   await loadCatalog()
   if (appId) await openApp(appId)
 })
+
+onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 </script>
 
 <template>
@@ -413,8 +434,11 @@ onMounted(async () => {
           服务正在检查提交内容，状态更新后请重新加载此页面。
         </div>
         <div v-else-if="publication?.status === 'failed'" class="publication-message is-error" role="alert">
-          {{ publication.error?.message || '服务未能完成收录。' }} 需要修改应用资料时，请让 Agent 更新后重新提交。
+          {{ publication.error?.message || '服务未能完成收录。' }}
         </div>
+        <p v-if="publication?.status === 'failed' && publication.nextAction === 'submit_again'" class="publication-message">
+          请让 Agent 更新应用资料并重新提交。
+        </p>
         <div v-else-if="publication?.status === 'cancelled'" class="publication-message">此发布已取消，无法继续确认。</div>
         <div v-else-if="publication?.status === 'registered'" class="publication-message is-success" role="status">
           应用已进入目录。应用编号：<strong>{{ publication.appId }}</strong>
@@ -478,7 +502,7 @@ onMounted(async () => {
             <p class="eyebrow">公开内容预览</p>
             <h2 id="publication-preview-title">提交版本</h2>
           </div>
-          <span v-if="publication.preview.version" class="public-app-version">v{{ publication.preview.version }}</span>
+          <span v-if="publication.preview.version" class="public-app-version">{{ formatVersion(publication.preview.version) }}</span>
         </div>
         <p class="publication-source-commit">
           源码提交
@@ -559,7 +583,7 @@ onMounted(async () => {
             <article v-for="app in apps" :key="app.id" class="app-card" data-testid="app-card">
               <div class="app-card-top">
                 <button class="app-title" :aria-label="`查看 ${appName(app)} 详情`" @click="openApp(app.id)">{{ appName(app) }}</button>
-                <span v-if="app.version" class="app-version">v{{ app.version }}</span>
+                <span v-if="app.version" class="app-version">{{ formatVersion(app.version) }}</span>
               </div>
               <p class="app-summary">{{ appSummary(app) }}</p>
               <div v-if="appTags(app).length" class="app-tags" aria-label="应用作者标签">
@@ -628,6 +652,7 @@ onMounted(async () => {
           <div v-if="!selectedAppEntries.length" class="entry-empty">作者尚未登记使用入口。</div>
           <div v-for="entry in selectedAppEntries" :key="entry.id" class="entry-action">
             <template v-if="entry.kind === 'web'">
+              <span v-if="selectedAppEntries.length > 1 && entry.label" class="entry-label">{{ entry.label }}</span>
               <a
                 v-if="safeHttpUrl(entry.url)"
                 class="primary-button entry-button"
@@ -635,13 +660,12 @@ onMounted(async () => {
                 :href="safeHttpUrl(entry.url)"
                 target="_blank"
                 rel="noopener noreferrer"
-              >{{ entry.label || '打开平台应用' }}</a>
-              <button v-else class="primary-button entry-button" disabled>{{ entry.label || '平台入口不可用' }}</button>
+              >打开应用</a>
+              <button v-else class="primary-button entry-button" disabled>应用入口不可用</button>
             </template>
             <template v-else-if="entry.kind === 'agent'">
-              <button class="primary-button entry-button" data-testid="use-agent" @click="loadAgentInstructions(entry)">
-                {{ entry.label || '接入我的Agent' }}
-              </button>
+              <span v-if="selectedAppEntries.length > 1 && entry.label" class="entry-label">{{ entry.label }}</span>
+              <button class="primary-button entry-button" data-testid="use-agent" @click="loadAgentInstructions(entry)">接入我的Agent</button>
             </template>
           </div>
 
@@ -676,25 +700,24 @@ onMounted(async () => {
         <button class="secondary-button" @click="openShareDialog">重试</button>
       </div>
       <div v-else-if="publishContract" class="share-flow">
-        <p class="share-intro">把服务提供的任务说明交给你自己的 Agent，由 Agent 提交应用资料；完成后，作者会收到可确认的私有预览链接。</p>
+        <p class="share-intro">把服务提供的发布提示词交给你自己的 Agent，由 Agent 提交应用资料；完成后，作者会收到可确认的私有预览链接。</p>
         <ol class="share-steps">
-          <li><strong>复制发布任务</strong><span>内容由发布服务提供，包含所需资料和提交约定。</span></li>
-          <li><strong>交给你的 Agent 执行</strong><span>Agent 按任务说明准备资料并提交到发布入口。</span></li>
+          <li><strong>复制发布提示词</strong><span>内容由发布服务提供，包含所需资料和提交约定。</span></li>
+          <li><strong>交给你的 Agent 执行</strong><span>Agent 按提示词准备资料并提交。</span></li>
           <li><strong>打开私有预览并确认</strong><span>核对公开内容和源码提交，再确认是否收录。</span></li>
         </ol>
         <div class="publish-prompt-wrap">
-          <div class="prompt-heading"><strong>发布任务</strong><span>完整内容</span></div>
+          <div class="prompt-heading"><strong>发布提示词</strong><span>完整内容</span></div>
           <pre class="publish-prompt">{{ publishContract.prompt }}</pre>
           <el-button
             type="primary"
             data-testid="copy-publish-prompt"
             :disabled="!publishContract.prompt"
             @click="copyText(publishContract.prompt, '发布任务已复制')"
-          >复制发布任务</el-button>
+          >复制发布提示词</el-button>
         </div>
         <div class="share-links">
           <span v-if="publishContract.audience"><strong>目录可见范围</strong>{{ publishContract.audience }}</span>
-          <a v-if="safeHttpUrl(publishContract.submitUrl)" :href="safeHttpUrl(publishContract.submitUrl)" target="_blank" rel="noopener noreferrer">查看提交入口</a>
           <a v-if="safeHttpUrl(publishContract.gitlabUrl)" :href="safeHttpUrl(publishContract.gitlabUrl)" target="_blank" rel="noopener noreferrer">项目托管平台</a>
         </div>
       </div>
@@ -776,13 +799,14 @@ onMounted(async () => {
 .pagination-row.pagination-empty { min-height: 1px; padding: 0; }
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
 .detail-revision { color: #98a1af; font-size: 11px; font-weight: 400; }
-.detail-layout { display: grid; grid-template-columns: minmax(0, 7fr) minmax(250px, 3fr); gap: 20px; max-height: 72vh; min-height: 260px; }
-.detail-content-scroll { min-width: 0; overflow-y: auto; padding: 0 16px 12px 2px; }
-.detail-actions { align-self: start; max-height: 72vh; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
+.detail-layout { display: grid; grid-template-columns: minmax(0, 7fr) minmax(250px, 3fr); gap: 20px; height: min(72vh, 780px); max-height: 72vh; min-height: 0; }
+.detail-content-scroll { min-width: 0; min-height: 0; max-height: 72vh; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
+.detail-actions { align-self: start; min-width: 0; max-height: 72vh; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
 .detail-action-heading { padding-bottom: 12px; border-bottom: 1px solid #e8ebf0; }
 .detail-action-heading h2 { margin: 0; color: #2d3b50; font-size: 15px; }
 .detail-action-heading p { margin: 5px 0 0; color: #8791a1; font-size: 12px; }
 .entry-action { margin-top: 11px; }
+.entry-label { display: block; margin-bottom: 5px; color: #8993a2; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .entry-button { width: 100%; min-height: 38px; }
 .entry-empty { padding: 15px 0; color: #8590a0; font-size: 12px; line-height: 1.6; }
 .detail-no-install-claim { margin: 17px 0 0; color: #9aa3b0; font-size: 11px; line-height: 1.55; }
@@ -848,7 +872,7 @@ onMounted(async () => {
 @media (max-width: 900px) {
   .directory-main { width: min(100% - 36px, 760px); padding-top: 20px; }
   .app-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .detail-layout { grid-template-columns: minmax(0, 1fr); max-height: 75vh; }
+  .detail-layout { grid-template-columns: minmax(0, 1fr); height: 75vh; max-height: 75vh; }
   .detail-content-scroll { max-height: 47vh; padding-right: 3px; }
   .detail-actions { max-height: 25vh; }
 }
