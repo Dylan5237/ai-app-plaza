@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { startHarness } from './helpers/harness.js';
-import { SHA, TOKEN } from './helpers/gitlab-fixture.js';
+import { DEFAULT_TAG, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 
 test('real MCP stdio process can submit/query, but has no confirmation tool', async t => {
   const harness = await startHarness();
@@ -18,7 +18,10 @@ test('real MCP stdio process can submit/query, but has no confirmation tool', as
   await client.connect(transport);
   const list = await client.listTools();
   assert.deepEqual(list.tools.map(tool => tool.name).sort(), ['get_agent_instructions', 'get_publish_contract', 'get_publish_status', 'retry_registration', 'submit_candidate'].sort());
-  const response = await client.callTool({ name: 'submit_candidate', arguments: { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, idempotencyKey: randomUUID() } });
+  const submitTool = list.tools.find(tool => tool.name === 'submit_candidate');
+  assert.ok(submitTool);
+  assert.ok((submitTool.inputSchema as any).required.includes('tag'));
+  const response = await client.callTool({ name: 'submit_candidate', arguments: { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG, idempotencyKey: randomUUID() } });
   assert.ok(!response.isError, JSON.stringify(response));
   const body = JSON.parse((response.content as any[])[0].text);
   assert.equal(body.status, 'preview_ready');

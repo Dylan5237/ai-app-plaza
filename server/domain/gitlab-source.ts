@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { DomainError } from "./errors.js";
-import { decodeUtf8, manifestJson, validateRepoPath, type AppManifest } from "./manifest.js";
+import { decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath, type AppManifest } from "./manifest.js";
 
 export interface SourceInput {
   projectId: string | number;
   appKey: string;
   manifestPath: string;
   commitSha: string;
-  tag?: string;
+  tag: string;
 }
 
 export interface AppSource {
@@ -46,6 +46,11 @@ interface GitLabCommit {
 }
 
 interface GitLabTag {
+  commit?: { id?: string };
+}
+
+interface GitLabRelease {
+  tag_name?: string;
   commit?: { id?: string };
 }
 
@@ -109,8 +114,8 @@ export class GitLabSourceReader {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(input.commitSha)) {
       throw new DomainError(400, "VALIDATION_FAILED", "commitSha 必须是完整 Git commit SHA。");
     }
-    if (input.tag !== undefined && (!input.tag || input.tag.length > 128 || /[\u0000-\u001f\u007f]/.test(input.tag))) {
-      throw new DomainError(400, "VALIDATION_FAILED", "tag 格式无效。");
+    if (!isSupportedReleaseTag(input.tag)) {
+      throw new DomainError(400, "VALIDATION_FAILED", "必须提供符合 MAJOR.MINOR.PATCH 的版本 tag（可带 v 前缀和合法预发布号），并为其创建正式 GitLab Release。");
     }
     const commitSha = input.commitSha.toLowerCase();
 
@@ -141,31 +146,50 @@ export class GitLabSourceReader {
       throw new DomainError(400, "VALIDATION_FAILED", "GitLab 未返回与请求一致的固定 commit。");
     }
 
-    let verifiedTag: string | undefined;
-    if (input.tag !== undefined) {
-      let tag: GitLabTag;
-      try {
-        tag = await this.getJson<GitLabTag>(
-          `api/v4/projects/${projectId}/repository/tags/${encodeURIComponent(input.tag)}`,
-          token,
-          budget,
-        );
-      } catch (error) {
-        if (error instanceof GitLabHttpError && error.status === 404) {
-          throw new DomainError(400, "VALIDATION_FAILED", "GitLab 项目中不存在指定 tag。");
-        }
-        throw error;
+    let tag: GitLabTag;
+    try {
+      tag = await this.getJson<GitLabTag>(
+        `api/v4/projects/${projectId}/repository/tags/${encodeURIComponent(input.tag)}`,
+        token,
+        budget,
+      );
+    } catch (error) {
+      if (error instanceof GitLabHttpError && error.status === 404) {
+        throw new DomainError(400, "VALIDATION_FAILED", "GitLab 项目中不存在指定版本 tag。请按项目发布流程为目标 commit 创建 tag 和对应 Release 后重新提交候选。");
       }
-      if (tag.commit?.id?.toLowerCase() !== commitSha) {
-        throw new DomainError(400, "VALIDATION_FAILED", "指定 tag 当前未指向请求中的固定 commit。");
+      throw error;
+    }
+    if (tag.commit?.id?.toLowerCase() !== commitSha) {
+      throw new DomainError(400, "VALIDATION_FAILED", "指定版本 tag 当前未指向请求中的 commit，可能已移动。请为正确 commit 准备新的匹配版本 tag/Release 后重新提交候选。");
+    }
+
+    let release: GitLabRelease;
+    try {
+      release = await this.getJson<GitLabRelease>(
+        `api/v4/projects/${projectId}/releases/${encodeURIComponent(input.tag)}`,
+        token,
+        budget,
+      );
+    } catch (error) {
+      if (error instanceof GitLabHttpError && error.status === 404) {
+        throw new DomainError(400, "VALIDATION_FAILED", "该版本 tag 尚无正式 GitLab Release。请作者 Agent 使用已有授权按项目发布流程创建此 Release，再用相同 tag 和 commit SHA 重新提交；门户不会代作者操作 GitLab。");
       }
-      verifiedTag = input.tag;
+      throw error;
+    }
+    if (release.tag_name !== input.tag) {
+      throw new DomainError(400, "VALIDATION_FAILED", "GitLab Release 返回的版本 tag 与提交不一致。请核对项目版本、tag 和 Release 后重新提交候选。");
+    }
+    if (release.commit?.id?.toLowerCase() !== commitSha) {
+      throw new DomainError(400, "VALIDATION_FAILED", "GitLab Release 关联的 commit 与请求不一致，版本 Release 可能指向旧提交。请勿移动已有 tag；为正确 commit 准备新的匹配版本、tag 和 Release 后重新提交候选。");
     }
 
     const webUrl = checkedProjectUrl(project.web_url, this.baseUrl);
     const manifestBytes = await this.readRegularBlob(projectId, manifestPath, commitSha, token, MAX_MANIFEST_BYTES, budget);
     const manifestText = decodeUtf8(manifestBytes, "Manifest");
     const manifest = manifestJson(manifestText, input.appKey);
+    if (normalizeProjectVersion(manifest.projectVersion) !== normalizeProjectVersion(input.tag)) {
+      throw new DomainError(400, "VALIDATION_FAILED", "ai-app.json 的 projectVersion 必须与 GitLab Release tag 表示同一版本（允许可选的 v 前缀）。请更新版本资料、commit、tag 和 Release 后重新提交。");
+    }
     const declaredPaths = new Set<string>([manifest.docs.readme, manifest.docs.usage]);
     for (const entry of manifest.entries) {
       if (entry.kind === "agent") declaredPaths.add(entry.instructionsPath);
@@ -199,13 +223,13 @@ export class GitLabSourceReader {
       projectUrl: webUrl,
       commitSha,
       manifestPath,
-      ...(verifiedTag ? { tag: verifiedTag } : {}),
+      tag: input.tag,
     };
     return {
       manifest,
       documents,
       digest,
-      version: manifest.projectVersion ?? verifiedTag ?? `快照 ${commitSha.slice(0, 8)}`,
+      version: manifest.projectVersion,
       source,
       sourceCreatedAt,
     };
@@ -397,4 +421,8 @@ function validIsoDate(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const time = Date.parse(value);
   return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+}
+
+function isSupportedReleaseTag(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 128 && normalizeProjectVersion(value) !== undefined;
 }

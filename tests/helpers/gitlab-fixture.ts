@@ -5,9 +5,10 @@ import type { AddressInfo } from 'node:net';
 export const SHA = 'a'.repeat(40);
 export const SHA2 = 'b'.repeat(40);
 export const TOKEN = 'test-only-maintainer-token';
+export const DEFAULT_TAG = 'v1.0.0';
 export function manifest(index = 1) {
-  return { schemaVersion: '1', appKey: `sample-${index}`, name: `DocPilot 文档助手 ${index}`, summary: '将 Word 转为 Markdown，保留表格并生成清晰的文档摘要。',
-    projectVersion: '1.0.0', tags: index % 2 ? ['文档处理', '知识整理'] : ['代码审查'], maintainers: ['fixture-author'],
+  return { schemaVersion: '2', appKey: `sample-${index}`, name: `DocPilot 文档助手 ${index}`, summary: '将 Word 转为 Markdown，保留表格并生成清晰的文档摘要。',
+    projectVersion: '1.0.0', tags: index % 2 ? ['文档处理', '知识整理'] : ['代码审查'], maintainers: [{ name: '张明', nameEn: 'Ming Zhang' }],
     capabilities: { scenarios: ['转换 Word 文档并整理知识'], inputs: ['Word 文档'], outputs: ['Markdown 文档', '文档摘要'] },
     examples: [{ request: '将 Word 转为 Markdown 并保留表格', expectedResult: '输出 Markdown 与转换说明' }], requirements: ['测试工作区'], limitations: ['受控测试资料，不是可安装的正式应用'],
     docs: { readme: `docs/usage-${index}.md`, usage: `docs/usage-${index}.md` },
@@ -22,7 +23,7 @@ export async function startGitLabFixture(count = 1) {
     files.set(`docs/usage-${i}.md`, `# 使用步骤与说明\n\n1. 准备 Word 文档。\n2. 在目标工具中转换。\n3. 核对表格与输出。\n\n## 示例\n将需求文档转换为 Markdown。\n\n<script>window.fixtureXss=true</script>\n![remote](https://example.invalid/track.png)`);
     files.set(`docs/agent-${i}.md`, '# 接入说明\n\n此为协议测试材料，不执行真实安装。\n1. 核对环境和授权。\n2. 取得固定版本。\n3. 执行最小验证，失败时保留原配置。');
   }
-  const state = { offline: false, role: 40, tagSha: SHA, userId: 10, files, modes: new Map<string, string>(), requests: [] as { method: string; path: string }[] };
+  const state = { offline: false, role: 40, tagName: DEFAULT_TAG, tagSha: SHA, releaseSha: SHA, releasePresent: true, userId: 10, files, modes: new Map<string, string>(), requests: [] as { method: string; path: string }[] };
   const server = createServer((req, res) => {
     const url = new URL(req.url!, 'http://127.0.0.1');
     state.requests.push({ method: req.method!, path: url.pathname });
@@ -41,7 +42,14 @@ export async function startGitLabFixture(count = 1) {
       const sha = decodeURIComponent(suffix.split('/').at(-1)!);
       return [SHA, SHA2].includes(sha) ? send(200, { id: sha, short_id: sha.slice(0, 8), created_at: '2026-09-01T00:00:00Z' }) : send(404, { error: 'commit not found' });
     }
-    if (suffix.startsWith('/repository/tags/')) return send(200, { name: decodeURIComponent(suffix.split('/').at(-1)!), commit: { id: state.tagSha } });
+    if (suffix.startsWith('/repository/tags/')) {
+      const tagName = decodeURIComponent(suffix.slice('/repository/tags/'.length));
+      return tagName === state.tagName ? send(200, { name: tagName, commit: { id: state.tagSha } }) : send(404, { error: 'tag not found' });
+    }
+    if (suffix.startsWith('/releases/')) {
+      const tagName = decodeURIComponent(suffix.slice('/releases/'.length));
+      return state.releasePresent && tagName === state.tagName ? send(200, { tag_name: tagName, commit: { id: state.releaseSha } }) : send(404, { error: 'release not found' });
+    }
     if (suffix === '/repository/tree') {
       const parent = url.searchParams.get('path') || '';
       const prefix = parent ? `${parent}/` : '';

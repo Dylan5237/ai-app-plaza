@@ -16,12 +16,12 @@ import {
   type LoadedSource,
   type SourceInput,
 } from "./gitlab-source.js";
-import type { AgentEntry, AppManifest } from "./manifest.js";
+import type { AgentEntry, AppManifest, StoredAppManifest } from "./manifest.js";
 
 export interface AppView {
   id: string;
   revision: number;
-  manifest: AppManifest;
+  manifest: StoredAppManifest;
   version: string;
   createdAt: string;
   updatedAt: string;
@@ -112,7 +112,7 @@ interface AppRecord {
   digest: string | null;
   audience: string | null;
   version: string | null;
-  manifest: AppManifest | string | null;
+  manifest: StoredAppManifest | string | null;
   documents: Record<string, string> | string | null;
   project_url: string | null;
   source_created_at: Date | string | null;
@@ -267,7 +267,7 @@ export function createService(config: ServiceConfig): PlazaService {
     return {
       id: record.id,
       revision: record.revision,
-      manifest: parseJsonValue<AppManifest>(record.manifest),
+      manifest: parseJsonValue<StoredAppManifest>(record.manifest),
       version: record.version,
       createdAt: asIso(record.created_at),
       updatedAt: asIso(record.updated_at),

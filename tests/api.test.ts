@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../server/app.js';
 import { openDatabase } from '../server/domain/database.js';
-import { startGitLabFixture, SHA, TOKEN } from './helpers/gitlab-fixture.js';
+import { DEFAULT_TAG, manifest, startGitLabFixture, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 import type { Config } from '../server/config.js';
 
 test('HTTP publication -> confirmation -> catalog -> usage, with boundary failures', async t => {
@@ -17,15 +17,25 @@ test('HTTP publication -> confirmation -> catalog -> usage, with boundary failur
   assert.equal((await request('GET', '/api/apps')).json().total, 0);
   assert.equal((await request('GET', '/api/health')).json().loginRequired, false);
   const contract = (await request('GET', '/api/publish-contract')).json();
-  assert.equal(contract.schema.properties.schemaVersion.const, '1');
+  assert.equal(contract.schema.properties.schemaVersion.const, '2');
   assert.ok(contract.prompt.includes('不要调用确认接口'));
-  const input = { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA };
+  assert.ok(contract.prompt.includes('中文姓名和英文全名或完整拼音'));
+  assert.ok(contract.prompt.includes('正式 GitLab Release'));
+  assert.ok(contract.prompt.includes('Release.commit.id、tag.commit.id'));
+  assert.deepEqual(contract.schema.properties.maintainers.items.required, ['name', 'nameEn']);
+  const projectVersionPattern = new RegExp(contract.schema.properties.projectVersion.pattern);
+  assert.equal(projectVersionPattern.test('1.2.3'), true);
+  assert.equal(projectVersionPattern.test('1.2.3\n'), false, 'schema must reject a final line break');
+  const input = { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
   assert.equal((await request('POST', '/api/publications', input)).statusCode, 401);
   const key = randomUUID();
   const submitHeaders = { 'x-gitlab-token': TOKEN, 'idempotency-key': key };
   assert.equal((await request('POST', '/api/publications', input, { ...submitHeaders, origin: 'https://attacker.invalid' })).statusCode, 403);
   assert.equal((await request('GET', '/api/apps', undefined, { host: 'attacker.invalid' })).statusCode, 403);
   assert.equal((await request('POST', '/api/publications', { ...input, commitSha: 'main' }, submitHeaders)).statusCode, 400);
+  const { tag: _requiredTag, ...withoutTag } = input;
+  assert.equal((await request('POST', '/api/publications', withoutTag, submitHeaders)).statusCode, 400);
+  assert.equal((await request('POST', '/api/publications', { ...input, tag: 'v1.0.0\n' }, submitHeaders)).statusCode, 400, 'HTTP must reject a version with a final line break');
   assert.equal((await request('POST', '/api/publications', { ...input, projectId: Number.MAX_SAFE_INTEGER + 1 }, submitHeaders)).statusCode, 400);
   const submitted = await request('POST', '/api/publications', input, submitHeaders);
   assert.equal(submitted.statusCode, 201, submitted.body);
@@ -57,4 +67,10 @@ test('HTTP publication -> confirmation -> catalog -> usage, with boundary failur
   const publicText = JSON.stringify({ listing, detail, instructions });
   assert.ok(!publicText.includes(TOKEN) && !publicText.includes(publication.ticket));
   assert.ok(gitlab.state.requests.every(r => r.method === 'GET' || r.method === 'HEAD'), 'portal must never write GitLab');
+
+  gitlab.state.files.set('ai-app.json', JSON.stringify({ ...manifest(), schemaVersion: '1', maintainers: ['fixture-author'] }));
+  const legacy = await request('POST', '/api/publications', input, { 'x-gitlab-token': TOKEN, 'idempotency-key': randomUUID() });
+  assert.equal(legacy.statusCode, 201);
+  assert.equal(legacy.json().error.code, 'VALIDATION_FAILED');
+  assert.match(legacy.json().error.message, /schemaVersion 2.*GET \/api\/publish-contract/);
 });

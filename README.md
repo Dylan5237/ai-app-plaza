@@ -24,9 +24,9 @@ npm start
 
 ## 发布与使用
 
-在页面点“分享我的AI应用”并复制提示词。项目 Agent 取得 `/api/publish-contract` 中的规范，生成 `ai-app.json` 和明确可共享的 Markdown，按原项目规则准备固定 commit，再提交定位。作者不用填写资料表格。
+在页面点“分享我的AI应用”并复制提示词。项目 Agent 取得 `/api/publish-contract` 中的 schemaVersion 2 规范，生成 `ai-app.json` 和明确可共享的 Markdown。每位作者都需提供中文姓名和英文全名或完整拼音；缺任一姓名时 Agent 会先询问，不从 GitLab 用户名、邮箱或 Git 配置推测。作者不用填写资料表格。
 
-发布接口只读取 GitLab。作者 Agent 将既有授权通过 `X-GitLab-Token` 请求头提供，门户核验当前项目 Maintainer/Owner 权限。授权应支持读取用户、项目与仓库 API（例如个人令牌 `read_api`）；不要在对话中提供令牌，也不要将其写入提示词或命令行实参。
+广场发布接口只读取 GitLab。作者 Agent 按现有 GitLab 授权和项目发布流程提交资料，并为目标 commit 创建版本 tag 与正式 GitLab Release；`projectVersion`、tag 和 Release 必须匹配，格式为 `1.2.3` / `v1.2.3`，也支持合法预发布号。不要移动已有 tag；新 commit 应使用新的匹配版本号、tag 和 Release。提交与作者确认时，门户都会复核 Release.commit.id、tag.commit.id 和请求中的完整 commit SHA 一致，并重新读取共享资料。广场不替作者执行 GitLab 写入。作者 Agent 将既有读取授权通过 `X-GitLab-Token` 请求头提供，门户核验当前项目 Maintainer/Owner 权限。授权应支持读取用户、项目、仓库和 Release API（例如个人令牌 `read_api`）；不要在对话中提供令牌，也不要将其写入提示词或命令行实参。
 
 Agent 返回本次专属预览链接，作者检查内容后确认。**任何持有完整链接的人都能查看和确认本次发布**；链接 24 小时有效，应只交给本次作者。它不是门户账号，也不是 GitLab 令牌。网页会把临时凭证保存在本标签页的 sessionStorage 中并从地址栏移除；同标签页刷新可继续。
 
@@ -39,7 +39,7 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 | 操作 | 接口 |
 | --- | --- |
 | 规范与发布提示词 | `GET /api/publish-contract` |
-| 提交固定来源 | `POST /api/publications`，`X-GitLab-Token` + `Idempotency-Key` |
+| 提交固定来源 | `POST /api/publications`，须包含 GitLab 版本 `tag`，并提供 `X-GitLab-Token` + `Idempotency-Key` |
 | 查询私有预览/结果 | `GET /api/publications/:id`，Bearer 本次凭证 |
 | 作者确认收录 | `POST /api/publications/:id/confirm`，本次凭证及预览 revision/digest |
 | 恢复核验/已确认收录 | `POST /api/publications/:id/retry`，本次凭证 |

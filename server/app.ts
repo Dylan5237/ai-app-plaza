@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import { access } from 'node:fs/promises';
 import { z } from 'zod';
 import { createService } from './domain/service.js';
+import { normalizeProjectVersion } from './domain/manifest.js';
 import { DomainError } from './domain/errors.js';
 import type { Database } from './domain/database.js';
 import type { Config } from './config.js';
@@ -13,7 +14,7 @@ const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
   appKey: z.string().min(1).max(64), manifestPath: z.string().min(1).max(512),
   commitSha: z.string().regex(/^[a-f0-9]{40}([a-f0-9]{24})?$/),
-  tag: z.string().min(1).max(200).optional(), expectedAppRevision: z.number().int().nonnegative().optional(),
+  tag: z.string().min(1).max(128).refine((value) => normalizeProjectVersion(value) !== undefined), expectedAppRevision: z.number().int().nonnegative().optional(),
 }).strict();
 const confirmation = z.object({ revision: z.number().int().positive(), digest: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const idValue = z.string().uuid();

@@ -22,14 +22,19 @@ export interface AgentEntry {
 
 export type ManifestEntry = WebEntry | AgentEntry;
 
+export interface Maintainer {
+  name: string;
+  nameEn: string;
+}
+
 export interface AppManifest {
-  schemaVersion: "1";
+  schemaVersion: "2";
   appKey: string;
   name: string;
   summary: string;
-  projectVersion?: string;
+  projectVersion: string;
   tags: string[];
-  maintainers: string[];
+  maintainers: Maintainer[];
   capabilities: { scenarios: string[]; inputs: string[]; outputs: string[] };
   examples: Array<{ request: string; expectedResult: string }>;
   requirements: string[];
@@ -38,6 +43,12 @@ export interface AppManifest {
   entries: ManifestEntry[];
   primaryEntry: string;
 }
+
+export type StoredAppManifest = AppManifest | (Omit<AppManifest, "schemaVersion" | "projectVersion" | "maintainers"> & {
+  schemaVersion: "1";
+  projectVersion?: string;
+  maintainers: string[];
+});
 
 const schemaText = readFileSync(new URL("../contracts/app-manifest.schema.json", import.meta.url), "utf8");
 const schema = JSON.parse(schemaText) as object;
@@ -90,6 +101,23 @@ export function validateRepoPath(value: unknown, label: string): string {
 }
 
 export function validateManifest(value: unknown, expectedAppKey: string): AppManifest {
+  if (value && typeof value === "object" && (value as { schemaVersion?: unknown }).schemaVersion === "1") {
+    throw new DomainError(400, "VALIDATION_FAILED", "新发布资料需要使用 schemaVersion 2。请先读取 GET /api/publish-contract；历史已收录的 v1 快照仍按原样保留。请勿从 GitLab 用户名、邮箱或 Git 配置推测作者姓名。");
+  }
+  if (value && typeof value === "object") {
+    const candidate = value as { projectVersion?: unknown; maintainers?: unknown };
+    if (typeof candidate.projectVersion !== "string" || !normalizeProjectVersion(candidate.projectVersion)) {
+      throw new DomainError(400, "VALIDATION_FAILED", "projectVersion 必须是有效的 MAJOR.MINOR.PATCH，可带 v 前缀和合法预发布号，例如 1.2.3 或 v1.2.3-rc.1；请确保它与 GitLab tag 和 Release 一致。");
+    }
+    if (Array.isArray(candidate.maintainers)) {
+      for (const maintainer of candidate.maintainers) {
+        const names = maintainer && typeof maintainer === "object" ? maintainer as { name?: unknown; nameEn?: unknown } : {};
+        if (typeof names.name !== "string" || !names.name.trim() || typeof names.nameEn !== "string" || !names.nameEn.trim()) {
+          throw new DomainError(400, "VALIDATION_FAILED", "每位作者都必须填写中文姓名和英文全名或完整拼音；缺失时请先询问作者，不要根据 GitLab 或 Git 配置猜测。");
+        }
+      }
+    }
+  }
   if (!validateSchema(value)) {
     const issue = validateSchema.errors?.[0];
     const field = issue?.instancePath ? `（${issue.instancePath}）` : "";
@@ -151,6 +179,11 @@ export function validateManifest(value: unknown, expectedAppKey: string): AppMan
     }
   }
   return manifest;
+}
+
+export function normalizeProjectVersion(value: string): string | undefined {
+  if (!/^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?![\s\S])/.test(value)) return undefined;
+  return value.startsWith("v") ? value.slice(1) : value;
 }
 
 export function manifestJson(text: string, expectedAppKey: string): AppManifest {

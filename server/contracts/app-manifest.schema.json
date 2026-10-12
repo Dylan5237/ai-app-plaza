@@ -1,23 +1,30 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AI应用广场资料契约 v1（待实现）",
-  "description": "D1-D3 已确认；结构校验不替代权限、共享预览与固定来源核验。",
+  "title": "AI应用广场资料契约 v2",
+  "description": "新发布资料必须声明完整版本、正式 GitLab Release 与中英文作者姓名；结构校验不替代权限、共享预览与固定来源核验。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "appKey", "name", "summary", "tags", "maintainers", "capabilities", "examples", "requirements", "limitations", "docs", "entries", "primaryEntry"],
+  "required": ["schemaVersion", "appKey", "name", "summary", "projectVersion", "tags", "maintainers", "capabilities", "examples", "requirements", "limitations", "docs", "entries", "primaryEntry"],
   "properties": {
-    "schemaVersion": {"const": "1"},
+    "schemaVersion": {"const": "2"},
     "appKey": {"$ref": "#/$defs/key"},
     "name": {"type": "string", "minLength": 1, "maxLength": 80},
     "summary": {"type": "string", "minLength": 1, "maxLength": 240},
-    "projectVersion": {"type": "string", "minLength": 1, "maxLength": 80, "description": "可选的作者维护的正式版本声明；缺省时使用核验 tag 或快照版本，不证明远端运行版本。"},
+    "projectVersion": {"type": "string", "maxLength": 80, "pattern": "^v?(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?![\\s\\S])", "description": "必须与 GitLab Release 的版本 tag 对应；支持 1.2.3 / v1.2.3 及合法预发布号。"},
     "tags": {
       "type": "array", "maxItems": 12, "uniqueItems": true,
       "items": {"type": "string", "minLength": 1, "maxLength": 32}
     },
     "maintainers": {
       "type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1, "maxLength": 255}
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "nameEn"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 80, "description": "作者中文姓名。缺失时向作者询问，不得猜测。"},
+          "nameEn": {"type": "string", "minLength": 1, "maxLength": 80, "description": "作者英文全名或完整拼音。缺失时向作者询问，不得猜测。"}
+        }
+      }
     },
     "capabilities": {
       "type": "object", "additionalProperties": false,

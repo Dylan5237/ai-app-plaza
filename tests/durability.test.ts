@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../server/domain/database.js';
 import { createService } from '../server/domain/service.js';
-import { startGitLabFixture, SHA, TOKEN } from './helpers/gitlab-fixture.js';
+import { DEFAULT_TAG, startGitLabFixture, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 
 test('confirmed failed publication survives database reopening and retries without duplicate registration', async t => {
   const gitlab = await startGitLabFixture();
@@ -15,7 +15,7 @@ test('confirmed failed publication survives database reopening and retries witho
   t.after(async () => { await db.close(); await gitlab.close(); });
   const config = { db, gitlabUrl: gitlab.url, publicOrigin: 'http://127.0.0.1:4173', secret: 'durability-test-secret-with-at-least-32-characters', audience: '所有能访问本门户的人' };
   let service = createService(config);
-  const draft = await service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA }, TOKEN, randomUUID());
+  const draft = await service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());
   assert.equal(draft.status, 'preview_ready');
   const stored = await db.query('SELECT token_ciphertext FROM publications WHERE id=$1', [draft.id]);
   assert.ok(stored.rows[0].token_ciphertext && !stored.rows[0].token_ciphertext.includes(TOKEN));

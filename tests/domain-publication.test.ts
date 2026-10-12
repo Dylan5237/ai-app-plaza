@@ -12,6 +12,9 @@ import { createService } from "../server/domain/service.js";
 const COMMIT_A = "a".repeat(40);
 const COMMIT_B = "b".repeat(40);
 const COMMIT_C = "c".repeat(40);
+const TAG_A = "v1.0.0";
+const TAG_B = "v1.1.0";
+const TAG_C = "v1.2.0";
 const GITLAB_TOKEN = "test-author-gitlab-token-never-return-this";
 
 interface GitLabFixture {
@@ -21,6 +24,8 @@ interface GitLabFixture {
   userReads: number;
   role: { project_access: number; group_access: number };
   failRaw: boolean;
+  tags: Map<string, string>;
+  releases: Map<string, string>;
   setVersion(commit: string, manifest: Record<string, unknown>, docs?: Record<string, string>): void;
   setManifestText(commit: string, text: string): void;
   close(): Promise<void>;
@@ -45,12 +50,13 @@ async function setup(t: { after(callback: () => void | Promise<void>): void }) {
 
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     appKey: "project-flow",
     name: "自动化方案",
     summary: "自动化生成项目工作流与成果",
+    projectVersion: "1.0.0",
     tags: ["流程", "数据"],
-    maintainers: ["author@example.invalid"],
+    maintainers: [{ name: "张明", nameEn: "Ming Zhang" }],
     capabilities: {
       scenarios: ["企业任务需求梳理"],
       inputs: ["业务目标"],
@@ -79,6 +85,7 @@ function sourceInput(commitSha = COMMIT_A, extra: Record<string, unknown> = {}) 
     appKey: "project-flow",
     manifestPath: "ai-app.json",
     commitSha,
+    tag: commitSha === COMMIT_A ? TAG_A : commitSha === COMMIT_B ? TAG_B : TAG_C,
     ...extra,
   };
 }
@@ -90,6 +97,8 @@ async function startGitLabFixture(): Promise<GitLabFixture> {
   let userReads = 0;
   let role = { project_access: 30, group_access: 40 };
   let failRaw = false;
+  const tags = new Map<string, string>();
+  const releases = new Map<string, string>();
   const server: Server = createServer((request, response) => {
     void handle(request, response);
   });
@@ -119,7 +128,17 @@ async function startGitLabFixture(): Promise<GitLabFixture> {
       return sendJson(response, 200, { id: commit });
     }
     const tagMatch = /^\/api\/v4\/projects\/1\/repository\/tags\/(.+)$/.exec(requestPath);
-    if (tagMatch) return sendJson(response, 200, { commit: { id: decodeURIComponent(tagMatch[1]!) === "v1" ? COMMIT_A : COMMIT_B } });
+    if (tagMatch) {
+      const tag = decodeURIComponent(tagMatch[1]!);
+      const target = tags.get(tag);
+      return target ? sendJson(response, 200, { name: tag, commit: { id: target } }) : sendJson(response, 404, { message: "tag not found" });
+    }
+    const releaseMatch = /^\/api\/v4\/projects\/1\/releases\/(.+)$/.exec(requestPath);
+    if (releaseMatch) {
+      const tag = decodeURIComponent(releaseMatch[1]!);
+      const releaseCommit = releases.get(tag);
+      return releaseCommit ? sendJson(response, 200, { tag_name: tag, commit: { id: releaseCommit } }) : sendJson(response, 404, { message: "release not found" });
+    }
 
     if (requestPath === "/api/v4/projects/1/repository/tree") {
       const commit = requestUrl.searchParams.get("ref") ?? "";
@@ -168,6 +187,8 @@ async function startGitLabFixture(): Promise<GitLabFixture> {
     set role(value) { role = value; },
     get failRaw() { return failRaw; },
     set failRaw(value) { failRaw = value; },
+    tags,
+    releases,
     setVersion(commit, appManifest, docs = {}) {
       const files = new Map<string, Buffer>([
         ["ai-app.json", Buffer.from(JSON.stringify(appManifest), "utf8")],
@@ -175,6 +196,10 @@ async function startGitLabFixture(): Promise<GitLabFixture> {
         ["docs/instructions.md", Buffer.from(docs["docs/instructions.md"] ?? "# Agent 接入\n按步骤运行。", "utf8")],
       ]);
       versions.set(commit, files);
+      const projectVersion = typeof appManifest.projectVersion === "string" ? appManifest.projectVersion : "1.0.0";
+      const tag = projectVersion.startsWith("v") ? projectVersion : `v${projectVersion}`;
+      tags.set(tag, commit);
+      releases.set(tag, commit);
     },
     setManifestText(commit, text) {
       const files = versions.get(commit) ?? new Map<string, Buffer>();
@@ -291,13 +316,102 @@ test("fails closed on insufficient effective GitLab role and rejects repeated JS
   assert.equal(denied.status, "failed");
   assert.equal(denied.error?.code, "PERMISSION_DENIED");
 
-  const duplicate = '{"schemaVersion":"1","schemaVersion":"1"}';
-  fixture.setVersion(COMMIT_B, manifest());
+  const duplicate = '{"schemaVersion":"2","schemaVersion":"2"}';
+  fixture.setVersion(COMMIT_B, manifest({ projectVersion: "1.1.0" }));
   fixture.setManifestText(COMMIT_B, duplicate);
   fixture.role = { project_access: 40, group_access: 0 };
   const invalid = await service.submit(sourceInput(COMMIT_B), GITLAB_TOKEN, "publish-0005");
   assert.equal(invalid.status, "failed");
   assert.equal(invalid.error?.code, "VALIDATION_FAILED");
+});
+
+test("new publications require both maintainer names and matching projectVersion", async (t) => {
+  const { fixture, service } = await setup(t);
+  fixture.setVersion(COMMIT_B, manifest({ projectVersion: "1.1.0", maintainers: [{ nameEn: "Ming Zhang" }] }));
+  const missingChineseName = await service.submit(sourceInput(COMMIT_B), GITLAB_TOKEN, "publish-name-zh");
+  assert.equal(missingChineseName.status, "failed");
+  assert.equal(missingChineseName.error?.code, "VALIDATION_FAILED");
+
+  fixture.setVersion(COMMIT_C, manifest({ projectVersion: "1.2.0", maintainers: [{ name: "张明" }] }));
+  const missingEnglishName = await service.submit(sourceInput(COMMIT_C), GITLAB_TOKEN, "publish-name-en");
+  assert.equal(missingEnglishName.status, "failed");
+  assert.equal(missingEnglishName.error?.code, "VALIDATION_FAILED");
+  assert.match(missingEnglishName.error?.message ?? "", /先询问作者/);
+
+  fixture.setVersion(COMMIT_C, manifest({ projectVersion: "1.2.0", maintainers: [{ name: "张明", nameEn: "  " }] }));
+  const blankEnglishName = await service.submit(sourceInput(COMMIT_C), GITLAB_TOKEN, "publish-name-en-blank");
+  assert.equal(blankEnglishName.status, "failed");
+  assert.equal(blankEnglishName.error?.code, "VALIDATION_FAILED");
+
+  fixture.setVersion(COMMIT_A, manifest({ projectVersion: "2.0.0" }));
+  const mismatchedVersion = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-version-mismatch");
+  assert.equal(mismatchedVersion.status, "failed");
+  assert.equal(mismatchedVersion.error?.code, "VALIDATION_FAILED");
+  assert.match(mismatchedVersion.error?.message ?? "", /projectVersion 必须与 GitLab Release tag/);
+});
+
+test("missing Release during confirmation explains recovery and requires a fresh preview", async (t) => {
+  const { fixture, service } = await setup(t);
+  const preview = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-release-missing");
+  fixture.releases.delete(TAG_A);
+  const failed = await service.confirm(preview.id, preview.ticket, { revision: preview.revision, digest: preview.digest! });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.nextAction, "submit_again");
+  assert.match(failed.error?.message ?? "", /尚无正式 GitLab Release/);
+
+  fixture.releases.set(TAG_A, COMMIT_A);
+  const recovered = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-release-restored");
+  assert.equal(recovered.status, "preview_ready");
+  const registered = await service.confirm(recovered.id, recovered.ticket, { revision: recovered.revision, digest: recovered.digest! });
+  assert.equal(registered.status, "registered");
+});
+
+test("a moved release tag is rechecked during confirmation", async (t) => {
+  const { fixture, service } = await setup(t);
+  fixture.setVersion(COMMIT_B, manifest({ projectVersion: "1.1.0" }));
+  const preview = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-tag-moved");
+  fixture.tags.set(TAG_A, COMMIT_B);
+  const failed = await service.confirm(preview.id, preview.ticket, { revision: preview.revision, digest: preview.digest! });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.nextAction, "submit_again");
+  assert.match(failed.error?.message ?? "", /可能已移动/);
+});
+
+test("release commit identity is checked again during confirmation", async (t) => {
+  const { fixture, service } = await setup(t);
+  const preview = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-release-commit-moved");
+  fixture.releases.set(TAG_A, COMMIT_B);
+  const failed = await service.confirm(preview.id, preview.ticket, { revision: preview.revision, digest: preview.digest! });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.nextAction, "submit_again");
+  assert.match(failed.error?.message ?? "", /Release 关联的 commit 与请求不一致/);
+});
+
+test("legacy v1 string maintainers remain readable without rewriting stored snapshots", async (t) => {
+  const { db, service } = await setup(t);
+  const preview = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-legacy-read");
+  const registered = await service.confirm(preview.id, preview.ticket, { revision: preview.revision, digest: preview.digest! });
+  const snapshot = await db.query<{ id: string }>("SELECT id FROM published_snapshots WHERE app_id = $1", [registered.appId]);
+  assert.ok(snapshot.rows[0]);
+
+  const legacyManifest = manifest({ schemaVersion: "1", maintainers: ["legacy-author@example.invalid"] });
+  delete legacyManifest.projectVersion;
+  await db.query(
+    "UPDATE published_snapshots SET manifest = $2::jsonb, version = $3, tag = NULL WHERE id = $1",
+    [snapshot.rows[0]!.id, JSON.stringify(legacyManifest), "快照 aaaaaaaa"],
+  );
+  const listed = await service.list({ query: "自动化方案" });
+  assert.equal(listed.total, 1);
+  assert.equal(listed.items[0]?.version, "快照 aaaaaaaa");
+  assert.equal("tag" in (listed.items[0]?.source ?? {}), false);
+  const historic = await service.app(registered.appId!);
+  assert.equal(historic.version, "快照 aaaaaaaa");
+  assert.equal("tag" in historic.source, false);
+  assert.deepEqual(historic.manifest.maintainers, ["legacy-author@example.invalid"]);
+  assert.equal("projectVersion" in historic.manifest, false);
+  const instructions = await service.instructions(registered.appId!, "agent-main");
+  assert.match(instructions.text, /# 自动化方案 · 快照 aaaaaaaa/);
+  assert.equal("tag" in instructions.source, false);
 });
 
 test("source outages are recorded and retry resumes the confirmed registration", async (t) => {
@@ -321,8 +435,8 @@ test("confirmation cannot overwrite a newer app revision", async (t) => {
   const initial = await service.submit(sourceInput(), GITLAB_TOKEN, "publish-0007");
   await service.confirm(initial.id, initial.ticket, { revision: initial.revision, digest: initial.digest! });
 
-  fixture.setVersion(COMMIT_B, manifest({ name: "自动化方案 B" }));
-  fixture.setVersion(COMMIT_C, manifest({ name: "自动化方案 C" }));
+  fixture.setVersion(COMMIT_B, manifest({ name: "自动化方案 B", projectVersion: "1.1.0" }));
+  fixture.setVersion(COMMIT_C, manifest({ name: "自动化方案 C", projectVersion: "1.2.0" }));
   const candidateB = await service.submit(sourceInput(COMMIT_B, { expectedAppRevision: 1 }), GITLAB_TOKEN, "publish-0008");
   const candidateC = await service.submit(sourceInput(COMMIT_C, { expectedAppRevision: 1 }), GITLAB_TOKEN, "publish-0009");
   assert.equal(candidateB.status, "preview_ready");
