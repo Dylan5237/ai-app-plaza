@@ -1,7 +1,9 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
+import AppExamples from '../components/AppExamples.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 
@@ -21,10 +23,14 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detailError = ref('')
 const selectedApp = ref(null)
+const detailDocumentsVisible = ref(false)
+const detailSourceVisible = ref(false)
+const instructionDialogVisible = ref(false)
 const instruction = ref(null)
 const instructionLoading = ref(false)
 const instructionError = ref('')
 const instructionEntry = ref(null)
+let instructionRequestSequence = 0
 const instructionHtml = computed(() => {
   const source = selectedApp.value?.source || {}
   const instructionSource = instruction.value?.source
@@ -89,7 +95,7 @@ function appTags(app) {
 function maintainerName(value) {
   if (typeof value === 'string') return value
   if (!value || typeof value !== 'object') return ''
-  return value.name || value.displayName || value.username || value.id || ''
+  return typeof value.name === 'string' ? value.name : ''
 }
 
 function appMaintainers(app) {
@@ -171,11 +177,16 @@ function clearFilters() {
 
 async function openApp(id) {
   if (!id) return
+  instructionRequestSequence += 1
   detailVisible.value = true
+  detailDocumentsVisible.value = false
+  detailSourceVisible.value = false
+  instructionDialogVisible.value = false
   detailLoading.value = true
   detailError.value = ''
   selectedApp.value = null
   instruction.value = null
+  instructionLoading.value = false
   instructionEntry.value = null
   instructionError.value = ''
   try {
@@ -188,26 +199,38 @@ async function openApp(id) {
 }
 
 function closeDetail() {
+  instructionRequestSequence += 1
   detailVisible.value = false
+  detailDocumentsVisible.value = false
+  detailSourceVisible.value = false
+  instructionDialogVisible.value = false
   instruction.value = null
+  instructionLoading.value = false
   instructionEntry.value = null
   instructionError.value = ''
 }
 
 async function loadAgentInstructions(entry) {
   if (!selectedApp.value?.id || !entry?.id) return
+  const requestSequence = ++instructionRequestSequence
+  const appId = selectedApp.value.id
+  const entryId = entry.id
   instructionEntry.value = entry
+  instructionDialogVisible.value = true
   instruction.value = null
   instructionError.value = ''
   instructionLoading.value = true
   try {
-    instruction.value = await apiRequest(
-      `/api/apps/${encodeURIComponent(selectedApp.value.id)}/instructions/${encodeURIComponent(entry.id)}`,
+    const result = await apiRequest(
+      `/api/apps/${encodeURIComponent(appId)}/instructions/${encodeURIComponent(entryId)}`,
     )
+    if (requestSequence !== instructionRequestSequence || selectedApp.value?.id !== appId || instructionEntry.value?.id !== entryId) return
+    instruction.value = result
   } catch (error) {
+    if (requestSequence !== instructionRequestSequence || selectedApp.value?.id !== appId || instructionEntry.value?.id !== entryId) return
     instructionError.value = errorText(error)
   } finally {
-    instructionLoading.value = false
+    if (requestSequence === instructionRequestSequence) instructionLoading.value = false
   }
 }
 
@@ -642,12 +665,16 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
       </div>
       <div v-else-if="selectedApp" class="detail-layout" data-testid="app-detail">
         <div class="detail-content-scroll">
-          <AppPublicContent :app="selectedApp" />
+          <AppDetailOverview
+            :app="selectedApp"
+            @read-documents="detailDocumentsVisible = true"
+            @read-source="detailSourceVisible = true"
+          />
         </div>
-        <aside class="detail-actions" aria-label="应用使用入口">
+        <aside class="detail-actions" aria-label="应用使用入口" data-testid="detail-actions">
           <div class="detail-action-heading">
             <h2>开始使用</h2>
-            <p>选择作者登记的入口</p>
+            <p>选择平台入口或 Agent 接入方式</p>
           </div>
           <div v-if="!selectedAppEntries.length" class="entry-empty">作者尚未登记使用入口。</div>
           <div v-for="entry in selectedAppEntries" :key="entry.id" class="entry-action">
@@ -669,26 +696,82 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
             </template>
           </div>
 
-          <section v-if="instructionEntry" class="instruction-result" aria-live="polite">
-            <h3>{{ instructionEntry.label || 'Agent 接入说明' }}</h3>
-            <p v-if="instructionEntry.compatibility" class="instruction-compatibility">兼容信息：{{ instructionEntry.compatibility }}</p>
-            <p v-if="instructionLoading" class="instruction-state" role="status">正在读取作者接入说明…</p>
-            <p v-else-if="instructionError" class="instruction-state is-error" role="alert">{{ instructionError }}</p>
-            <template v-else-if="instruction">
-              <p v-if="instruction.compatibility && instruction.compatibility !== instructionEntry.compatibility" class="instruction-compatibility">
-                兼容信息：{{ typeof instruction.compatibility === 'string' ? instruction.compatibility : JSON.stringify(instruction.compatibility) }}
-              </p>
-              <p v-if="instruction.source" class="instruction-source">说明来源：{{ typeof instruction.source === 'string' ? instruction.source : JSON.stringify(instruction.source) }}</p>
-              <div class="instruction-markdown markdown-body" v-html="instructionHtml" />
-              <el-button
-                class="copy-instruction-button"
-                data-testid="copy-agent-prompt"
-                @click="copyText(instruction.text, '接入说明已复制')"
-              >复制接入说明</el-button>
-            </template>
-          </section>
-          <p class="detail-no-install-claim">入口信息来自作者提交的应用资料。</p>
+          <AppExamples
+            :examples="selectedApp.manifest?.examples"
+            presentation="selector"
+            class="detail-examples"
+            @copy="copyText($event, '示例任务已复制')"
+          />
         </aside>
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="instructionDialogVisible"
+      :title="instructionEntry?.label || 'Agent 接入说明'"
+      width="min(760px, 92vw)"
+      top="6vh"
+      append-to-body
+      destroy-on-close
+      data-testid="agent-instruction-dialog"
+    >
+      <div class="agent-instruction-dialog-body" data-testid="agent-instruction-content">
+        <p v-if="instructionEntry?.compatibility" class="instruction-compatibility">兼容信息：{{ instructionEntry.compatibility }}</p>
+        <p v-if="instructionLoading" class="instruction-state" role="status">正在读取作者接入说明…</p>
+        <p v-else-if="instructionError" class="instruction-state is-error" role="alert">{{ instructionError }}</p>
+        <template v-else-if="instruction">
+          <p v-if="instruction.compatibility && instruction.compatibility !== instructionEntry?.compatibility" class="instruction-compatibility">
+            兼容信息：{{ typeof instruction.compatibility === 'string' ? instruction.compatibility : JSON.stringify(instruction.compatibility) }}
+          </p>
+          <p v-if="instruction.source" class="instruction-source">说明来源：{{ typeof instruction.source === 'string' ? instruction.source : JSON.stringify(instruction.source) }}</p>
+          <div class="instruction-markdown markdown-body" v-html="instructionHtml" />
+          <el-button
+            class="copy-instruction-button"
+            data-testid="copy-agent-prompt"
+            @click="copyText(instruction.text, '接入说明已复制')"
+          >复制接入说明</el-button>
+        </template>
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="detailDocumentsVisible"
+      title="完整应用资料"
+      width="min(820px, 92vw)"
+      top="5vh"
+      append-to-body
+      destroy-on-close
+      data-testid="detail-documents-dialog"
+    >
+      <div v-if="selectedApp" class="detail-material-scroll" data-testid="detail-documents-content">
+        <AppPublicContent
+          :app="selectedApp"
+          :show-header="false"
+          :show-examples="false"
+          :show-source="false"
+        />
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="detailSourceVisible"
+      title="来源与版本"
+      width="min(720px, 92vw)"
+      top="8vh"
+      append-to-body
+      destroy-on-close
+      data-testid="detail-source-dialog"
+    >
+      <div v-if="selectedApp" class="detail-material-scroll" data-testid="detail-source-content">
+        <AppPublicContent
+          :app="selectedApp"
+          :show-header="false"
+          :show-capabilities="false"
+          :show-conditions="false"
+          :show-examples="false"
+          :show-documents="false"
+          :show-entries="false"
+        />
       </div>
     </el-dialog>
 
@@ -799,9 +882,9 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .pagination-row.pagination-empty { min-height: 1px; padding: 0; }
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
 .detail-revision { color: #98a1af; font-size: 11px; font-weight: 400; }
-.detail-layout { display: grid; grid-template-columns: minmax(0, 7fr) minmax(250px, 3fr); gap: 20px; height: min(72vh, 780px); max-height: 72vh; min-height: 0; }
-.detail-content-scroll { min-width: 0; min-height: 0; max-height: 72vh; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
-.detail-actions { align-self: start; min-width: 0; max-height: 72vh; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
+.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 330px); gap: 24px; height: min(70vh, 760px); max-height: 70vh; min-height: 0; }
+.detail-content-scroll { min-width: 0; min-height: 0; max-height: 70vh; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
+.detail-actions { align-self: start; min-width: 0; max-height: 70vh; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
 .detail-action-heading { padding-bottom: 12px; border-bottom: 1px solid #e8ebf0; }
 .detail-action-heading h2 { margin: 0; color: #2d3b50; font-size: 15px; }
 .detail-action-heading p { margin: 5px 0 0; color: #8791a1; font-size: 12px; }
@@ -809,9 +892,9 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .entry-label { display: block; margin-bottom: 5px; color: #8993a2; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .entry-button { width: 100%; min-height: 38px; }
 .entry-empty { padding: 15px 0; color: #8590a0; font-size: 12px; line-height: 1.6; }
-.detail-no-install-claim { margin: 17px 0 0; color: #9aa3b0; font-size: 11px; line-height: 1.55; }
-.instruction-result { margin-top: 18px; padding-top: 13px; border-top: 1px solid #e4e8ee; }
-.instruction-result h3 { margin: 0 0 8px; color: #3d4d63; font-size: 13px; }
+.detail-examples { padding-top: 13px; border-top: 1px solid #e4e8ee; }
+.detail-material-scroll { max-height: 72vh; overflow-x: hidden; overflow-y: auto; padding: 0 14px 12px 2px; }
+.agent-instruction-dialog-body { max-height: 72vh; overflow: auto; }
 .instruction-compatibility, .instruction-source, .instruction-state { color: #738094; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .instruction-state.is-error { color: #a44d4d; }
 .instruction-markdown { max-height: 280px; overflow-y: auto; padding: 9px 10px; border: 1px solid #e7ebf0; border-radius: 6px; background: #fff; color: #526177; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
