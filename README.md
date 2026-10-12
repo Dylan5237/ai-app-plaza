@@ -20,7 +20,7 @@ npm start
 
 开发时使用 `npm run dev`，它启动同源 Vite 网页和 API。`npm run dev:prototype` 用于单独维护历史原型。访问地址须与 `PUBLIC_ORIGIN` 一致；不要同时占用同一端口。
 
-非本地运行必须显式配置 `DATABASE_URL`（PostgreSQL）、`PLAZA_SECRET`（安全随机生成并持久保管）和 HTTPS `PUBLIC_ORIGIN`，并移除 `PLAZA_LOCAL=1`。内部 HTTP GitLab 需要部署者明确设置 `ALLOW_INSECURE_GITLAB=1`；这仅允许访问已配置实例，不关闭来源/路径校验。启动不会部署到任何远端。
+非本地运行必须显式配置 `DATABASE_URL`（PostgreSQL）、`PLAZA_SECRET`（安全随机生成并持久保管）和 HTTPS `PUBLIC_ORIGIN`，并移除 `PLAZA_LOCAL=1`。仅可信内网试用可显式设置 `ALLOW_INSECURE_PORTAL=1`，使用 RFC1918 数字 IPv4 的 HTTP 入口；这不提供链路加密，不改变默认 HTTPS 要求。内部 HTTP GitLab 需要部署者明确设置 `ALLOW_INSECURE_GITLAB=1`；这仅允许访问已配置实例，不关闭来源/路径校验。启动不会部署到任何远端。独立试用部署方式见 [部署说明](ops/trial/README.md)。
 
 ## 发布与使用
 
