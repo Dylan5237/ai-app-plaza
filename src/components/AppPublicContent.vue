@@ -203,6 +203,24 @@ function formatVersion(value) {
           <strong>{{ entry.label || '使用入口' }}</strong>
           <span>{{ entry.kind === 'web' ? '平台入口' : 'Agent 接入' }}</span>
           <span v-if="entry.kind === 'agent' && entry.compatibility">{{ entry.compatibility }}</span>
+          <div v-if="entry.kind === 'web'" class="entry-details">
+            <span>访问地址：</span>
+            <a v-if="safeHttpUrl(entry.url)" :href="safeHttpUrl(entry.url)" target="_blank" rel="noopener noreferrer">{{ entry.url }}</a>
+            <span v-else>{{ entry.url }}</span>
+          </div>
+          <div v-if="entry.kind === 'agent'" class="entry-details">
+            <p>接入说明：<code>{{ entry.instructionsPath }}</code></p>
+            <details v-if="app.documents?.[entry.instructionsPath]">
+              <summary>查看接入说明全文</summary>
+              <div class="markdown-body" v-html="docHtml({ text: app.documents[entry.instructionsPath], path: entry.instructionsPath })" />
+            </details>
+            <div v-for="artifact in entry.artifacts || []" :key="artifact.url" class="entry-artifact">
+              <span>下载地址：</span>
+              <a v-if="safeHttpUrl(artifact.url)" :href="safeHttpUrl(artifact.url)" target="_blank" rel="noopener noreferrer">{{ artifact.url }}</a>
+              <span v-else>{{ artifact.url }}</span>
+              <p>SHA-256：<code>{{ artifact.sha256 }}</code></p>
+            </div>
+          </div>
         </li>
       </ul>
     </section>
@@ -248,6 +266,13 @@ function formatVersion(value) {
 .source-sha { font-family: Consolas, monospace; }
 .public-app-entry-info li { display: flex; flex-wrap: wrap; gap: 10px; }
 .public-app-entry-info li span { color: #8993a2; }
+.public-app-entry-info li + li { margin-top: 14px; }
+.entry-details { width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.entry-details p { margin: 0; }
+.entry-details a { color: #315fbd; }
+.entry-details details { margin: 6px 0; }
+.entry-details summary { width: fit-content; cursor: pointer; color: #315fbd; }
+.entry-artifact { margin-top: 8px; }
 @media (max-width: 680px) {
   .public-app-title-row h2 { font-size: 19px; }
   .capability-grid { grid-template-columns: 1fr; }

@@ -20,6 +20,7 @@ const catalogNotice = ref('')
 let catalogRequestSequence = 0
 
 const detailVisible = ref(false)
+let detailRequestSequence = 0
 const detailLoading = ref(false)
 const detailError = ref('')
 const selectedApp = ref(null)
@@ -177,6 +178,7 @@ function clearFilters() {
 
 async function openApp(id) {
   if (!id) return
+  const requestSequence = ++detailRequestSequence
   instructionRequestSequence += 1
   detailVisible.value = true
   detailDocumentsVisible.value = false
@@ -190,15 +192,18 @@ async function openApp(id) {
   instructionEntry.value = null
   instructionError.value = ''
   try {
-    selectedApp.value = await apiRequest(`/api/apps/${encodeURIComponent(id)}`)
+    const result = await apiRequest(`/api/apps/${encodeURIComponent(id)}`)
+    if (requestSequence !== detailRequestSequence) return
+    selectedApp.value = result
   } catch (error) {
-    detailError.value = errorText(error)
+    if (requestSequence === detailRequestSequence) detailError.value = errorText(error)
   } finally {
-    detailLoading.value = false
+    if (requestSequence === detailRequestSequence) detailLoading.value = false
   }
 }
 
 function closeDetail() {
+  detailRequestSequence += 1
   instructionRequestSequence += 1
   detailVisible.value = false
   detailDocumentsVisible.value = false
@@ -207,6 +212,14 @@ function closeDetail() {
   instruction.value = null
   instructionLoading.value = false
   instructionEntry.value = null
+  instructionError.value = ''
+}
+
+function closeAgentInstructions() {
+  instructionRequestSequence += 1
+  instructionDialogVisible.value = false
+  instruction.value = null
+  instructionLoading.value = false
   instructionError.value = ''
 }
 
@@ -647,15 +660,14 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
     <el-dialog
       v-model="detailVisible"
       class="app-detail-dialog"
-      width="min(1080px, 94vw)"
-      top="4vh"
+      width="min(1180px, 94vw)"
+      align-center
       destroy-on-close
-      @closed="closeDetail"
+      @close="closeDetail"
     >
       <template #header>
         <div class="detail-dialog-heading">
           <span>应用详情</span>
-          <span v-if="selectedApp?.revision" class="detail-revision">记录 {{ selectedApp.revision }}</span>
         </div>
       </template>
       <div v-if="detailLoading" class="dialog-state" role="status">正在读取应用详情…</div>
@@ -673,8 +685,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
         </div>
         <aside class="detail-actions" aria-label="应用使用入口" data-testid="detail-actions">
           <div class="detail-action-heading">
-            <h2>开始使用</h2>
-            <p>选择平台入口或 Agent 接入方式</p>
+            <h2>使用入口</h2>
           </div>
           <div v-if="!selectedAppEntries.length" class="entry-empty">作者尚未登记使用入口。</div>
           <div v-for="entry in selectedAppEntries" :key="entry.id" class="entry-action">
@@ -714,6 +725,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
       append-to-body
       destroy-on-close
       data-testid="agent-instruction-dialog"
+      @close="closeAgentInstructions"
     >
       <div class="agent-instruction-dialog-body" data-testid="agent-instruction-content">
         <p v-if="instructionEntry?.compatibility" class="instruction-compatibility">兼容信息：{{ instructionEntry.compatibility }}</p>
@@ -881,10 +893,9 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .pagination-row { display: flex; justify-content: center; padding: 12px 0 2px; }
 .pagination-row.pagination-empty { min-height: 1px; padding: 0; }
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
-.detail-revision { color: #98a1af; font-size: 11px; font-weight: 400; }
-.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 330px); gap: 24px; height: min(70vh, 760px); max-height: 70vh; min-height: 0; }
-.detail-content-scroll { min-width: 0; min-height: 0; max-height: 70vh; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
-.detail-actions { align-self: start; min-width: 0; max-height: 70vh; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
+.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 330px); gap: 24px; height: min(570px, calc(100vh - 144px)); min-height: 0; }
+.detail-content-scroll { min-width: 0; min-height: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
+.detail-actions { align-self: start; min-width: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
 .detail-action-heading { padding-bottom: 12px; border-bottom: 1px solid #e8ebf0; }
 .detail-action-heading h2 { margin: 0; color: #2d3b50; font-size: 15px; }
 .detail-action-heading p { margin: 5px 0 0; color: #8791a1; font-size: 12px; }
