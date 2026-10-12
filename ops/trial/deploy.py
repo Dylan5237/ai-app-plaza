@@ -63,6 +63,7 @@ def main():
     parser.add_argument('--db-port', type=int, default=16432)
     parser.add_argument('--gitlab', required=True)
     parser.add_argument('--postgres-image', required=True, help='Locally verified immutable image ID')
+    parser.add_argument('--node-archive', type=Path, help='Reuse a downloaded Node archive after checking the official SHA-256')
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     gitlab = urlsplit(args.gitlab)
@@ -100,10 +101,13 @@ def main():
         return
 
     ROOT.mkdir(mode=0o755)
+    ROOT.chmod(0o755)
     state = {'status': 'INSTALLING', 'release': args.release, 'sourceSha': manifest['sourceSha'], 'archiveSha256': args.sha256}
     (ROOT / 'deployment.json').write_text(json.dumps(state), encoding='utf-8')
     release = ROOT / 'releases' / args.release
     release.mkdir(parents=True)
+    release.parent.chmod(0o755)
+    release.chmod(0o755)
     extract(args.archive, release)
     for relative, expected in manifest['files'].items():
         path = (release / relative).resolve()
@@ -113,13 +117,18 @@ def main():
     # Runtime is private to this application; never replace system Node/npm.
     runtime = ROOT / 'runtime'
     runtime.mkdir()
+    runtime.chmod(0o755)
     node_name = f'node-v{NODE_VERSION}-linux-x64'
     node_archive = runtime / f'{node_name}.tar.xz'
     base = f'https://nodejs.org/dist/v{NODE_VERSION}/'
     with urllib.request.urlopen(base + 'SHASUMS256.txt', timeout=30) as response:
         checksums = response.read().decode('utf-8')
     expected = next(line.split()[0] for line in checksums.splitlines() if line.split()[-1] == node_archive.name)
-    download(base + node_archive.name, node_archive)
+    if args.node_archive:
+        if digest(args.node_archive) != expected: raise RuntimeError('cached Node archive SHA-256 mismatch')
+        shutil.copyfile(args.node_archive, node_archive)
+    else:
+        download(base + node_archive.name, node_archive)
     if digest(node_archive) != expected: raise RuntimeError('Node download SHA-256 mismatch')
     with tarfile.open(node_archive) as package: package.extractall(runtime, filter='data')
     node = runtime / node_name / 'bin' / 'node'
@@ -131,7 +140,7 @@ def main():
     for path in install_paths: os.chown(path, installer.pw_uid, installer.pw_gid, follow_symlinks=False)
     env = {'PATH': str(node.parent) + ':/usr/bin:/bin', 'HOME': str(home), 'LANG': 'C.UTF-8',
         'USER': 'nobody', 'LOGNAME': 'nobody', 'NODE_ENV': 'development',
-        'npm_config_cache': str(cache), 'npm_config_userconfig': '/dev/null', 'npm_config_globalconfig': '/dev/null'}
+        'npm_config_cache': str(cache), 'npm_config_userconfig': str(home / 'user.npmrc'), 'npm_config_globalconfig': str(home / 'global.npmrc')}
     try:
         command([runuser, '--preserve-environment', '-u', 'nobody', '--', 'nice', '-n', '10', str(node), str(npm), 'ci', '--include=dev', '--no-audit', '--no-fund'], cwd=release, env=env, timeout=300)
     finally:
