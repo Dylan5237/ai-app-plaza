@@ -2,7 +2,7 @@
 
 一个无需登录的 AI 应用门户。使用者按任务和作者标签找到应用，查看说明后打开平台或将接入提示词交给自己的 Agent；作者由 Agent 整理 GitLab 资料，预览确认后收录。
 
-当前开发范围仅为 **发布收录 → 发现 → 使用**，见[首版边界](docs/product/mainflow-scope.md)与 [Phase #7](https://github.com/Dylan5237/ai-app-plaza/issues/7)。没有登录、账号、收藏、审批、应用托管或安装执行器。历史 17 项 Mock 原型仅在 `?prototype=1` 展示，不进入真实目录。实现、验证、部署和业务验收分别记录在 Phase 中。
+当前开发范围为 **发布收录 → 发现 → 使用**，并补齐作者发布新版本与使用者本地升级，见[首版边界](docs/product/mainflow-scope.md)与 [Phase #14](https://github.com/Dylan5237/ai-app-plaza/issues/14)。没有登录、账号、收藏、审批、应用托管或安装执行器。历史 17 项 Mock 原型仅在 `?prototype=1` 展示，不进入真实目录。实现、验证、部署和业务验收分别记录在 Phase 中。
 
 ## 本地运行
 
@@ -32,6 +32,10 @@ Agent 返回本次专属预览链接，作者检查内容后确认。**任何持
 
 收录后，所有能访问门户的人都能查看已批准的介绍和使用资料。平台应用直接跳转；其他应用复制固定版本接入提示词，由用户自己的 Agent 完成授权、下载和安装。源码、软件包和目标系统仍使用它们本来的权限，广场不代理下载、不执行代码。
 
+作者更新时，在应用详情点“发布新版本”，复制带应用上下文的更新提示词。Agent 保持原项目与 appKey，准备更高版本的 Release 并提交预览；作者核对版本变化与变更项后确认，原应用链接不变。重复的相同内容不会重复收录；同版本改内容、版本倒退及旧预览覆盖会被拒绝，失败时保留当前版本。
+
+使用者升级仍从“接入我的Agent”进入。提示词要求 Agent 先核对广场已确认版本及本地状态，按未安装、旧版或已是目标版本分别处理，保留配置与本地修改，并执行最小验证。广场不记录本地安装情况、不执行升级、不自动追踪未收录的 GitLab Release。
+
 ## Agent 接口
 
 HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的直接入口，无须先安装 MCP。
@@ -39,6 +43,7 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 | 操作 | 接口 |
 | --- | --- |
 | 规范与发布提示词 | `GET /api/publish-contract` |
+| 指定应用的更新提示词 | `GET /api/apps/:id/publish-contract`，包含当前版本与修订号 |
 | 提交固定来源 | `POST /api/publications`，须包含 GitLab 版本 `tag`，并提供 `X-GitLab-Token` + `Idempotency-Key` |
 | 查询私有预览/结果 | `GET /api/publications/:id`，Bearer 本次凭证 |
 | 作者确认收录 | `POST /api/publications/:id/confirm`，本次凭证及预览 revision/digest |
@@ -48,7 +53,7 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 
 可选 MCP 通过官方 TypeScript SDK 的 stdio 适配器连接同一 HTTP 服务；不另建后端。项目目录内运行 `npm run mcp`；Host 配置由 Agent 自动生成：Node 的参数使用本 checkout 中 `node_modules/tsx/dist/cli.mjs` 与 `server/mcp.ts` 的**绝对路径**，环境配置 `PLAZA_URL` 和本机安全提供的 `GITLAB_TOKEN`。后者只用于发布，可不配置以使用只读工具。
 
-工具为 `get_publish_contract`、`submit_candidate`、`get_publish_status`、`retry_registration`、`get_agent_instructions`；没有自动确认工具。MCP stdout 只用于协议消息。真实 Codex/WorkBuddy Host 配置仍须在各 Host 中验证，协议进程测试不代替 Host 验收。
+工具为 `get_publish_contract`（可传 `appId` 获取更新上下文）、`submit_candidate`、`get_publish_status`、`retry_registration`、`get_agent_instructions`（安装／升级提示词）；没有自动确认工具。MCP stdout 只用于协议消息。真实 Codex/WorkBuddy Host 配置仍须在各 Host 中验证，协议进程测试不代替 Host 验收。
 
 ## 验证
 

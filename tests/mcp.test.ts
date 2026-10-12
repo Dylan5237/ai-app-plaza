@@ -33,4 +33,10 @@ test('real MCP stdio process can submit/query, but has no confirmation tool', as
   assert.equal((await harness.service.list()).total, 0);
   const unknown = await client.callTool({ name: 'confirm_publication', arguments: { publicationId: body.id, ticket: body.ticket } });
   assert.equal(unknown.isError, true);
+  const confirmed = await harness.service.confirm(body.id, body.ticket, { revision: body.revision, digest: body.digest });
+  const updateContract = await client.callTool({ name: 'get_publish_contract', arguments: { appId: confirmed.appId } });
+  assert.equal(updateContract.isError, false);
+  assert.equal(JSON.parse((updateContract.content as any[])[0].text).updateTarget.appId, confirmed.appId);
+  const instructions = await client.callTool({ name: 'get_agent_instructions', arguments: { appId: confirmed.appId, entryId: 'agent' } });
+  assert.ok(JSON.parse((instructions.content as any[])[0].text).text.includes('已安装旧版'));
 });

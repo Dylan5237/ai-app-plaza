@@ -186,6 +186,33 @@ export function normalizeProjectVersion(value: string): string | undefined {
   return value.startsWith("v") ? value.slice(1) : value;
 }
 
+/** Compare the version format supported by our manifest, including prereleases. */
+export function compareProjectVersions(left: string, right: string): number | undefined {
+  const a = normalizeProjectVersion(left)?.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.*))?$/);
+  const b = normalizeProjectVersion(right)?.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.*))?$/);
+  if (!a || !b) return undefined;
+  const numeric = (x: string, y: string) => BigInt(x) < BigInt(y) ? -1 : BigInt(x) > BigInt(y) ? 1 : 0;
+  for (let i = 1; i <= 3; i++) {
+    const difference = numeric(a[i]!, b[i]!);
+    if (difference) return difference;
+  }
+  if (a[4] === b[4]) return 0;
+  if (a[4] === undefined) return 1;
+  if (b[4] === undefined) return -1;
+  const x = a[4].split('.'), y = b[4].split('.');
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const l = x[i], r = y[i];
+    if (l === r) continue;
+    if (l === undefined) return -1;
+    if (r === undefined) return 1;
+    const ln = /^\d+$/.test(l), rn = /^\d+$/.test(r);
+    if (ln && rn) return numeric(l, r);
+    if (ln !== rn) return ln ? -1 : 1;
+    return l < r ? -1 : 1;
+  }
+  return 0;
+}
+
 export function manifestJson(text: string, expectedAppKey: string): AppManifest {
   let parsed: unknown;
   try {

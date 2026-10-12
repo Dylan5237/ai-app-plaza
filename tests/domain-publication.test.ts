@@ -265,7 +265,9 @@ test("publishes fixed GitLab source with a capability ticket, then serves only t
   assert.match(instructions.text, new RegExp(detail.source.commitSha));
   assert.match(instructions.text, /docs\/instructions\.md/);
   assert.match(instructions.text, /SHA-256/);
-  assert.match(instructions.text, /不代表应用已下载、安装或运行成功/);
+  assert.match(instructions.text, /不代表安装\/升级成功/);
+  assert.match(instructions.text, /区分文件安装、Host 加载与应用可用性/);
+  assert.match(instructions.text, /GET http:\/\/127.0.0.1:3000\/api\/apps\//);
   assert.ok(instructions.text.endsWith("# Agent 接入\n按步骤运行。"));
   assert.deepEqual(instructions.compatibility, ["Codex", "WorkBuddy"]);
   assert.equal(JSON.stringify({ detail, instructions }).includes(GITLAB_TOKEN), false);

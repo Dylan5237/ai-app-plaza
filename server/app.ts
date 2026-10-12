@@ -72,6 +72,7 @@ export async function createApp(config: Config, db: Database) {
     return service.list({ query: search.query, tags, page: search.page });
   });
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
+  app.get('/api/apps/:id/publish-contract', async (request) => publishContract(config, await service.app(publicationId(request.params))));
   app.get('/api/apps/:id/instructions/:entryId', (request) => {
     const params = request.params as any;
     return service.instructions(idValue.parse(params.id), z.string().min(1).max(64).parse(params.entryId));

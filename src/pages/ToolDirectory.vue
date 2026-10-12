@@ -33,16 +33,18 @@ const instructionError = ref('')
 const instructionEntry = ref(null)
 let instructionRequestSequence = 0
 const instructionHtml = computed(() => {
-  const source = selectedApp.value?.source || {}
+  const source = instruction.value?.source || selectedApp.value?.source || {}
   const instructionSource = instruction.value?.source
   const documentPath = typeof instructionSource === 'string'
     ? instructionSource
-    : instructionSource?.path || instructionEntry.value?.instructionsPath || ''
+    : instruction.value?.instructionsPath || instructionSource?.path || instructionEntry.value?.instructionsPath || ''
   const baseUrl = repositoryDocumentBase(source.projectUrl, source.commitSha, documentPath)
   return renderMarkdown(instruction.value?.text, { baseUrl })
 })
 
 const shareVisible = ref(false)
+const shareAppId = ref('')
+let contractRequestSequence = 0
 const contractLoading = ref(false)
 const contractError = ref('')
 const publishContract = ref(null)
@@ -63,11 +65,13 @@ const selectedAppEntries = computed(() => {
   const primaryId = manifest.primaryEntry
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
+const isUpdate = computed(() => publication.value?.change?.kind === 'update')
+const isUnchanged = computed(() => publication.value?.change?.kind === 'unchanged')
 const publicationStatusText = computed(() => ({
   checking: '正在检查发布内容',
-  preview_ready: '等待作者确认收录',
-  registered: '应用已收录',
-  failed: '收录未完成',
+  preview_ready: isUpdate.value ? '等待作者确认更新' : '等待作者确认收录',
+  registered: isUnchanged.value ? '已是当前收录版本' : isUpdate.value ? '应用已更新' : '应用已收录',
+  failed: isUpdate.value ? '本次更新未完成' : '收录未完成',
   cancelled: '发布已取消',
 }[publication.value?.status] || '正在读取发布状态'))
 
@@ -292,17 +296,26 @@ function selectManualCopyText() {
   copyFallbackTextarea.value?.select()
 }
 
-async function openShareDialog() {
+function closeShareDialog() {
+  contractRequestSequence += 1
+  contractLoading.value = false
+  publishContract.value = null
+}
+
+async function openShareDialog(appId = '') {
+  const sequence = ++contractRequestSequence
+  shareAppId.value = appId
   shareVisible.value = true
   contractLoading.value = true
   contractError.value = ''
   publishContract.value = null
   try {
-    publishContract.value = await apiRequest('/api/publish-contract')
+    const result = await apiRequest(appId ? `/api/apps/${encodeURIComponent(appId)}/publish-contract` : '/api/publish-contract')
+    if (sequence === contractRequestSequence) publishContract.value = result
   } catch (error) {
-    contractError.value = errorText(error)
+    if (sequence === contractRequestSequence) contractError.value = errorText(error)
   } finally {
-    contractLoading.value = false
+    if (sequence === contractRequestSequence) contractLoading.value = false
   }
 }
 
@@ -477,11 +490,15 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
         </p>
         <div v-else-if="publication?.status === 'cancelled'" class="publication-message">此发布已取消，无法继续确认。</div>
         <div v-else-if="publication?.status === 'registered'" class="publication-message is-success" role="status">
-          应用已进入目录。应用编号：<strong>{{ publication.appId }}</strong>
+          {{ isUnchanged ? '该内容已收录，无需重复发布。' : isUpdate ? '新版本已生效，原应用链接保持不变。' : '应用已进入目录。' }}
         </div>
         <div v-else-if="publication?.status === 'preview_ready'" class="publication-message">
-          请核对下方公开内容与源码提交，确认后应用将进入目录。
+          {{ isUpdate ? '请核对版本变化及公开内容，确认后更新原应用；确认前原版本仍可使用。' : '请核对下方公开内容与源码提交，确认后应用将进入目录。' }}
         </div>
+        <section v-if="isUpdate" class="publication-change" data-testid="update-preview">
+          <strong>{{ formatVersion(publication.change.previousVersion) }} <span aria-label="更新至">→</span> {{ formatVersion(publication.preview?.version) }}</strong>
+          <p>{{ publication.change.changedFields.length ? `变更项：${publication.change.changedFields.join('、')}` : '更新代码版本，公开资料未变。' }}</p>
+        </section>
         <div v-if="publication?.status === 'preview_ready' && !publication.digest" class="publication-action-error" role="alert">
           服务未提供内容摘要校验值，暂时无法确认收录；请重新读取发布状态。
         </div>
@@ -494,16 +511,16 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
             :disabled="publicationBusy || !publication.digest"
             @click="mutatePublication('confirm')"
           >
-            {{ publicationBusy ? '正在确认…' : '确认收录' }}
+            {{ publicationBusy ? '正在确认…' : isUpdate ? '确认更新' : '确认收录' }}
           </button>
           <button
-            v-if="publication?.status === 'failed'"
+            v-if="publication?.status === 'failed' && publication.nextAction !== 'submit_again'"
             class="primary-button"
             data-testid="retry-publication"
             :disabled="publicationBusy"
             @click="mutatePublication('retry')"
           >
-            {{ publicationBusy ? '正在重试…' : '重试收录' }}
+            {{ publicationBusy ? '正在重试…' : isUpdate ? '重试更新' : '重试收录' }}
           </button>
           <button
             v-if="publication?.status === 'registered'"
@@ -559,7 +576,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
             <p>发现适合当前任务的 AI 应用</p>
           </div>
         </div>
-        <button class="share-button" data-testid="share-button" @click="openShareDialog">分享我的AI应用</button>
+        <button class="share-button" data-testid="share-button" @click="openShareDialog()">分享我的AI应用</button>
       </header>
 
       <section class="search-section" aria-label="搜索 AI 应用">
@@ -668,6 +685,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
       <template #header>
         <div class="detail-dialog-heading">
           <span>应用详情</span>
+          <button v-if="selectedApp && !detailLoading" type="button" class="detail-update-link" data-testid="publish-update" @click="openShareDialog(selectedApp.id)">发布新版本</button>
         </div>
       </template>
       <div v-if="detailLoading" class="dialog-state" role="status">正在读取应用详情…</div>
@@ -728,6 +746,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
       @close="closeAgentInstructions"
     >
       <div class="agent-instruction-dialog-body" data-testid="agent-instruction-content">
+        <p class="agent-upgrade-intro">交给 Agent 检查本地版本：未安装则安装，已有旧版则按指引升级，并保留配置与本地修改。</p>
         <p v-if="instructionEntry?.compatibility" class="instruction-compatibility">兼容信息：{{ instructionEntry.compatibility }}</p>
         <p v-if="instructionLoading" class="instruction-state" role="status">正在读取作者接入说明…</p>
         <p v-else-if="instructionError" class="instruction-state is-error" role="alert">{{ instructionError }}</p>
@@ -741,7 +760,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
             class="copy-instruction-button"
             data-testid="copy-agent-prompt"
             @click="copyText(instruction.text, '接入说明已复制')"
-          >复制接入说明</el-button>
+          >复制安装／升级提示词</el-button>
         </template>
       </div>
     </el-dialog>
@@ -787,19 +806,23 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
       </div>
     </el-dialog>
 
-    <el-dialog v-model="shareVisible" title="分享我的AI应用" width="min(720px, 92vw)" top="8vh">
+    <el-dialog v-model="shareVisible" :title="shareAppId ? '发布新版本' : '分享我的AI应用'" width="min(720px, 92vw)" top="8vh" append-to-body data-testid="publish-contract-dialog" @close="closeShareDialog">
       <div v-if="contractLoading" class="dialog-state" role="status">正在读取发布说明…</div>
       <div v-else-if="contractError" class="dialog-state is-error" role="alert">
         <strong>发布说明暂时无法加载</strong>
         <p>{{ contractError }}</p>
-        <button class="secondary-button" @click="openShareDialog">重试</button>
+        <button class="secondary-button" @click="openShareDialog(shareAppId)">重试</button>
       </div>
       <div v-else-if="publishContract" class="share-flow">
-        <p class="share-intro">把服务提供的发布提示词交给你自己的 Agent，由 Agent 提交应用资料；完成后，作者会收到可确认的私有预览链接。</p>
+        <p v-if="publishContract.updateTarget" class="share-intro" data-testid="update-target">
+          {{ publishContract.updateTarget.name }} · 当前 {{ formatVersion(publishContract.updateTarget.version) }}<br>
+          让项目 Agent 准备新版本，再由你预览确认。应用链接保持不变。
+        </p>
+        <p v-else class="share-intro">把发布提示词交给你的 Agent，由 Agent 提交应用资料，再由你预览确认。</p>
         <ol class="share-steps">
-          <li><strong>复制发布提示词</strong><span>内容由发布服务提供，包含所需资料和提交约定。</span></li>
-          <li><strong>交给你的 Agent 执行</strong><span>Agent 按提示词准备资料并提交。</span></li>
-          <li><strong>打开私有预览并确认</strong><span>核对公开内容和源码提交，再确认是否收录。</span></li>
+          <li><strong>{{ shareAppId ? '复制更新提示词' : '复制发布提示词' }}</strong><span>{{ shareAppId ? '自动带入项目与应用信息。' : '包含资料规范与发布步骤。' }}</span></li>
+          <li><strong>交给项目 Agent</strong><span>准备资料和版本 Release，提交预览。</span></li>
+          <li><strong>预览并确认</strong><span>{{ shareAppId ? '核对版本变化与内容，确认更新。' : '核对公开内容，确认收录。' }}</span></li>
         </ol>
         <div class="publish-prompt-wrap">
           <div class="prompt-heading"><strong>发布提示词</strong><span>完整内容</span></div>
@@ -808,8 +831,8 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
             type="primary"
             data-testid="copy-publish-prompt"
             :disabled="!publishContract.prompt"
-            @click="copyText(publishContract.prompt, '发布任务已复制')"
-          >复制发布提示词</el-button>
+            @click="copyText(publishContract.prompt, shareAppId ? '更新任务已复制' : '发布任务已复制')"
+          >{{ shareAppId ? '复制更新提示词' : '复制发布提示词' }}</el-button>
         </div>
         <div class="share-links">
           <span v-if="publishContract.audience"><strong>目录可见范围</strong>{{ publishContract.audience }}</span>
@@ -893,6 +916,13 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .pagination-row { display: flex; justify-content: center; padding: 12px 0 2px; }
 .pagination-row.pagination-empty { min-height: 1px; padding: 0; }
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
+.detail-update-link { border: 0; background: none; color: #5d6d8a; font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }
+.detail-update-link:hover { color: #3d5bbb; text-decoration: underline; }
+.agent-upgrade-intro { color: #61718a; line-height: 1.7; font-size: 13px; margin: 0 0 14px; }
+.publication-change { padding: 14px 16px; margin: 14px 0; border: 1px solid #dde5f1; border-radius: 8px; background: #f7f9fd; }
+.publication-change strong { color: #304768; font-size: 16px; }
+.publication-change span { margin: 0 10px; color: #8291a9; }
+.publication-change p { color: #64748b; font-size: 13px; margin: 8px 0 0; }
 .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 330px); gap: 24px; height: min(570px, calc(100vh - 144px)); min-height: 0; }
 .detail-content-scroll { min-width: 0; min-height: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
 .detail-actions { align-self: start; min-width: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
