@@ -112,6 +112,14 @@ export interface ManagedPublisher {
     publishKey: string,
     idempotencyKey: string,
   ): Promise<SubmitResult & { managedAppId: string; sourceUploaded: true }>;
+  current(managedAppId: string, publishKey: string): Promise<{
+    managedAppId: string;
+    appKey: string;
+    projectId?: string;
+    appId?: string;
+    revision: number;
+    version?: string;
+  }>;
   findByAppId(appId: string): Promise<{ managedAppId: string; projectId: string; appKey: string } | undefined>;
 }
 
@@ -555,6 +563,36 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         }
         return processOperation(binding, operation, bundle);
       });
+    },
+
+    async current(managedAppId, publishKey) {
+      validatePublishKey(publishKey);
+      if (!isUuid(managedAppId)) throw ownerError();
+      const binding = (await config.db.query<BindingRecord>(
+        "SELECT * FROM managed_app_bindings WHERE id = $1",
+        [managedAppId],
+      )).rows[0];
+      if (!binding || !constantEqual(binding.publish_key_digest, keyDigest(publishKey))) throw ownerError();
+
+      const base = {
+        managedAppId: binding.id,
+        appKey: binding.app_key,
+        ...(binding.project_id ? { projectId: binding.project_id } : {}),
+      };
+      const catalogAppId = await findCatalogAppId(binding);
+      if (!catalogAppId) return { ...base, revision: 0 };
+
+      let app;
+      try {
+        app = await config.service.app(catalogAppId);
+      } catch (error) {
+        if (error instanceof DomainError) throw error;
+        throw new DomainError(503, "SOURCE_UNAVAILABLE", "暂时无法读取广场应用状态，请稍后重试。");
+      }
+      if (app.id !== catalogAppId || app.source.projectId !== binding.project_id || app.manifest.appKey !== binding.app_key) {
+        throw stateConflict();
+      }
+      return { ...base, appId: app.id, revision: app.revision, version: app.version };
     },
 
     async findByAppId(appId) {

@@ -71,6 +71,12 @@ test("managed first publish previews for manual confirmation, then updates the s
   assert.equal(first.change?.kind, "create");
   const appId = first.preview!.id;
   assert.equal(await h.publisher.findByAppId(appId), undefined, "a preview candidate is not yet a catalog-owned app");
+  assert.deepEqual(await h.publisher.current(first.managedAppId, key), {
+    managedAppId: first.managedAppId,
+    appKey: "sample-1",
+    projectId: "100",
+    revision: 0,
+  }, "pending preview ids are not exposed as catalog app ids");
   const bindingRow = (await h.db.query<{ publish_key_digest: string }>("SELECT publish_key_digest FROM managed_app_bindings WHERE id = $1", [first.managedAppId])).rows[0]!;
   assert.match(bindingRow.publish_key_digest, /^[a-f0-9]{64}$/);
   assert.notEqual(bindingRow.publish_key_digest, key, "only a keyed digest, never the client secret, is persisted");
@@ -95,6 +101,14 @@ test("managed first publish previews for manual confirmation, then updates the s
   assert.equal(confirmed.status, "registered");
   assert.equal(confirmed.appId, appId);
   assert.deepEqual(await h.publisher.findByAppId(appId), { managedAppId: first.managedAppId, projectId: "100", appKey: "sample-1" });
+  assert.deepEqual(await h.publisher.current(first.managedAppId, key), {
+    managedAppId: first.managedAppId,
+    appKey: "sample-1",
+    projectId: "100",
+    appId,
+    revision: 1,
+    version: "1.0.0",
+  });
   const repeated = await h.publisher.submit(initialBundle, key, idem);
   assert.equal(repeated.status, "registered");
   assert.deepEqual([
@@ -140,6 +154,10 @@ test("owner mismatch, reused idempotency key with different content, and dangero
   );
   await assert.rejects(
     h.publisher.submit({ ...bundle, managedAppId: first.managedAppId }, publishKey(), "wrong-owner-operation-0001"),
+    error => { assertDomainError(error, "MANAGED_APP_OWNER_REQUIRED"); return true; },
+  );
+  await assert.rejects(
+    h.publisher.current(first.managedAppId, publishKey()),
     error => { assertDomainError(error, "MANAGED_APP_OWNER_REQUIRED"); return true; },
   );
   const dangerous = makeBundle();
@@ -258,6 +276,12 @@ test("catalog ownership follows the confirmed app when another pending candidate
   assert.notEqual(pendingB.preview?.id, first.preview?.id);
   assert.equal(h.gitlab.state.projects.size, 1, "candidate B reuses the same managed repository");
   await h.db.query("UPDATE managed_app_bindings SET public_app_id = $1 WHERE id = $2", [pendingB.preview!.id, first.managedAppId]);
+  assert.deepEqual(await h.publisher.current(first.managedAppId, key), {
+    managedAppId: first.managedAppId,
+    appKey: "sample-1",
+    projectId: "100",
+    revision: 0,
+  }, "a pending candidate remains revision 0 regardless of the stored candidate hint");
 
   const confirmedA = await h.service.confirm(first.id, first.ticket, { revision: first.revision, digest: first.digest! });
   assert.equal(confirmedA.appId, first.preview!.id);
@@ -266,6 +290,14 @@ test("catalog ownership follows the confirmed app when another pending candidate
     projectId: "100",
     appKey: "sample-1",
   });
+  assert.deepEqual(await h.publisher.current(first.managedAppId, key), {
+    managedAppId: first.managedAppId,
+    appKey: "sample-1",
+    projectId: "100",
+    appId: confirmedA.appId,
+    revision: 1,
+    version: "1.0.0",
+  }, "the catalog lookup returns confirmed A even when the mutable candidate hint points to B");
   const staleB = await h.service.confirm(pendingB.id, pendingB.ticket, { revision: pendingB.revision, digest: pendingB.digest! });
   assert.equal(staleB.status, "failed");
   assert.equal(staleB.error?.code, "REVISION_CONFLICT", "the service's expected revision prevents pending B from replacing confirmed A");
