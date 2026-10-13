@@ -44,6 +44,24 @@ Agent 返回本次专属预览链接，作者检查内容后确认。**任何持
 
 使用者升级仍从“接入我的Agent”进入。提示词要求 Agent 先核对广场已确认版本及本地状态，按未安装、旧版或已是目标版本分别处理，保留配置与本地修改，并执行最小验证。广场不记录本地安装情况、不执行升级、不自动追踪未收录的 GitLab Release。
 
+## 站内聊天找应用（Phase 7 · 实现候选）
+
+首页右下角的「AI 找应用」用于通过中文工作任务查找广场**已确认收录**的应用。候选来自现有目录；返回卡片的名称、版本、详情入口始终由服务器以真实目录快照生成，模型不能创建不存在的应用。私有发布预览不显示聊天入口，原有关键词搜索仍然保留。
+
+后端接口 POST /api/app-finder/chat 接收消息数组 messages（最多 8 条、每条 500 字，最后一条必须是用户消息）；响应包含 answer、mode（ai 或 basic）和 cards。模型不可用时明确标记为基础检索，不能将关键词结果冒充 AI 推荐。
+
+可选使用经批准的 OpenAI-compatible Chat Completions 网关；仅服务端配置：
+
+~~~dotenv
+PLAZA_CHAT_ENDPOINT=https://model-gateway.example.invalid/v1/chat/completions
+PLAZA_CHAT_MODEL=your-approved-model
+PLAZA_CHAT_API_KEY=(server-secret)
+~~~
+
+仅可信内网/本地 HTTP 网关可额外设置 PLAZA_CHAT_ALLOW_HTTP=1。应用目录公开字段及用户任务描述会提交给已配置的模型服务，不能向未经批准的模型服务传输公司或患者敏感信息。模型地址及凭据不进入仓库、网页或提示词。没有配置模型时聊天会使用基础关键词检索，不冒充大模型。
+
+本阶段不引入完整 Agent Harness、独立模型微服务、数据库迁移、向量索引或自动安装器。合并/部署前需要通过 npm run typecheck、npm test、npm run build，以及 1280×720 / 1440×900 的实际页面检查；真实模型接入及 16090 上线须单独核验证据。
+
 ## Agent 接口
 
 HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的直接入口，无须先安装 MCP。
