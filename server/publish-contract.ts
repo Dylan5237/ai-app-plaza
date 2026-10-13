@@ -1,9 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import type { Config } from './config.js';
 import type { AppView } from './domain/service.js';
+import { managedPublishContract, type ManagedTarget } from './managed-publish-contract.js';
 
-export async function publishContract(config: Pick<Config, 'publicOrigin' | 'gitlabUrl' | 'audience'>, current?: AppView) {
+export async function publishContract(config: Pick<Config, 'publicOrigin' | 'gitlabUrl' | 'audience' | 'managedPublishing'>, current?: AppView, managedTarget?: ManagedTarget, direct = false) {
   const schema = JSON.parse(await readFile(new URL('./contracts/app-manifest.schema.json', import.meta.url), 'utf8'));
+  if (config.managedPublishing && !direct && (!current || managedTarget)) return managedPublishContract(config, schema, current, managedTarget);
   const submitUrl = `${config.publicOrigin}/api/publications`;
   const updateTarget = current ? {
     appId: current.id, name: current.manifest.name, version: current.version,
@@ -33,5 +35,5 @@ ${updateContext}
 7. 用返回的 id/ticket 查询 GET /api/publications/{id}（Authorization: Bearer ticket）取得真实结果。失败按 nextAction 处理，必要时 POST /api/publications/{id}/retry；只恢复广场收录，不重复源码上传。若已经收录，提供条目链接，不声称安装或业务执行已经成功。
 
 如果当前 Host 已配置本广场 MCP，可使用 get_publish_contract、submit_candidate、get_publish_status、retry_registration；这些工具不提供确认收录能力。`;
-  return { prompt, schema, gitlabUrl: config.gitlabUrl, submitUrl, audience: config.audience, ...(updateTarget ? { updateTarget } : {}) };
+  return { mode: 'gitlab', prompt, schema, gitlabUrl: config.gitlabUrl, submitUrl, audience: config.audience, ...(updateTarget ? { updateTarget } : {}) };
 }

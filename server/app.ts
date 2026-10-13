@@ -9,6 +9,8 @@ import { DomainError } from './domain/errors.js';
 import type { Database } from './domain/database.js';
 import type { Config } from './config.js';
 import { publishContract } from './publish-contract.js';
+import { publisherScript } from './managed-publish-contract.js';
+import { createManagedPublisher } from './domain/managed-publisher.js';
 
 const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
@@ -17,12 +19,24 @@ const candidate = z.object({
   tag: z.string().min(1).max(128).refine((value) => normalizeProjectVersion(value) !== undefined), expectedAppRevision: z.number().int().nonnegative().optional(),
 }).strict();
 const confirmation = z.object({ revision: z.number().int().positive(), digest: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const managedCandidate = z.object({
+  appKey: z.string().min(1).max(64), manifestPath: z.string().min(1).max(512),
+  files: z.array(z.object({ path: z.string().min(1).max(512), content: z.string().max(7 * 1024 * 1024) }).strict()).min(1).max(1000),
+  managedAppId: z.string().uuid().optional(), expectedAppRevision: z.number().int().nonnegative().optional(),
+}).strict();
 const idValue = z.string().uuid();
 
 export async function createApp(config: Config, db: Database) {
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience });
+  const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false });
+  let managedActive = 0;
+  const releaseManagedSlot = (request: any) => {
+    if (!request.managedSlot) return;
+    request.managedSlot = false;
+    managedActive -= 1;
+  };
   let cleanupTimer: NodeJS.Timeout | undefined;
   let cleanupInFlight: Promise<void> | undefined;
   app.addHook('onReady', async () => {
@@ -48,12 +62,19 @@ export async function createApp(config: Config, db: Database) {
     if (request.headers.host !== new URL(config.publicOrigin).host) {
       return reply.code(403).send({ error: { code: 'HOST_DENIED', message: '访问地址与 PUBLIC_ORIGIN 不一致' } });
     }
+    if (managed && request.method === 'POST' && request.url.split('?')[0] === '/api/managed-publications') {
+      if (managedActive >= 2) return reply.code(429).send({ error: { code: 'UPLOAD_BUSY', message: '正在处理其他上传，请保留本次记录后稍后重试' } });
+      managedActive += 1;
+      (request as any).managedSlot = true;
+    }
   });
-  app.setErrorHandler((error, _request, reply) => {
+  app.addHook('onResponse', async request => releaseManagedSlot(request));
+  app.addHook('onRequestAbort', async request => { if (!(request as any).managedRunning) releaseManagedSlot(request); });
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: 'INVALID_REQUEST', message: '请求字段不符合发布规范' } });
     if (error instanceof DomainError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
     const status = (error as any).statusCode;
-    if (status === 413) return reply.code(413).send({ error: { code: 'BODY_TOO_LARGE', message: '请求过大，只应提交资料定位' } });
+    if (status === 413) return reply.code(413).send({ error: { code: 'BODY_TOO_LARGE', message: request.url.startsWith('/api/managed-publications') ? '应用文件过大，请精简上传范围；不要遗漏必要源码' : '请求过大，只应提交资料定位' } });
     if (status === 429) return reply.code(429).send({ error: { code: 'RATE_LIMITED', message: '操作较频繁，请稍后重试' } });
     if (status === 400 || status === 415) return reply.code(status).send({ error: { code: 'INVALID_REQUEST', message: '请使用有效 JSON 请求' } });
     return reply.code(500).send({ error: { code: 'SERVICE_UNAVAILABLE', message: '处理未完成，请保留本次发布链接后重试' } });
@@ -64,7 +85,15 @@ export async function createApp(config: Config, db: Database) {
   };
   const publicationId = (params: unknown) => idValue.parse((params as any).id);
   app.get('/api/health', async () => ({ status: 'ok', mode: config.local ? 'local' : 'configured', loginRequired: false }));
-  app.get('/api/publish-contract', () => publishContract(config));
+  app.get('/api/publish-contract', (request) => {
+    const query = z.object({ mode: z.enum(['managed', 'gitlab']).optional() }).parse(request.query);
+    return publishContract(config, undefined, undefined, query.mode === 'gitlab');
+  });
+  app.get('/api/publisher-cli.py', async (_request, reply) => {
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务尚未启用统一托管发布');
+    const script = await publisherScript();
+    return reply.type('text/x-python; charset=utf-8').header('X-Content-SHA256', script.sha256).send(script.text);
+  });
   app.get('/api/apps', async (request) => {
     const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1) }).parse(request.query);
     const tags = typeof search.tags === 'string' ? [search.tags] : search.tags || [];
@@ -72,7 +101,16 @@ export async function createApp(config: Config, db: Database) {
     return service.list({ query: search.query, tags, page: search.page });
   });
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
-  app.get('/api/apps/:id/publish-contract', async (request) => publishContract(config, await service.app(publicationId(request.params))));
+  app.get('/api/apps/:id/publish-contract', async (request) => {
+    const id = publicationId(request.params);
+    const current = await service.app(id);
+    return publishContract(config, current, await managed?.findByAppId(id));
+  });
+  app.get('/api/managed-apps/:id/status', (request) => {
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');
+    const publishKey = z.string().min(43).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['x-plaza-publish-key']);
+    return managed.current(publicationId(request.params), publishKey);
+  });
   app.get('/api/apps/:id/instructions/:entryId', (request) => {
     const params = request.params as any;
     return service.instructions(idValue.parse(params.id), z.string().min(1).max(64).parse(params.entryId));
@@ -86,6 +124,16 @@ export async function createApp(config: Config, db: Database) {
     const result = await service.submit(candidate.parse(request.body), token, key);
     return reply.code(201).send(result);
   });
+  app.post('/api/managed-publications', { bodyLimit: 32 * 1024 * 1024 }, async (request, reply) => {
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');
+    (request as any).managedRunning = true;
+    try {
+      const publishKey = z.string().min(43).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['x-plaza-publish-key']);
+      const key = z.string().uuid().parse(request.headers['idempotency-key']);
+      const result = await managed.submit(managedCandidate.parse(request.body), publishKey, key);
+      return reply.code(201).send(result);
+    } finally { releaseManagedSlot(request); }
+  });
   app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
   app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
@@ -93,5 +141,5 @@ export async function createApp(config: Config, db: Database) {
     await access(config.staticDir);
     await app.register(staticPlugin, { root: config.staticDir, index: ['index.html'], dotfiles: 'deny' });
   } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
-  return { app, service };
+  return { app, service, managed };
 }

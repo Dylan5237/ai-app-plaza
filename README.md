@@ -2,7 +2,9 @@
 
 一个无需登录的 AI 应用门户。使用者按任务和作者标签找到应用，查看说明后打开平台或将接入提示词交给自己的 Agent；作者由 Agent 整理 GitLab 资料，预览确认后收录。
 
-当前开发范围为 **发布收录 → 发现 → 使用**，并补齐作者发布新版本与使用者本地升级，见[首版边界](docs/product/mainflow-scope.md)与 [Phase #14](https://github.com/Dylan5237/ai-app-plaza/issues/14)。没有登录、账号、收藏、审批、应用托管或安装执行器。历史 17 项 Mock 原型仅在 `?prototype=1` 展示，不进入真实目录。实现、验证、部署和业务验收分别记录在 Phase 中。
+启用统一托管后，负责人复制发布提示词到有当前项目文件和执行权限的 AI Harness，AI 自动整理源码与应用资料、上传并返回预览链接。负责人无需预建 GitLab 仓库或配置个人 GitLab 令牌。
+
+当前开发范围为 **托管发布 → 发现 → 使用及更新**，见[首版边界](docs/product/mainflow-scope.md)与 [Phase #17](https://github.com/Dylan5237/ai-app-plaza/issues/17)。统一托管仅保存 GitLab 发布快照，不执行应用代码；没有登录、账号、收藏、审批或安装执行器。历史 17 项 Mock 原型仅在 `?prototype=1` 展示，不进入真实目录。实现、验证、部署和业务验收分别记录在 Phase 中。
 
 ## 本地运行
 
@@ -24,9 +26,15 @@ npm start
 
 ## 发布与使用
 
+配置统一托管时，“分享我的AI应用”默认提供免 GitLab 配置的发布提示词。AI 从项目中准备 `ai-app.json`、共享说明与必要源码，运行广场提供的 Python 辅助工具完成上传。服务端只在固定群组内创建私有独立仓库、commit、版本 tag 和 Release，随后仍使用原有来源核验及作者私有预览确认。新仓库关闭 CI，上传内容不在广场执行。
+
+每个应用的专属发布凭证由辅助工具保存在用户私有目录，Windows 用 DPAPI 保护，POSIX 使用私有文件权限；它不能更新其他应用，也不是 GitLab 令牌。首次运行前保存恢复记录，网络不确定时沿用原操作和原内容；更新自动复用凭证并核对广场版本。姓名仍由负责人确认，是作者声明；GitLab 操作身份由统一托管服务提供，不宣称员工实名验证。
+
+统一托管要求服务器同时设置 `PLAZA_MANAGED_GROUP_ID`、`PLAZA_MANAGED_GROUP_PATH`、`PLAZA_MANAGED_GITLAB_TOKEN`。使用仅管理目标群组的授权，原始令牌不进入提示词、网页、作者客户端或日志。未启用时，以及更新原有直连 GitLab 的应用时，沿用下述直接 GitLab 发布流程；`GET /api/publish-contract?mode=gitlab` 可显式取得该规范。
+
 在页面点“分享我的AI应用”并复制提示词。项目 Agent 取得 `/api/publish-contract` 中的 schemaVersion 2 规范，生成 `ai-app.json` 和明确可共享的 Markdown。每位作者都需提供中文姓名和英文全名或完整拼音；缺任一姓名时 Agent 会先询问，不从 GitLab 用户名、邮箱或 Git 配置推测。作者不用填写资料表格。
 
-广场发布接口只读取 GitLab。作者 Agent 按现有 GitLab 授权和项目发布流程提交资料，并为目标 commit 创建版本 tag 与正式 GitLab Release；`projectVersion`、tag 和 Release 必须匹配，格式为 `1.2.3` / `v1.2.3`，也支持合法预发布号。不要移动已有 tag；新 commit 应使用新的匹配版本号、tag 和 Release。提交与作者确认时，门户都会复核 Release.commit.id、tag.commit.id 和请求中的完整 commit SHA 一致，并重新读取共享资料。广场不替作者执行 GitLab 写入。作者 Agent 将既有读取授权通过 `X-GitLab-Token` 请求头提供，门户核验当前项目 Maintainer/Owner 权限。授权应支持读取用户、项目、仓库和 Release API（例如个人令牌 `read_api`）；不要在对话中提供令牌，也不要将其写入提示词或命令行实参。
+原有直连发布接口只读取 GitLab。作者 Agent 按现有 GitLab 授权和项目发布流程提交资料，并为目标 commit 创建版本 tag 与正式 GitLab Release；`projectVersion`、tag 和 Release 必须匹配，格式为 `1.2.3` / `v1.2.3`，也支持合法预发布号。不要移动已有 tag；新 commit 应使用新的匹配版本号、tag 和 Release。提交与作者确认时，门户都会复核 Release.commit.id、tag.commit.id 和请求中的完整 commit SHA 一致，并重新读取共享资料。广场不替作者执行 GitLab 写入。作者 Agent 将既有读取授权通过 `X-GitLab-Token` 请求头提供，门户核验当前项目 Maintainer/Owner 权限。授权应支持读取用户、项目、仓库和 Release API（例如个人令牌 `read_api`）；不要在对话中提供令牌，也不要将其写入提示词或命令行实参。
 
 Agent 返回本次专属预览链接，作者检查内容后确认。**任何持有完整链接的人都能查看和确认本次发布**；链接 24 小时有效，应只交给本次作者。它不是门户账号，也不是 GitLab 令牌。网页会把临时凭证保存在本标签页的 sessionStorage 中并从地址栏移除；同标签页刷新可继续。
 
@@ -43,6 +51,9 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 | 操作 | 接口 |
 | --- | --- |
 | 规范与发布提示词 | `GET /api/publish-contract` |
+| 托管上传工具 | `GET /api/publisher-cli.py`，需开启统一托管，规范包含工具 SHA-256 |
+| 上传应用发布快照 | `POST /api/managed-publications`，仅应用专属发布凭证，不接收作者 GitLab 令牌 |
+| 作者读取托管更新状态 | `GET /api/managed-apps/:id/status`，使用应用专属发布凭证核对当前目录修订 |
 | 指定应用的更新提示词 | `GET /api/apps/:id/publish-contract`，包含当前版本与修订号 |
 | 提交固定来源 | `POST /api/publications`，须包含 GitLab 版本 `tag`，并提供 `X-GitLab-Token` + `Idempotency-Key` |
 | 查询私有预览/结果 | `GET /api/publications/:id`，Bearer 本次凭证 |

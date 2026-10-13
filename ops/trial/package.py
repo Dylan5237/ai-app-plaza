@@ -15,8 +15,10 @@ if subprocess.check_output(['git', 'status', '--porcelain'], cwd=root): raise Sy
 sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
 release = f'{args.date}-{sha[:8]}'
 files = [root / name for name in ('package.json', 'package-lock.json')]
-for folder in ('dist', 'server'):
-    files.extend(path for path in (root / folder).rglob('*') if path.is_file())
+files.extend(path for path in (root / 'dist').rglob('*') if path.is_file())
+# Only committed server sources belong in a release; local Python caches and credentials do not.
+server_files = subprocess.check_output(['git', 'ls-files', '-z', '--', 'server'], cwd=root).decode().split('\0')
+files.extend(root / name for name in server_files if name and (root / name).is_file())
 if not (root / 'dist/index.html').is_file(): raise SystemExit('run npm run build first')
 manifest = {'release': release, 'sourceSha': sha, 'files': {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(files)}}
 args.output.mkdir(parents=True, exist_ok=True)

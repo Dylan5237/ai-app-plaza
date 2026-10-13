@@ -62,3 +62,18 @@ test('insecure portal trial still requires an external database and persistent s
   await assert.rejects(loadConfig({ ...trialConfig, DATABASE_URL: undefined }), /DATABASE_URL/);
   await assert.rejects(loadConfig({ ...trialConfig, PLAZA_SECRET: undefined }), /PLAZA_SECRET/);
 });
+
+test('managed publication requires an explicit complete fixed namespace and server-only authorization', async () => {
+  const base = { PUBLIC_ORIGIN: 'https://plaza.example.invalid', ...nonLocalRequirements };
+  for (const partial of [
+    { PLAZA_MANAGED_GROUP_ID: '63' },
+    { PLAZA_MANAGED_GROUP_PATH: 'team/ai-apps' },
+    { PLAZA_MANAGED_GITLAB_TOKEN: 'fixture-only-service-token' },
+  ]) await assert.rejects(loadConfig({ ...base, ...partial }), /同时配置/);
+  const complete = { PLAZA_MANAGED_GROUP_ID: '63', PLAZA_MANAGED_GROUP_PATH: 'team/ai-apps', PLAZA_MANAGED_GITLAB_TOKEN: 'fixture-only-service-token' };
+  const configured = await loadConfig({ ...base, ...complete });
+  assert.equal(configured.managedPublishing?.groupId, '63');
+  await assert.rejects(loadConfig({ ...base, ...complete, PLAZA_MANAGED_GROUP_ID: 'other-project' }), /群组 ID/);
+  await assert.rejects(loadConfig({ ...base, ...complete, PLAZA_MANAGED_GROUP_PATH: '../other' }), /固定群组路径/);
+  await assert.rejects(loadConfig({ ...base, ...complete, PLAZA_MANAGED_GITLAB_TOKEN: 'fixture\ninjected' }), /授权格式/);
+});
