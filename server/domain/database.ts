@@ -79,8 +79,35 @@ const MIGRATIONS = [
     updated_at timestamptz NOT NULL,
     UNIQUE (actor_id, idempotency_digest)
   )`,
+  `CREATE TABLE IF NOT EXISTS managed_app_bindings (
+    id uuid PRIMARY KEY,
+    app_key text NOT NULL,
+    publish_key_digest text NOT NULL UNIQUE,
+    project_id text UNIQUE,
+    public_app_id uuid UNIQUE,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS managed_publish_operations (
+    id uuid PRIMARY KEY,
+    binding_id uuid NOT NULL REFERENCES managed_app_bindings(id),
+    idempotency_digest text NOT NULL,
+    request_digest text NOT NULL,
+    manifest_path text NOT NULL,
+    expected_app_revision integer,
+    base_commit_sha text,
+    project_id text,
+    branch text NOT NULL,
+    commit_sha text,
+    tag text NOT NULL,
+    status text NOT NULL CHECK (status IN ('prepared', 'project_ready', 'commit_ready', 'tag_ready', 'release_ready', 'submitted')),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    UNIQUE (binding_id, idempotency_digest)
+  )`,
   `CREATE INDEX IF NOT EXISTS published_snapshots_audience_idx ON published_snapshots (audience, app_id)`,
   `CREATE INDEX IF NOT EXISTS publications_expiry_idx ON publications (expires_at)`,
+  `CREATE INDEX IF NOT EXISTS managed_publish_operations_binding_idx ON managed_publish_operations (binding_id, created_at DESC)`,
 ];
 
 function result<Row extends QueryResultRow>(value: PgQueryResult<Row>): QueryResult<Row> {
