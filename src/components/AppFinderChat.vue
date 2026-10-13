@@ -83,7 +83,7 @@ function openApp(id) {
 
 <template>
   <div class="finder-root" data-testid="app-finder">
-    <section v-if="open" class="finder-panel" role="dialog" aria-label="查找 AI 应用助手" data-testid="app-finder-panel">
+    <section v-if="open" class="finder-panel" id="app-finder-panel" role="dialog" aria-label="查找 AI 应用助手" data-testid="app-finder-panel">
       <header class="finder-header">
         <div class="finder-avatar" aria-hidden="true">✦</div>
         <div class="finder-headline">
@@ -165,7 +165,7 @@ function openApp(id) {
 
 <style scoped>
 .finder-root { position: fixed; bottom: 22px; right: 24px; z-index: 100; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: #29394e; }
-.finder-launch { display: flex; align-items: center; gap: 8px; margin-left: auto; border: 1px solid #274c8b; border-radius: 25px; background: #315fbd; box-shadow: 0 5px 18px rgb(30 58 110 / 17%); color: #fff; padding: 11px 17px; font: 600 13px/1.4 inherit; cursor: pointer; }
+.finder-launch { display: flex; align-items: center; gap: 8px; margin-left: auto; border: 1px solid #274c8b; border-radius: 25px; background: #315fbd; box-shadow: 0 5px 18px rgb(30 58 110 / 17%); color: #fff; padding: 11px 17px; font-size: 13px; font-weight: 600; line-height: 1.4; cursor: pointer; }
 .finder-launch > span:first-child { font-size: 19px; line-height: 1; }
 .finder-launch:hover { background: #274f9d; }
 .finder-panel { display: flex; flex-direction: column; width: min(425px, calc(100vw - 32px)); height: min(630px, calc(100dvh - 110px)); min-height: 290px; margin-bottom: 13px; overflow: hidden; background: #fff; border: 1px solid #dfe5ee; border-radius: 15px; box-shadow: 0 12px 35px rgb(35 53 78 / 16%); }
@@ -195,7 +195,7 @@ function openApp(id) {
 .finder-examples button { border: 1px solid #e0e7f1; border-radius: 14px; background: white; padding: 5px 8px; color: #5d7090; font: inherit; font-size: 11px; cursor: pointer; }
 .finder-examples button:hover { border-color: #adbfdb; }
 .finder-form { flex: none; display: flex; align-items: flex-end; gap: 7px; padding: 11px 12px 4px; }
-.finder-form textarea { flex: 1; width: 100%; min-width: 0; min-height: 54px; max-height: 110px; resize: vertical; border: 1px solid #dce4ed; border-radius: 8px; padding: 9px 10px; outline: none; font: 12px/1.6 inherit; }
+.finder-form textarea { flex: 1; width: 100%; min-width: 0; min-height: 54px; max-height: 110px; resize: vertical; border: 1px solid #dce4ed; border-radius: 8px; padding: 9px 10px; outline: none; font-size: 12px; line-height: 1.6; }
 .finder-form textarea:focus { border-color: #8faad7; box-shadow: 0 0 0 2px #edf3fc; }
 .finder-send { flex: none; border: none; border-radius: 7px; padding: 11px 13px; background: #315fbd; color: white; font-size: 12px; font-weight: 600; cursor: pointer; }
 .finder-send:disabled { opacity: .5; cursor: not-allowed; }
