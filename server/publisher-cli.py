@@ -549,6 +549,23 @@ def _json_response(raw: bytes) -> dict[str, Any]:
     return value
 
 
+def _response_error_code(raw: bytes) -> str | None:
+    """Read only a bounded error code for safe retry classification."""
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    error = value.get("error")
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    if not isinstance(code, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
+        return None
+    return code
+
+
 def _is_author_preview_url(value: str, origin: str) -> bool:
     try:
         parsed = urlparse(value)
@@ -658,22 +675,26 @@ def _run(args: argparse.Namespace) -> int:
                 "catalogAppId": None,
                 "catalogRevision": None,
                 "publicationRevision": None,
+                "refreshRevisionAfterRejection": False,
             }
         old_digest = receipt.get("bundleDigest")
         response_known = receipt.get("responseKnown") is True
+        refresh_revision = receipt.get("refreshRevisionAfterRejection") is True
         deferred_update = bool(old_digest and old_digest != digest and not response_known)
         if old_digest is None:
             receipt["idempotencyKey"] = str(uuid.uuid4())
             receipt["bundleDigest"] = digest
             receipt["files"] = files
             receipt["responseKnown"] = False
+            receipt["refreshRevisionAfterRejection"] = False
             receipt["requestManagedAppId"] = None
             receipt["requestExpectedAppRevision"] = None
-        elif old_digest != digest and response_known:
+        elif refresh_revision or (old_digest != digest and response_known):
             receipt["idempotencyKey"] = str(uuid.uuid4())
             receipt["bundleDigest"] = digest
             receipt["files"] = files
             receipt["responseKnown"] = False
+            receipt["refreshRevisionAfterRejection"] = False
             receipt["requestManagedAppId"] = receipt.get("managedAppId")
             receipt["requestExpectedAppRevision"] = None
         elif not receipt.get("idempotencyKey") or not isinstance(receipt.get("files"), list):
@@ -721,6 +742,19 @@ def _run(args: argparse.Namespace) -> int:
             request_body,
         )
         if status < 200 or status >= 300:
+            error_code = _response_error_code(raw)
+            if status == 400 and error_code in {"VALIDATION_FAILED", "INVALID_REQUEST"}:
+                # These codes are returned before an operation can write to GitLab.
+                receipt["responseKnown"] = True
+                store.save(receipt)
+            elif status == 409 and error_code in {"REVISION_CONFLICT", "VERSION_NOT_NEWER"}:
+                # Managed revision checks happen before GitLab source writes. A revision
+                # conflict must get a fresh operation ID and owner-authenticated status.
+                receipt["responseKnown"] = True
+                if error_code == "REVISION_CONFLICT":
+                    receipt["refreshRevisionAfterRejection"] = True
+                    receipt["requestExpectedAppRevision"] = None
+                store.save(receipt)
             raise CliError(f"门户拒绝发布请求（HTTP {status}）；receipt 已保留，可安全重试。")
         response = _json_response(raw)
         returned_managed = response.get("managedAppId")

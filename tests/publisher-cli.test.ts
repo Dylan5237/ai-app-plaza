@@ -321,7 +321,7 @@ test('network failure retries the persisted exact bundle with the same owner and
   const firstOwner = requests[0]!.headers['x-plaza-publish-key'];
   assert.ok(firstKey && firstOwner);
   assert.ok(!first.stdout.includes(String(firstOwner)));
-  assert.ok(!first.stdout.includes(firstKey));
+  assert.ok(!first.stdout.includes(String(firstKey)));
   assert.ok(!first.stderr.includes(String(firstOwner)));
 
   const second = await runCli(args);
@@ -377,6 +377,201 @@ test('updates require the receipt target and use its current revision', async (t
   assert.ok(updatePost.headers['idempotency-key'] !== firstIdempotency, 'changed bundle gets a new idempotency key');
   const updatedSource = updateBody.files.find((file) => file.path === 'src/main.py');
   assert.ok(Buffer.from(updatedSource!.content, 'base64').toString('utf8') === 'print("UPDATED_SOURCE_SENTINEL")\n', 'updated source was sent');
+});
+
+for (const errorCode of ['VALIDATION_FAILED', 'INVALID_REQUEST']) {
+  test(`known HTTP 400 ${errorCode} allows corrected content with the same owner`, async (t) => {
+    const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-known-400-'));
+    t.after(() => rm(temporary, { recursive: true, force: true }));
+    const root = await makeProject(temporary);
+    const stateDir = path.join(temporary, 'private-state');
+    const requests: CapturedRequest[] = [];
+    let attempt = 0;
+    let portal: Awaited<ReturnType<typeof createPortal>>;
+    portal = await createPortal((request, response) => {
+      requests.push(request);
+      attempt += 1;
+      if (attempt === 1) {
+        respondJson(response, { error: { code: errorCode, message: 'response-message-secret-sentinel' } }, 400);
+        return;
+      }
+      respondJson(response, publicationResponse(portal.origin));
+    });
+    t.after(portal.close);
+    const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+    const rejected = await runCli(args);
+    assert.equal(rejected.code, 2);
+    assert.match(rejected.stderr, /HTTP 400/);
+    assert.ok(!rejected.stderr.includes('response-message-secret-sentinel'));
+    const rejectedOwner = requests[0]!.headers['x-plaza-publish-key'];
+    const rejectedKey = requests[0]!.headers['idempotency-key'];
+
+    await writeFile(path.join(root, 'src', 'main.py'), 'print("CORRECTED_AFTER_400")\n');
+    const corrected = await runCli(args);
+    assert.equal(corrected.code, 0, corrected.stderr);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1]!.headers['x-plaza-publish-key'], rejectedOwner, 'corrected content retains the owner credential');
+    assert.notEqual(requests[1]!.headers['idempotency-key'], rejectedKey, 'known rejected content gets a new idempotency key');
+    assert.notDeepEqual(requests[1]!.body, requests[0]!.body);
+    const correctedBody = decodedBody(requests[1]!);
+    const source = correctedBody.files.find((file) => file.path === 'src/main.py')!;
+    assert.equal(Buffer.from(source.content, 'base64').toString('utf8'), 'print("CORRECTED_AFTER_400")\n');
+    assert.ok(!corrected.stdout.includes('response-message-secret-sentinel'));
+  });
+}
+
+for (const scenario of [
+  { name: 'HTTP 503', status: 503, code: 'SERVICE_UNAVAILABLE' },
+  { name: 'unclassified HTTP 409', status: 409, code: 'IDEMPOTENCY_CONFLICT' },
+]) {
+  test(`${scenario.name} retries the same body and keys`, async (t) => {
+    const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-uncertain-http-'));
+    t.after(() => rm(temporary, { recursive: true, force: true }));
+    const root = await makeProject(temporary);
+    const stateDir = path.join(temporary, 'private-state');
+    const requests: CapturedRequest[] = [];
+    let attempt = 0;
+    let portal: Awaited<ReturnType<typeof createPortal>>;
+    portal = await createPortal((request, response) => {
+      requests.push(request);
+      attempt += 1;
+      if (attempt === 1) {
+        respondJson(response, { error: { code: scenario.code, message: 'response-body-must-stay-private' } }, scenario.status);
+        return;
+      }
+      respondJson(response, publicationResponse(portal.origin));
+    });
+    t.after(portal.close);
+    const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+    const uncertain = await runCli(args);
+    assert.equal(uncertain.code, 2);
+    assert.match(uncertain.stderr, new RegExp(`HTTP ${scenario.status}`));
+    const firstBody = requests[0]!.body;
+    const firstKey = requests[0]!.headers['idempotency-key'];
+    const firstOwner = requests[0]!.headers['x-plaza-publish-key'];
+
+    const recovered = await runCli(args);
+    assert.equal(recovered.code, 0, recovered.stderr);
+    assert.equal(requests.length, 2);
+    assert.ok(requests[1]!.body.equals(firstBody), 'uncertain HTTP response reuses the saved body');
+    assert.equal(requests[1]!.headers['idempotency-key'], firstKey);
+    assert.equal(requests[1]!.headers['x-plaza-publish-key'], firstOwner);
+    assert.ok(!uncertain.stderr.includes('response-body-must-stay-private'));
+    assert.ok(!recovered.stdout.includes('response-body-must-stay-private'));
+  });
+}
+
+test('REVISION_CONFLICT starts a fresh operation and rereads owned status on the next call', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-revision-conflict-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let statusRevision = 7;
+  let postAttempt = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: statusRevision });
+      return;
+    }
+    postAttempt += 1;
+    if (postAttempt === 1) {
+      respondJson(response, publicationResponse(portal.origin));
+    } else if (postAttempt === 2) {
+      statusRevision = 8;
+      respondJson(response, { error: { code: 'REVISION_CONFLICT', message: 'do-not-print-revision-detail' } }, 409);
+    } else {
+      respondJson(response, publicationResponse(portal.origin));
+    }
+  });
+  t.after(portal.close);
+  const baseArgs = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const first = await runCli(baseArgs);
+  assert.equal(first.code, 0, first.stderr);
+  const ownerKey = requests[0]!.headers['x-plaza-publish-key'];
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("REVISION_CONFLICT_RETRY")\n');
+
+  const conflict = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.equal(conflict.code, 2);
+  assert.match(conflict.stderr, /HTTP 409/);
+  assert.ok(!conflict.stderr.includes('do-not-print-revision-detail'));
+  const postsBeforeRetry = requests.filter((request) => request.method === 'POST');
+  assert.equal(decodedBody(postsBeforeRetry[1]!).expectedAppRevision, 7);
+  const rejectedKey = postsBeforeRetry[1]!.headers['idempotency-key'];
+  assert.equal(postsBeforeRetry[1]!.headers['x-plaza-publish-key'], ownerKey);
+
+  const recovered = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.equal(recovered.code, 0, recovered.stderr);
+  assert.deepEqual(requests.map((request) => request.method), ['POST', 'GET', 'POST', 'GET', 'POST']);
+  const posts = requests.filter((request) => request.method === 'POST');
+  const retry = posts[2]!;
+  assert.equal(decodedBody(retry).managedAppId, MANAGED_ID);
+  assert.equal(decodedBody(retry).expectedAppRevision, 8);
+  assert.notEqual(retry.headers['idempotency-key'], rejectedKey, 'revision conflict gets a new operation ID');
+  assert.equal(retry.headers['x-plaza-publish-key'], ownerKey, 'revision recovery retains the same owner credential');
+  for (const statusRead of requests.filter((request) => request.method === 'GET')) {
+    assert.equal(statusRead.headers['x-plaza-publish-key'], ownerKey, 'status refresh remains owner-authenticated');
+  }
+  assert.ok(!recovered.stdout.includes('do-not-print-revision-detail'));
+});
+
+test('VERSION_NOT_NEWER allows a manually corrected higher version in a new operation', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-version-rejected-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let postAttempt = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 1 });
+      return;
+    }
+    postAttempt += 1;
+    if (postAttempt === 1) {
+      respondJson(response, publicationResponse(portal.origin));
+    } else if (postAttempt === 2) {
+      respondJson(response, { error: { code: 'VERSION_NOT_NEWER', message: 'do-not-print-version-detail' } }, 409);
+    } else {
+      respondJson(response, publicationResponse(portal.origin));
+    }
+  });
+  t.after(portal.close);
+  const baseArgs = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const first = await runCli(baseArgs);
+  assert.equal(first.code, 0, first.stderr);
+  const ownerKey = requests[0]!.headers['x-plaza-publish-key'];
+
+  const manifestPath = path.join(root, 'ai-app.json');
+  const staleManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  staleManifest.projectVersion = '1.2.2';
+  await writeFile(manifestPath, JSON.stringify(staleManifest, null, 2));
+  const rejected = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.equal(rejected.code, 2);
+  assert.match(rejected.stderr, /HTTP 409/);
+  assert.ok(!rejected.stderr.includes('do-not-print-version-detail'));
+  const rejectedPost = requests.filter((request) => request.method === 'POST')[1]!;
+  const rejectedKey = rejectedPost.headers['idempotency-key'];
+
+  const correctedManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  correctedManifest.projectVersion = '1.2.4';
+  await writeFile(manifestPath, JSON.stringify(correctedManifest, null, 2));
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("HIGHER_VERSION")\n');
+  const corrected = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.equal(corrected.code, 0, corrected.stderr);
+  const posts = requests.filter((request) => request.method === 'POST');
+  const correctedPost = posts[2]!;
+  assert.notEqual(correctedPost.headers['idempotency-key'], rejectedKey);
+  assert.equal(correctedPost.headers['x-plaza-publish-key'], ownerKey);
+  assert.equal(decodedBody(correctedPost).managedAppId, MANAGED_ID);
+  assert.equal(decodedBody(correctedPost).expectedAppRevision, 1);
+  const sentManifest = decodedBody(correctedPost).files.find((file) => file.path === 'ai-app.json')!;
+  assert.equal(JSON.parse(Buffer.from(sentManifest.content, 'base64').toString('utf8')).projectVersion, '1.2.4');
+  assert.ok(!corrected.stdout.includes('do-not-print-version-detail'));
 });
 
 test('unconfirmed preview updates use catalog revision zero, not publication revision', async (t) => {
@@ -485,6 +680,8 @@ test('an uncertain managed update reuses its saved request revision and idempote
   const updateRequest = requests.find((request) => request.method === 'POST' &&
     decodedBody(request).managedAppId === MANAGED_ID)!;
   const updateKey = updateRequest.headers['idempotency-key'];
+  const firstOwner = requests.find((request) => request.method === 'POST')!.headers['x-plaza-publish-key'];
+  assert.equal(updateRequest.headers['x-plaza-publish-key'], firstOwner);
   assert.equal(decodedBody(updateRequest).expectedAppRevision, 7);
   const beforeRetryCount = requests.length;
 
@@ -494,6 +691,7 @@ test('an uncertain managed update reuses its saved request revision and idempote
   assert.equal(retryRequests.length, 1, 'saved request revision avoids a second status lookup');
   assert.equal(retryRequests[0]!.method, 'POST');
   assert.equal(retryRequests[0]!.headers['idempotency-key'], updateKey);
+  assert.equal(retryRequests[0]!.headers['x-plaza-publish-key'], firstOwner);
   assert.ok(retryRequests[0]!.body.equals(updateRequest.body));
 });
 
