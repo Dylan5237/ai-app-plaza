@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import plazaMark from '../assets/plaza-mark.svg'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
 import AppExamples from '../components/AppExamples.vue'
@@ -570,7 +571,9 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
     <main class="directory-main">
       <header class="directory-header">
         <div class="brand-block">
-          <div class="brand-mark" aria-hidden="true">AI</div>
+          <div class="brand-mark" aria-hidden="true">
+            <img :src="plazaMark" alt="" />
+          </div>
           <div>
             <h1>AI应用广场</h1>
             <p>发现适合当前任务的 AI 应用</p>
@@ -863,7 +866,8 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .directory-main { width: min(1480px, calc(100% - 64px)); min-height: 100%; margin: 0 auto; padding: 18px 0; }
 .directory-header { display: flex; align-items: center; justify-content: space-between; gap: 22px; }
 .brand-block { display: flex; align-items: center; gap: 12px; }
-.brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; color: #5273a6; font-size: 13px; font-weight: 700; letter-spacing: .3px; }
+.brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; }
+.brand-mark img { display: block; width: 100%; height: 100%; }
 .brand-block h1 { margin: 0; color: #1e2b3c; font-size: 21px; font-weight: 650; line-height: 1.35; }
 .brand-block p { margin: 3px 0 0; color: #8993a2; font-size: 12px; }
 .share-button, .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 14px; border: 1px solid #315fbd; border-radius: 6px; background: #315fbd; color: #fff; font: inherit; font-size: 13px; font-weight: 550; text-decoration: none; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
