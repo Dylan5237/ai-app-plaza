@@ -3,23 +3,46 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.16"
   },
   "scripts": {
     "generate": "python scripts/apply_compact_portal.py && node scripts/build_fuxi_portal.cjs",
-    "dev": "npm run generate && vite --host 127.0.0.1",
+    "dev": "node scripts/dev.mjs",
     "build": "npm run generate && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node tests/mock-v13-qa.cjs && node tests/publisher-v13-qa.cjs"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "dev:prototype": "npm run generate && vite --host 127.0.0.1",
+    "dev:api": "node --env-file-if-exists=.env --import tsx --watch server/index.ts",
+    "start": "node --env-file-if-exists=.env --import tsx server/index.ts",
+    "mcp": "node --env-file-if-exists=.env --import tsx server/mcp.ts",
+    "typecheck": "tsc -p tsconfig.server.json",
+    "test:e2e": "node --import tsx tests/mainflow-browser.ts && node --import tsx tests/update-browser.ts",
+    "test:prototype": "node tests/mock-v13-qa.cjs && node tests/publisher-v13-qa.cjs"
   },
   "dependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@fastify/rate-limit": "11.2.1",
+    "@fastify/static": "10.1.6",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "element-plus": "2.11.8",
+    "fastify": "5.12.5",
+    "jsonc-parser": "3.3.1",
     "lucide": "1.17.0",
-    "vue": "3.5.41"
+    "markdown-it": "15.0.2",
+    "pg": "8.23.1",
+    "vue": "3.5.41",
+    "zod": "4.6.5"
   },
   "devDependencies": {
+    "@types/markdown-it": "14.2.0",
+    "@types/node": "26.6.5",
+    "@types/pg": "8.23.1",
     "@vitejs/plugin-vue": "4.6.2",
     "playwright": "1.62.1",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
     "vite": "5.4.21"
   }
 }
