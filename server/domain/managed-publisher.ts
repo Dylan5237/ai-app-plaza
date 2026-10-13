@@ -47,6 +47,7 @@ interface GitLabProject {
   builds_access_level?: string;
   shared_runners_enabled?: boolean;
   default_branch?: string | null;
+  empty_repo?: boolean;
   permissions?: {
     project_access?: { access_level?: number } | null;
     group_access?: { access_level?: number } | null;
@@ -392,7 +393,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     binding = await updateBindingProject(binding, projectId);
     operation = await updateOperation(operation, { project_id: projectId, status: "project_ready" });
 
-    const commitSha = await ensureCommits(projectId, operation, bundle);
+    const commitSha = await ensureCommits(projectId, operation, bundle, project);
     operation = await updateOperation(operation, { commit_sha: commitSha, status: "commit_ready" });
     await ensureTag(projectId, operation.tag, commitSha);
     operation = await updateOperation(operation, { status: "tag_ready" });
@@ -419,7 +420,56 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     return { ...result, managedAppId: binding.id, sourceUploaded: true };
   }
 
-  async function ensureCommits(projectId: string, operation: OperationRecord, bundle: ValidatedBundle): Promise<string> {
+  async function ensureCommits(projectId: string, operation: OperationRecord, bundle: ValidatedBundle, project: GitLabProject): Promise<string> {
+    const branchHead = await api.getBranch(projectId, operation.branch);
+    if (!branchHead && operation.commit_sha) {
+      throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "已记录的托管上传分支无法读取，已停止重复创建源码。");
+    }
+    // Revision 0 means no confirmed catalog entry, not an empty Git repository.
+    // Repair old project_ready operations too, before any new commit is posted.
+    // An existing branch must retain its original base for batch recovery.
+    if (!branchHead && !operation.base_commit_sha && (project.empty_repo === false || project.default_branch)) {
+      const previous = await config.db.query<OperationRecord>(
+        `SELECT * FROM managed_publish_operations
+          WHERE binding_id = $1 AND project_id = $2 AND id <> $3 AND commit_sha IS NOT NULL
+          ORDER BY created_at DESC, id DESC`,
+        [operation.binding_id, projectId, operation.id],
+      );
+      let baseSha: string | undefined;
+      for (const candidate of previous.rows) {
+        let commit: GitLabCommit;
+        try { commit = await api.getCommit(projectId, candidate.commit_sha!); }
+        catch (error) {
+          if (error instanceof GitLabApiError && error.status === 404) {
+            throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "此前记录的托管提交无法读取，已停止创建修订分支。");
+          }
+          throw gitlabUnavailable();
+        }
+        const marker = parseCommitMarker(commit.message ?? "");
+        if (commit.id?.toLowerCase() !== candidate.commit_sha || !marker ||
+            marker.operationId !== candidate.id || marker.requestDigest !== candidate.request_digest ||
+            marker.batch < 1 || marker.batch > marker.total) {
+          throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "此前托管提交与应用记录不一致，已停止创建修订分支。");
+        }
+        if (marker.batch === marker.total) {
+          baseSha = candidate.commit_sha!;
+          break;
+        }
+      }
+      if (!baseSha) {
+        throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "已有 GitLab 仓库缺少可核验的完整托管提交，已停止创建修订分支。");
+      }
+      // Freeze the base before POST, including an interruption before the first
+      // commit. Concurrent retries must use the same persisted SHA.
+      const saved = await config.db.query<OperationRecord>(
+        `UPDATE managed_publish_operations
+            SET base_commit_sha = COALESCE(base_commit_sha, $2), updated_at = $3
+          WHERE id = $1 AND commit_sha IS NULL RETURNING *`,
+        [operation.id, baseSha, new Date()],
+      );
+      if (!saved.rows[0]?.base_commit_sha) throw stateConflict();
+      operation = saved.rows[0];
+    }
     const baseEntries = operation.base_commit_sha
       ? await api.getTree(projectId, operation.base_commit_sha)
       : new Map<string, TreeValue>();
@@ -434,7 +484,6 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     }
     let expected = new Map(baseEntries);
 
-    const branchHead = await api.getBranch(projectId, operation.branch);
     let completed = 0;
     if (branchHead) {
       const commit = await api.getCommit(projectId, branchHead);
@@ -447,8 +496,6 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       await api.assertTree(projectId, branchHead, expected);
       completed = marker.batch;
       await updateOperation(operation, { commit_sha: branchHead });
-    } else if (operation.commit_sha) {
-      throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "已记录的托管上传分支无法读取，已停止重复创建源码。");
     }
 
     for (let index = completed; index < batches.length; index++) {
@@ -470,8 +517,11 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       } catch (error) {
         postError = error;
       }
-      const recoveredHead = await api.getBranch(projectId, operation.branch).catch(() => undefined);
+      let recoveredHead: string | undefined;
+      try { recoveredHead = await api.getBranch(projectId, operation.branch); }
+      catch { throw gitlabUnavailable(); }
       if (!recoveredHead) {
+        assertCommitNotRejected(postError);
         if (postError) throw gitlabUnavailable();
         throw new DomainError(503, "SOURCE_UNAVAILABLE", "GitLab 已接收源码但暂时无法核验提交。请使用相同幂等键重试。");
       }
@@ -484,6 +534,8 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         continue;
       }
       if (recoveredMarker?.operationId === operation.id && recoveredMarker.requestDigest === operation.request_digest && recoveredMarker.total === batches.length && recoveredMarker.batch === batch - 1) {
+        await api.assertTree(projectId, recoveredHead, expected);
+        assertCommitNotRejected(postError);
         // The request did not advance the branch. A same-key retry can safely post it again.
         throw new DomainError(503, "SOURCE_UNAVAILABLE", "GitLab 尚未确认本批源码提交。请使用相同幂等键重试。");
       }
@@ -913,6 +965,12 @@ function assertManagedProject(project: GitLabProject, groupId: string): void {
   if (String(project.namespace?.id ?? "") !== groupId || project.visibility !== "private" ||
       project.builds_access_level !== "disabled" || project.shared_runners_enabled !== false) {
     throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "GitLab 项目不在固定私有命名空间，或 CI 未关闭，已停止写入。");
+  }
+}
+
+function assertCommitNotRejected(error: unknown): void {
+  if (error instanceof GitLabApiError && [400, 409, 422].includes(error.status)) {
+    throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", `GitLab 拒绝本批源码提交（HTTP ${error.status}），且回读未发现提交成功。请核对托管源码状态后重试。`);
   }
 }
 

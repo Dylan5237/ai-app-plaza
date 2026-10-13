@@ -198,6 +198,49 @@ function gitLabWriteCounts(gitlab: Awaited<ReturnType<typeof startManagedGitLabF
   };
 }
 
+test("publisher CLI revises an unconfirmed preview and resumes the same legacy failed request", async t => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "plaza-unconfirmed-http-"));
+  const portal = await startManagedPortal();
+  t.after(async () => { await portal.close(); await rm(temporary, { recursive: true, force: true }); });
+  const projectRoot = await makeProject(temporary);
+  const contract = await (await fetch(`${portal.origin}/api/publish-contract`)).json() as { managed: { publisherUrl: string } };
+  const helperPath = path.join(temporary, "publisher-cli.py");
+  await writeFile(helperPath, await (await fetch(contract.managed.publisherUrl)).text(), "utf8");
+  const args = ["--origin", portal.origin, "--project", projectRoot, "--state-dir", path.join(temporary, "private-state")];
+  const firstRun = await runCli(helperPath, args);
+  assert.equal(firstRun.code, 0, firstRun.stderr);
+  const first = cliJson(firstRun.stdout);
+  const managedId = first.managedAppId as string;
+  const project = portal.gitlab.state.projects.get(100)!;
+  const oldSha = project.tags.get("v1.0.0")!;
+  await writeVersion(projectRoot, "1.0.1", "首次预览的资料修正。", 'export const release = "corrected";\n');
+  const updateArgs = [...args, "--managed-app-id", managedId];
+  portal.gitlab.state.rejectNextCommitStatus = 503;
+  const failed = await runCli(helperPath, updateArgs);
+  assert.notEqual(failed.code, 0);
+  const original = portal.submissions.at(-1)!;
+  assert.equal(original.body.expectedAppRevision, 0);
+  await portal.db.query("UPDATE managed_publish_operations SET base_commit_sha = NULL WHERE binding_id = $1 AND tag = 'v1.0.1'", [managedId]);
+  const resumed = await runCli(helperPath, updateArgs);
+  assert.equal(resumed.code, 0, resumed.stderr);
+  const result = cliJson(resumed.stdout);
+  assert.equal(result.status, "preview_ready");
+  assert.equal(result.managedAppId, managedId);
+  const retried = portal.submissions.at(-1)!;
+  assert.equal(retried.idempotencyKey, original.idempotencyKey);
+  assert.equal(retried.ownerKey, original.ownerKey);
+  assert.deepEqual(retried.body, original.body);
+  const repeat = await runCli(helperPath, updateArgs);
+  assert.equal(repeat.code, 0, repeat.stderr);
+  assert.equal(cliJson(repeat.stdout).previewUrl, result.previewUrl);
+  assert.equal(project.commits.size, 2);
+  assert.equal(project.tags.get("v1.0.0"), oldSha);
+  assert.equal(project.releases.get("v1.0.0"), oldSha);
+  assert.deepEqual(gitLabWriteCounts(portal.gitlab), { projects: 1, projectCreates: 1, commits: 3, tags: 2, releases: 2 });
+  assert.equal((await (await fetch(`${portal.origin}/api/apps`)).json() as { total: number }).total, 0);
+  assert.ok(!resumed.stdout.includes(MANAGED_GITLAB_TOKEN) && !resumed.stderr.includes(MANAGED_GITLAB_TOKEN));
+});
+
 test("managed HTTP flow uploads a local project, confirms and updates one app without leaking the server token", async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "plaza-managed-http-"));
   let portal: ManagedPortal | undefined;
