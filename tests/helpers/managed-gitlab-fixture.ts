@@ -37,6 +37,8 @@ export interface ManagedGitLabFixture {
     dropNextCommitResponse: boolean;
     dropCommitResponseOnNumber: number | null;
     commitCreateCount: number;
+    rejectNextCommitStatus: number | null;
+    failCommitReadback: boolean;
     nextProjectId: number;
     preseedTag(projectId: number, tag: string, sha: string): void;
   };
@@ -54,6 +56,8 @@ export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture>
     dropNextCommitResponse: false,
     dropCommitResponseOnNumber: null,
     commitCreateCount: 0,
+    rejectNextCommitStatus: null as number | null,
+    failCommitReadback: false,
     nextProjectId: 100,
     preseedTag(projectId: number, tag: string, sha: string) {
       const project = projects.get(projectId);
@@ -62,6 +66,7 @@ export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture>
     },
   };
 
+  let failNextBranchRead = false;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url!, "http://127.0.0.1");
     const method = request.method ?? "GET";
@@ -108,10 +113,22 @@ export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture>
 
     if (suffix === "/repository/commits" && method === "POST") {
       state.commitCreateCount++;
+      if (state.rejectNextCommitStatus) {
+        const status = state.rejectNextCommitStatus;
+        state.rejectNextCommitStatus = null;
+        failNextBranchRead = state.failCommitReadback;
+        state.failCommitReadback = false;
+        return fail(status, "fixture rejection with a secret that must never be exposed");
+      }
       const branch = String(body.branch ?? "");
       const message = String(body.commit_message ?? "");
       const actions = Array.isArray(body.actions) ? body.actions as Array<Record<string, unknown>> : [];
       if (!branch || !message || actions.length < 1 || actions.length > 100) return fail(400, "invalid commit action set");
+      // GitLab defaults start_branch to branch when start_sha is absent. Only
+      // an empty repository can create a new branch without an existing ref.
+      if (!project.branches.has(branch) && project.commits.size > 0 && typeof body.start_sha !== "string") {
+        return fail(400, "You can only create or edit files when you are on a branch");
+      }
       const currentSha = project.branches.get(branch) ?? (typeof body.start_sha === "string" ? body.start_sha : undefined);
       const current = currentSha ? project.commits.get(currentSha) : undefined;
       if (currentSha && !current) return fail(400, "unknown start sha");
@@ -132,6 +149,10 @@ export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture>
       project.commits.set(id, { id, message, files });
       project.branches.set(branch, id);
       if (!project.default_branch) project.default_branch = branch;
+      if (state.failCommitReadback) {
+        failNextBranchRead = true;
+        state.failCommitReadback = false;
+      }
       if (state.dropNextCommitResponse || state.dropCommitResponseOnNumber === state.commitCreateCount) {
         state.dropNextCommitResponse = false;
         state.dropCommitResponseOnNumber = null;
@@ -143,6 +164,10 @@ export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture>
 
     const branchMatch = suffix.match(/^\/repository\/branches\/(.+)$/);
     if (branchMatch && method === "GET") {
+      if (failNextBranchRead) {
+        failNextBranchRead = false;
+        return fail(503, "fixture readback unavailable");
+      }
       const branch = decodeURIComponent(branchMatch[1]!);
       const sha = project.branches.get(branch);
       return sha ? send(200, { name: branch, commit: { id: sha } }) : fail(404, "branch not found");
@@ -272,6 +297,7 @@ function projectJson(project: Project): Record<string, unknown> {
     created_at: project.created_at,
     web_url: project.web_url,
     default_branch: project.default_branch,
+    empty_repo: project.commits.size === 0,
     permissions: { project_access: { access_level: 50 }, group_access: null },
   };
 }

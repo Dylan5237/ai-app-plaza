@@ -58,6 +58,125 @@ function assertDomainError(error: unknown, code: string): asserts error is Domai
   assert.equal(error.code, code);
 }
 
+test("an unconfirmed revision replaces the complete source tree and preserves earlier immutable versions", async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const key = publishKey();
+  const first = await h.publisher.submit(makeBundle("1.0.0", "初版", [{ path: "old.txt", text: "remove me" }]), key, "unconfirmed-first-0001");
+  const project = h.gitlab.state.projects.get(100)!;
+  const oldSha = project.tags.get("v1.0.0")!;
+  const input = { ...makeBundle("1.0.1", "修订", [{ path: "new.txt", text: "new source" }]), managedAppId: first.managedAppId, expectedAppRevision: 0 };
+  const revised = await h.publisher.submit(input, key, "unconfirmed-revision-0001");
+  assert.equal(revised.status, "preview_ready");
+  assert.equal(project.branches.size, 2);
+  const newSha = project.tags.get("v1.0.1")!;
+  assert.notEqual(oldSha, newSha);
+  const files = project.commits.get(newSha)!.files;
+  assert.deepEqual([...files.keys()].sort(), input.files.map(file => file.path).sort());
+  for (const file of input.files) assert.deepEqual(Buffer.from(files.get(file.path)!), Buffer.from(file.content, "base64"));
+  assert.equal(project.tags.get("v1.0.0"), oldSha);
+  assert.equal(project.releases.get("v1.0.0"), oldSha);
+  assert.ok(project.commits.get(oldSha)!.files.has("old.txt"));
+  assert.equal((await h.publisher.current(first.managedAppId, key)).revision, 0);
+  assert.equal((await h.service.list()).total, 0);
+  const count = h.gitlab.state.writes.length;
+  const retry = await h.publisher.submit(input, key, "unconfirmed-revision-0001");
+  assert.equal(retry.previewUrl, revised.previewUrl);
+  assert.equal(h.gitlab.state.writes.length, count);
+});
+
+test("same-key restart repairs a persisted project_ready operation with no base and no branch", async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const key = publishKey();
+  const first = await h.publisher.submit(makeBundle(), key, "legacy-first-preview-0001");
+  const project = h.gitlab.state.projects.get(100)!;
+  const oldSha = project.tags.get("v1.0.0")!;
+  const input = { ...makeBundle("1.0.1", "资料修正"), managedAppId: first.managedAppId, expectedAppRevision: 0 };
+  h.gitlab.state.rejectNextCommitStatus = 400;
+  await assert.rejects(h.publisher.submit(input, key, "legacy-failed-revision-0001"), error => {
+    assertDomainError(error, "MANAGED_SOURCE_CONFLICT");
+    assert.equal(error.statusCode, 409);
+    assert.ok(error.message.includes("HTTP 400"));
+    assert.ok(!error.message.includes("secret"));
+    return true;
+  });
+  // Exact legacy persisted state seen in production, keeping the original
+  // operation UUID, request/idempotency digests, tag and branch intact.
+  await h.db.query("UPDATE managed_publish_operations SET base_commit_sha = NULL WHERE binding_id = $1 AND tag = 'v1.0.1'", [first.managedAppId]);
+  const before = (await h.db.query("SELECT * FROM managed_publish_operations WHERE binding_id = $1 AND tag = 'v1.0.1'", [first.managedAppId])).rows[0]!;
+  assert.equal(before.status, "project_ready");
+  assert.equal(before.commit_sha, null);
+  assert.ok(!project.branches.has(before.branch));
+  const restarted = createManagedPublisher({ db: h.db, service: h.service, gitlabUrl: h.gitlab.url, gitlabToken: MANAGED_GITLAB_TOKEN, groupId: "63", secret: SECRET });
+  const result = await restarted.submit(input, key, "legacy-failed-revision-0001");
+  assert.equal(result.status, "preview_ready");
+  const after = (await h.db.query("SELECT * FROM managed_publish_operations WHERE id = $1", [before.id])).rows[0]!;
+  for (const field of ["id", "request_digest", "idempotency_digest", "branch", "tag"]) assert.equal(after[field], before[field]);
+  assert.equal(after.base_commit_sha, oldSha);
+  assert.equal(after.status, "submitted");
+  assert.equal(h.gitlab.state.projects.size, 1);
+  assert.equal(project.commits.size, 2);
+  assert.equal(project.tags.get("v1.0.0"), oldSha);
+});
+
+test("a saved base remains fixed across a failed first commit, later candidates and lost batch responses", async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const key = publishKey();
+  const first = await h.publisher.submit(makeBundle(), key, "frozen-base-first-0001");
+  const project = h.gitlab.state.projects.get(100)!;
+  const oldSha = project.tags.get("v1.0.0")!;
+  const extras = Array.from({ length: 205 }, (_, index) => ({ path: `src/${index}.txt`, text: `${index}` }));
+  const input = { ...makeBundle("1.0.1", "中断恢复", extras), managedAppId: first.managedAppId, expectedAppRevision: 0 };
+  h.gitlab.state.rejectNextCommitStatus = 503;
+  await assert.rejects(h.publisher.submit(input, key, "frozen-base-revision-0001"), error => { assertDomainError(error, "SOURCE_UNAVAILABLE"); return true; });
+  const saved = (await h.db.query("SELECT * FROM managed_publish_operations WHERE binding_id = $1 AND tag = 'v1.0.1'", [first.managedAppId])).rows[0]!;
+  assert.equal(saved.base_commit_sha, oldSha);
+  await h.publisher.submit({ ...makeBundle("1.0.2", "后续候选"), managedAppId: first.managedAppId, expectedAppRevision: 0 }, key, "frozen-base-later-0001");
+  h.gitlab.state.failCommitReadback = true;
+  await assert.rejects(h.publisher.submit(input, key, "frozen-base-revision-0001"), error => { assertDomainError(error, "SOURCE_UNAVAILABLE"); return true; });
+  assert.equal(project.commits.size, 3, "first revision batch was accepted despite the unavailable readback");
+  h.gitlab.state.dropCommitResponseOnNumber = h.gitlab.state.commitCreateCount + 1;
+  const recovered = await h.publisher.submit(input, key, "frozen-base-revision-0001");
+  assert.equal(recovered.status, "preview_ready");
+  assert.equal(project.commits.size, 5, "two other candidates plus exactly three revision batches");
+  assert.deepEqual([...project.commits.get(project.tags.get("v1.0.1")!)!.files.keys()].sort(), input.files.map(file => file.path).sort());
+  assert.equal((await h.db.query("SELECT base_commit_sha FROM managed_publish_operations WHERE id = $1", [saved.id])).rows[0]!.base_commit_sha, oldSha);
+  const writes = h.gitlab.state.writes.length;
+  await h.publisher.submit(input, key, "frozen-base-revision-0001");
+  assert.equal(h.gitlab.state.writes.length, writes);
+});
+
+test("an unverified prior commit stops revision writes instead of using the default branch", async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const key = publishKey();
+  const first = await h.publisher.submit(makeBundle(), key, "unverified-base-first-0001");
+  const project = h.gitlab.state.projects.get(100)!;
+  project.commits.get(project.tags.get("v1.0.0")!)!.message = "foreign commit";
+  const writes = h.gitlab.state.writes.length;
+  await assert.rejects(h.publisher.submit({ ...makeBundle("1.0.1"), managedAppId: first.managedAppId, expectedAppRevision: 0 }, key, "unverified-base-revision-0001"), error => { assertDomainError(error, "MANAGED_SOURCE_CONFLICT"); return true; });
+  assert.equal(h.gitlab.state.writes.length, writes);
+  assert.equal(project.branches.size, 1);
+  project.commits.delete(project.tags.get("v1.0.0")!);
+  await assert.rejects(h.publisher.submit({ ...makeBundle("1.0.1"), managedAppId: first.managedAppId, expectedAppRevision: 0 }, key, "unverified-base-revision-0001"), error => { assertDomainError(error, "MANAGED_SOURCE_CONFLICT"); return true; });
+  assert.equal(h.gitlab.state.writes.length, writes, "an unavailable recorded commit also stops before any write");
+});
+
+test("a rejected commit with unavailable readback still reports an uncertain retryable outcome", async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const key = publishKey();
+  h.gitlab.state.rejectNextCommitStatus = 400;
+  h.gitlab.state.failCommitReadback = true;
+  await assert.rejects(h.publisher.submit(makeBundle(), key, "unknown-readback-first-0001"), error => { assertDomainError(error, "SOURCE_UNAVAILABLE"); return true; });
+  const result = await h.publisher.submit(makeBundle(), key, "unknown-readback-first-0001");
+  assert.equal(result.status, "preview_ready");
+  assert.equal(h.gitlab.state.projects.size, 1);
+  assert.equal(h.gitlab.state.projects.get(100)!.commits.size, 1);
+});
+
 test("managed first publish previews for manual confirmation, then updates the same app and idempotent retry creates no duplicate GitLab objects", async t => {
   const h = await startManagedHarness();
   t.after(() => h.close());
