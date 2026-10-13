@@ -91,3 +91,5 @@ npm run test:prototype
 ## 早期设计记录
 
 [需求说明](docs/product/requirements.md)保留早期产品讨论与决定。历史记录包含后续阶段已调整的范围；当前行为以本文、服务端资料契约和 GitHub 已冻结阶段为准。
+
+[架构设计](docs/architecture/architecture.md)、[设计决策](docs/architecture/decisions-2026-10-10.md)、[资料契约设计](docs/architecture/data-contract.md)和[架构图](docs/architecture/plaza-architecture.html)保留对应设计阶段的记录。当前可执行资料规范位于 `server/contracts/app-manifest.schema.json`；托管发布的独立边界见 Phase #17。

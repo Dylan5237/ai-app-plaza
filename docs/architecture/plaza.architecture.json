@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AI应用广场 · 最小架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1380,
+      650
+    ],
+    "views": [
+      {
+        "id": "discover",
+        "label": "发现与使用",
+        "focus": [
+          "plaza-web",
+          "plaza-core",
+          "plaza-store",
+          "hosted-app",
+          "user-agent",
+          "user-runtime"
+        ],
+        "note": "用户从能力需求出发；平台入口直接打开，Agent 入口复制提示词交给用户自己的 Agent。"
+      },
+      {
+        "id": "publish",
+        "label": "Agent 分享",
+        "focus": [
+          "user-agent",
+          "plaza-mcp",
+          "plaza-core",
+          "plaza-web",
+          "gitlab-read",
+          "gitlab-source",
+          "plaza-store"
+        ],
+        "note": "Agent 按原有授权准备 GitLab 版本；广场读取固定 commit 生成预览，作者确认后收录。"
+      },
+      {
+        "id": "access",
+        "label": "身份与权限",
+        "focus": [
+          "plaza-web",
+          "plaza-core",
+          "company-identity",
+          "gitlab-read",
+          "gitlab-source",
+          "hosted-app"
+        ],
+        "note": "内部受众可看已共享资料，源码与目标应用权限独立；普通用户无需 GitLab 账号。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "plaza-web",
+      "type": "frontend",
+      "label": "广场网页",
+      "sublabel": "Vue · 发现 / 预览 / 确认",
+      "pos": [
+        60,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "plaza-core",
+      "type": "backend",
+      "label": "广场后端",
+      "sublabel": "Node.js / TS · 目录 / 发布 / 核验",
+      "pos": [
+        400,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "gitlab-read",
+      "type": "backend",
+      "label": "GitLab 读取适配器",
+      "sublabel": "后端内模块 · 只读固定来源",
+      "pos": [
+        740,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "gitlab-source",
+      "type": "external",
+      "label": "公司 GitLab",
+      "sublabel": "源码 / 资料 / commit · 版本可选",
+      "pos": [
+        1080,
+        255
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "plaza-mcp",
+      "type": "backend",
+      "label": "广场 MCP 接口",
+      "sublabel": "后端内接口 · 候选 / 状态 / 说明",
+      "pos": [
+        400,
+        60
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "user-agent",
+      "type": "external",
+      "label": "用户的 Agent",
+      "sublabel": "作者发布 · 使用者接入",
+      "pos": [
+        740,
+        60
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "user-runtime",
+      "type": "external",
+      "label": "用户授权的环境",
+      "sublabel": "Skill / MCP / 本地工具",
+      "pos": [
+        1080,
+        60
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "hosted-app",
+      "type": "external",
+      "label": "平台应用",
+      "sublabel": "独立登录与业务处理",
+      "pos": [
+        60,
+        450
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "plaza-store",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "共享快照 / 发布记录 / 收藏",
+      "pos": [
+        400,
+        450
+      ],
+      "size": [
+        220,
+        88
+      ]
+    },
+    {
+      "id": "company-identity",
+      "type": "security",
+      "label": "现有统一身份",
+      "sublabel": "覆盖内部受众 · 接入待核验",
+      "pos": [
+        740,
+        450
+      ],
+      "size": [
+        220,
+        88
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "web-service",
+      "from": "plaza-web",
+      "to": "plaza-core",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "service-read",
+      "from": "plaza-core",
+      "to": "gitlab-read",
+      "label": "核验来源",
+      "variant": "emphasis"
+    },
+    {
+      "id": "read-source",
+      "from": "gitlab-read",
+      "to": "gitlab-source",
+      "label": "只读 API",
+      "variant": "emphasis",
+      "labelDy": 10
+    },
+    {
+      "id": "service-store",
+      "from": "plaza-core",
+      "to": "plaza-store",
+      "label": "资料与发布状态",
+      "labelDy": 84
+    },
+    {
+      "id": "agent-mcp",
+      "from": "user-agent",
+      "to": "plaza-mcp",
+      "label": "版本定位 / 查询"
+    },
+    {
+      "id": "mcp-service",
+      "from": "plaza-mcp",
+      "to": "plaza-core",
+      "label": "共用业务逻辑",
+      "labelDy": 84
+    },
+    {
+      "id": "agent-push",
+      "from": "user-agent",
+      "to": "gitlab-source",
+      "label": "先授权上传",
+      "variant": "security"
+    },
+    {
+      "id": "agent-install",
+      "from": "user-agent",
+      "to": "user-runtime",
+      "label": "安装 / 部署",
+      "variant": "security"
+    },
+    {
+      "id": "web-open",
+      "from": "plaza-web",
+      "to": "hosted-app",
+      "label": "打开平台",
+      "labelDy": 84
+    },
+    {
+      "id": "identity-check",
+      "from": "plaza-core",
+      "to": "company-identity",
+      "label": "身份校验",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "一个后端，两种使用入口",
+      "items": [
+        "HTTP 与 MCP 共用逻辑；定时核验同部署",
+        "平台直接打开，其它应用交给用户 Agent 接入"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "先准备版本，再确认收录",
+      "items": [
+        "固定 commit 必需；tag / Release 可选",
+        "只共享预览中确认的资料，不授予源码权限"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "方向已确认 · 尚未实施",
+      "items": [
+        "当前仍为 Mock；GitLab / 统一身份 / Host 待验证",
+        "不增加应用托管、统一审批或通用安装器"
+      ]
+    }
+  ]
+}

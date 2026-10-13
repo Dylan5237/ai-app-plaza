@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "projectVersion": "2.1.0",
+  "appKey": "task-studio",
+  "name": "TaskStudio 需求工作台",
+  "summary": "将需求材料整理为可评审的业务场景和验收清单。",
+  "tags": ["需求分析", "业务评审"],
+  "maintainers": ["example-author"],
+  "capabilities": {
+    "scenarios": ["评审前整理零散需求", "检查业务流程是否覆盖异常情况"],
+    "inputs": ["文字需求或已有需求文档"],
+    "outputs": ["场景清单", "待确认问题", "验收清单草稿"]
+  },
+  "examples": [{"request": "整理账号申请流程，列出异常分支和验收条件。", "expectedResult": "得到可供业务人员评审的流程与条件清单。"}],
+  "requirements": ["具备目标工作台访问权限"],
+  "limitations": ["生成内容需要业务负责人确认，不能替代业务验收"],
+  "docs": {"readme": "docs/plaza-usage.md", "usage": "docs/plaza-usage.md"},
+  "entries": [{"id": "workspace", "kind": "web", "label": "需求工作台", "url": "https://task-studio.example.invalid"}],
+  "primaryEntry": "workspace"
+}

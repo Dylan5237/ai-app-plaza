@@ -1,3 +1,6 @@
 # Keep executable shell surfaces portable across Windows/macOS/Linux.
 *.sh text eol=lf
 .githooks/* text eol=lf
+# Preserve the bytes validated by the architecture diagram delivery receipt.
+docs/architecture/plaza.architecture.json text eol=lf
+docs/architecture/plaza-architecture.html text eol=lf

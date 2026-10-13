@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "1",
+  "appKey": "doc-converter",
+  "name": "DocConverter 文档转换器",
+  "summary": "在用户授权的本地环境批量转换文档并保留资源引用。",
+  "tags": ["文档转换", "批量处理"],
+  "maintainers": ["example-owner"],
+  "capabilities": {
+    "scenarios": ["把一组文档转换为便于检索的文本和资源目录"],
+    "inputs": ["待转换文件或目录"],
+    "outputs": ["转换后的文本", "资源目录", "失败文件清单"]
+  },
+  "examples": [{"request": "将指定目录的文档转换后写入新的输出目录。", "expectedResult": "保留原始文件，得到转换结果及失败说明。"}],
+  "requirements": ["可访问公司文件分发服务", "可写入指定的安装和输出目录"],
+  "limitations": ["版式复杂的文档需要人工检查", "示例下载地址和哈希不可用于实际安装"],
+  "docs": {"readme": "README.md", "usage": "docs/usage.md"},
+  "entries": [{
+    "id": "local", "kind": "agent", "label": "本地部署",
+    "instructionsPath": "docs/install.md",
+    "compatibility": ["示例面向 Windows x64，实际支持范围须在发布前验证"],
+    "artifacts": [{"url": "https://packages.example.invalid/doc-converter/v1.0.0/windows-x64.zip", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}]
+  }],
+  "primaryEntry": "local"
+}
