@@ -1,62 +1,95 @@
 # AI应用广场
 
-从工作目标出发，发现可用的 AI 应用：平台应用直接打开，其它应用通过提示词接入自己的 Agent。作者也通过 Agent 整理和发布应用，无需逐项填写资料。
+一个无需登录的 AI 应用门户。使用者按任务和作者标签找到应用，查看说明后打开平台或将接入提示词交给自己的 Agent；作者由 Agent 整理 GitLab 资料，预览确认后收录。
 
-当前是桌面交互原型，包含 **17 项完整 Mock 应用**：6 项平台工作台演示、11 项 Agent 接入示例。支持需求查询、作者标签筛选、收藏、详情与使用说明，以及“分享我的AI应用”的发布提示词、只读预览和结果反馈流程。
+启用统一托管后，负责人复制发布提示词到有当前项目文件和执行权限的 AI Harness，AI 自动整理源码与应用资料、上传并返回预览链接。负责人无需预建 GitLab 仓库或配置个人 GitLab 令牌。
 
-**尚未接入真实 GitLab、AI 检索、发布服务或应用安装。** Mock 资料与状态用于设计评审，不代表真实项目交付。
+当前开发范围为 **托管发布 → 发现 → 使用及更新**，见[首版边界](docs/product/mainflow-scope.md)与 [Phase #17](https://github.com/Dylan5237/ai-app-plaza/issues/17)。统一托管仅保存 GitLab 发布快照，不执行应用代码；没有登录、账号、收藏、审批或安装执行器。历史 17 项 Mock 原型仅在 `?prototype=1` 展示，不进入真实目录。实现、验证、部署和业务验收分别记录在 Phase 中。
 
 ## 本地运行
 
-需要 Node.js 20+、Python 3.10+（命令名 `python`）。在仓库根目录执行：
+需要 Node.js 22.16+、Python 3.10+（仅历史原型生成使用）。
 
 ```powershell
 npm ci
-npm run dev
-```
-
-终端会给出浏览器地址。构建与交付预览：
-
-```powershell
+Copy-Item .env.example .env
+# 由 Agent 将 .env 的 GITLAB_URL 设置为实际 GitLab 根地址
 npm run build
-npm run preview
+npm start
 ```
 
-静态交付目录是 `dist/`，入口为 `dist/index.html`，支持相对路径部署。生成过程只读取本仓库，不依赖旧会话目录、全局 Skill 或在线 CDN。
+默认地址 `http://127.0.0.1:4173`。`.env` 已忽略，不提交令牌或真实配置。第一次运行是空目录；没有自动注入的示例应用。本地模式使用文件持久化的 PGlite（PostgreSQL 引擎），数据与自动生成的加密密钥位于 `artifacts/plaza-local/`。保留该目录可跨重启恢复记录。
 
-## 目录
+开发时使用 `npm run dev`，它启动同源 Vite 网页和 API。`npm run dev:prototype` 用于单独维护历史原型。访问地址须与 `PUBLIC_ORIGIN` 一致；不要同时占用同一端口。
 
-| 路径 | 用途 |
+非本地运行必须显式配置 `DATABASE_URL`（PostgreSQL）、`PLAZA_SECRET`（安全随机生成并持久保管）和 HTTPS `PUBLIC_ORIGIN`，并移除 `PLAZA_LOCAL=1`。仅可信内网试用可显式设置 `ALLOW_INSECURE_PORTAL=1`，使用 RFC1918 数字 IPv4 的 HTTP 入口；这不提供链路加密，不改变默认 HTTPS 要求。内部 HTTP GitLab 需要部署者明确设置 `ALLOW_INSECURE_GITLAB=1`；这仅允许访问已配置实例，不关闭来源/路径校验。启动不会部署到任何远端。独立试用部署方式见 [部署说明](ops/trial/README.md)。
+
+## 发布与使用
+
+配置统一托管时，“分享我的AI应用”默认提供免 GitLab 配置的发布提示词。AI 从项目中准备 `ai-app.json`、共享说明与必要源码，运行广场提供的 Python 辅助工具完成上传。服务端只在固定群组内创建私有独立仓库、commit、版本 tag 和 Release，随后仍使用原有来源核验及作者私有预览确认。新仓库关闭 CI，上传内容不在广场执行。
+
+每个应用的专属发布凭证由辅助工具保存在用户私有目录，Windows 用 DPAPI 保护，POSIX 使用私有文件权限；它不能更新其他应用，也不是 GitLab 令牌。首次运行前保存恢复记录，网络不确定时沿用原操作和原内容；更新自动复用凭证并核对广场版本。姓名仍由负责人确认，是作者声明；GitLab 操作身份由统一托管服务提供，不宣称员工实名验证。
+
+统一托管要求服务器同时设置 `PLAZA_MANAGED_GROUP_ID`、`PLAZA_MANAGED_GROUP_PATH`、`PLAZA_MANAGED_GITLAB_TOKEN`。使用仅管理目标群组的授权，原始令牌不进入提示词、网页、作者客户端或日志。未启用时，以及更新原有直连 GitLab 的应用时，沿用下述直接 GitLab 发布流程；`GET /api/publish-contract?mode=gitlab` 可显式取得该规范。
+
+在页面点“分享我的AI应用”并复制提示词。项目 Agent 取得 `/api/publish-contract` 中的 schemaVersion 2 规范，生成 `ai-app.json` 和明确可共享的 Markdown。每位作者都需提供中文姓名和英文全名或完整拼音；缺任一姓名时 Agent 会先询问，不从 GitLab 用户名、邮箱或 Git 配置推测。作者不用填写资料表格。
+
+原有直连发布接口只读取 GitLab。作者 Agent 按现有 GitLab 授权和项目发布流程提交资料，并为目标 commit 创建版本 tag 与正式 GitLab Release；`projectVersion`、tag 和 Release 必须匹配，格式为 `1.2.3` / `v1.2.3`，也支持合法预发布号。不要移动已有 tag；新 commit 应使用新的匹配版本号、tag 和 Release。提交与作者确认时，门户都会复核 Release.commit.id、tag.commit.id 和请求中的完整 commit SHA 一致，并重新读取共享资料。广场不替作者执行 GitLab 写入。作者 Agent 将既有读取授权通过 `X-GitLab-Token` 请求头提供，门户核验当前项目 Maintainer/Owner 权限。授权应支持读取用户、项目、仓库和 Release API（例如个人令牌 `read_api`）；不要在对话中提供令牌，也不要将其写入提示词或命令行实参。
+
+Agent 返回本次专属预览链接，作者检查内容后确认。**任何持有完整链接的人都能查看和确认本次发布**；链接 24 小时有效，应只交给本次作者。它不是门户账号，也不是 GitLab 令牌。网页会把临时凭证保存在本标签页的 sessionStorage 中并从地址栏移除；同标签页刷新可继续。
+
+收录后，所有能访问门户的人都能查看已批准的介绍和使用资料。平台应用直接跳转；其他应用复制固定版本接入提示词，由用户自己的 Agent 完成授权、下载和安装。源码、软件包和目标系统仍使用它们本来的权限，广场不代理下载、不执行代码。
+
+作者更新时，在应用详情点“发布新版本”，复制带应用上下文的更新提示词。Agent 保持原项目与 appKey，准备更高版本的 Release 并提交预览；作者核对版本变化与变更项后确认，原应用链接不变。重复的相同内容不会重复收录；同版本改内容、版本倒退及旧预览覆盖会被拒绝，失败时保留当前版本。
+
+使用者升级仍从“接入我的Agent”进入。提示词要求 Agent 先核对广场已确认版本及本地状态，按未安装、旧版或已是目标版本分别处理，保留配置与本地修改，并执行最小验证。广场不记录本地安装情况、不执行升级、不自动追踪未收录的 GitLab Release。
+
+## Agent 接口
+
+HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的直接入口，无须先安装 MCP。
+
+| 操作 | 接口 |
 | --- | --- |
-| `prototype/` | 原型模板、交互脚本、Mock 资料与原始研究数据 |
-| `src/` | Vue + Element Plus 承载页面 |
-| `scripts/` | 数据合成与静态入口生成 |
-| `tests/` | 应用详情、接入、平台演示及发布流程检查 |
-| `docs/product/` | 能力边界与现有交互设计说明 |
-| `docs/ops/` | 初始化事实、待发布的控制面草稿 |
-| `.fuxi/` | 原有 AdminSpec 和编译来源记录 |
-| `archive/` | 旧任务完整本地归档，不入 Git |
-| `artifacts/` | 迁移清单、验证报告与截图，不入 Git |
+| 规范与发布提示词 | `GET /api/publish-contract` |
+| 托管上传工具 | `GET /api/publisher-cli.py`，需开启统一托管，规范包含工具 SHA-256 |
+| 上传应用发布快照 | `POST /api/managed-publications`，仅应用专属发布凭证，不接收作者 GitLab 令牌 |
+| 作者读取托管更新状态 | `GET /api/managed-apps/:id/status`，使用应用专属发布凭证核对当前目录修订 |
+| 指定应用的更新提示词 | `GET /api/apps/:id/publish-contract`，包含当前版本与修订号 |
+| 提交固定来源 | `POST /api/publications`，须包含 GitLab 版本 `tag`，并提供 `X-GitLab-Token` + `Idempotency-Key` |
+| 查询私有预览/结果 | `GET /api/publications/:id`，Bearer 本次凭证 |
+| 作者确认收录 | `POST /api/publications/:id/confirm`，本次凭证及预览 revision/digest |
+| 恢复核验/已确认收录 | `POST /api/publications/:id/retry`，本次凭证 |
+| 发现与作者标签 | `GET /api/apps?query=...&tags=...&page=1`，多标签为交集，每页 8 项 |
+| 详情与接入说明 | `GET /api/apps/:id`、`GET /api/apps/:id/instructions/:entryId` |
 
-修改页面时编辑 `prototype/` 下的源文件。`generated/`、`public/portal.html` 和 `public/assets/lucide.js` 由构建生成，不作为源码维护。原始研究记录与 Mock 补充资料分开保存，生成时不回写研究记录。
+可选 MCP 通过官方 TypeScript SDK 的 stdio 适配器连接同一 HTTP 服务；不另建后端。项目目录内运行 `npm run mcp`；Host 配置由 Agent 自动生成：Node 的参数使用本 checkout 中 `node_modules/tsx/dist/cli.mjs` 与 `server/mcp.ts` 的**绝对路径**，环境配置 `PLAZA_URL` 和本机安全提供的 `GITLAB_TOKEN`。后者只用于发布，可不配置以使用只读工具。
 
-## 交互验证
+工具为 `get_publish_contract`（可传 `appId` 获取更新上下文）、`submit_candidate`、`get_publish_status`、`retry_registration`、`get_agent_instructions`（安装／升级提示词）；没有自动确认工具。MCP stdout 只用于协议消息。真实 Codex/WorkBuddy Host 配置仍须在各 Host 中验证，协议进程测试不代替 Host 验收。
 
-先运行 `npm run build`，再安装一次 Playwright Chromium：
+## 验证
 
 ```powershell
-npx playwright install chromium
+npm run typecheck
 npm test
+npm run build
+npm run test:e2e
+npm run test:prototype
 ```
 
-也可使用已安装的 Chrome（PowerShell：`$env:PLAYWRIGHT_CHANNEL='chrome'`），或通过 `PLAYWRIGHT_EXECUTABLE_PATH` 指定浏览器。测试覆盖 1280×720、1024×768 两种桌面尺寸、17 项应用、复制提示词、平台示例报告、发布成功及收录失败重试；报告输出到 `artifacts/`。测试阻止并记录外部网络请求。
+浏览器测试需要 Playwright Chromium，或设置 `PLAYWRIGHT_CHANNEL=chrome` / `PLAYWRIGHT_EXECUTABLE_PATH` 指向已安装浏览器。本地主流程测试使用受控 GitLab 协议服务与真实 PostgreSQL 引擎，不向公司仓库写入。测试代码区分这些替身与实际服务；结果和截图位于忽略的 `artifacts/`。
 
-## 项目治理与状态
+## 代码与项目约定
 
-- 代码权威仓库：[Dylan5237/ai-app-plaza](https://github.com/Dylan5237/ai-app-plaza)，唯一写入远端 `origin`。
-- 使用 [agent-project-ops](https://github.com/Dylan5237/agent-project-ops)，固定版本见 `.agent-project-ops/PIN`；入口为 `AGENTS.md`。
-- 本地初始化、历史迁移与后续产品阶段分开记录。当前 GitHub 控制面和 Fleet 登记状态见 [初始化记录](docs/ops/initialization.md)。
-- 新克隆先通过 Git Bash 执行 `bash .agent-project-ops/scripts/install-hooks.sh`；新产品阶段需在 GitHub 完成 Freeze，推送前按用户约定取得明确确认。
-- [能力边界](docs/product/capability-boundaries.md) · [交互设计说明](docs/product/prototype-design.md)
+- `src/`：当前 Vue/Element Plus 门户；`server/`：API、GitLab 读取、SQL 数据与 MCP 适配器。
+- `server/contracts/app-manifest.schema.json`：可执行资料规范；`docs/product/mainflow-scope.md`：本次最小范围。
+- `prototype/`、`scripts/apply_compact_portal.py` 与 `build_fuxi_portal.cjs`：历史 Mock 原型。不要直接修改生成的 `public/portal.html`。
+- `tests/`：领域、HTTP、MCP 进程和浏览器测试；`archive/`、`artifacts/`：本地历史和证据，不提交。
+- 唯一写入权威为 [GitHub origin](https://github.com/Dylan5237/ai-app-plaza)，APO 约定见 `AGENTS.md`。主题分支提交后按既有授权推送；不自动合并、部署或宣布 Phase Accept。
 
-此前发布的原型：[伏羲平台 v1.8.0](http://192.168.2.145:16088/api/s/tU22pwVr)。本次迁移不触发平台重新发布；在线状态以平台实际内容为准。
+技术依据：[GitLab 文件 API](https://docs.gitlab.com/api/repository_files/)、[PGlite 本地 PostgreSQL](https://pglite.dev/docs/)、[MCP 官方 SDK](https://modelcontextprotocol.io/docs/sdk)。本地嵌入式数据库用于开发和测试，生产配置使用外部 PostgreSQL；未声称已在公司环境完成上线。
+
+## 早期设计记录
+
+[需求说明](docs/product/requirements.md)保留早期产品讨论与决定。历史记录包含后续阶段已调整的范围；当前行为以本文、服务端资料契约和 GitHub 已冻结阶段为准。
+
+[架构设计](docs/architecture/architecture.md)、[设计决策](docs/architecture/decisions-2026-10-10.md)、[资料契约设计](docs/architecture/data-contract.md)和[架构图](docs/architecture/plaza-architecture.html)保留对应设计阶段的记录。当前可执行资料规范位于 `server/contracts/app-manifest.schema.json`；托管发布的独立边界见 Phase #17。

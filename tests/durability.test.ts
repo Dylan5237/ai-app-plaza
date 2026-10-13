@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { openDatabase } from '../server/domain/database.js';
+import { createService } from '../server/domain/service.js';
+import { DEFAULT_TAG, startGitLabFixture, SHA, TOKEN } from './helpers/gitlab-fixture.js';
+
+test('confirmed failed publication survives database reopening and retries without duplicate registration', async t => {
+  const gitlab = await startGitLabFixture();
+  const dataPath = await mkdtemp(join(tmpdir(), 'plaza-durability-'));
+  let db = await openDatabase({ path: dataPath });
+  t.after(async () => { await db.close(); await gitlab.close(); });
+  const config = { db, gitlabUrl: gitlab.url, publicOrigin: 'http://127.0.0.1:4173', secret: 'durability-test-secret-with-at-least-32-characters', audience: '所有能访问本门户的人' };
+  let service = createService(config);
+  const draft = await service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());
+  assert.equal(draft.status, 'preview_ready');
+  const stored = await db.query('SELECT token_ciphertext FROM publications WHERE id=$1', [draft.id]);
+  assert.ok(stored.rows[0].token_ciphertext && !stored.rows[0].token_ciphertext.includes(TOKEN));
+  gitlab.state.offline = true;
+  assert.equal((await service.confirm(draft.id, draft.ticket, { revision: draft.revision, digest: draft.digest! })).status, 'failed');
+  await db.close();
+  db = await openDatabase({ path: dataPath });
+  service = createService({ ...config, db });
+  assert.equal((await service.publication(draft.id, draft.ticket)).status, 'failed');
+  gitlab.state.offline = false;
+  const restored = await service.retry(draft.id, draft.ticket);
+  assert.equal(restored.status, 'registered');
+  assert.equal((await service.retry(draft.id, draft.ticket)).appId, restored.appId);
+  assert.equal((await service.list()).total, 1);
+  assert.equal((await db.query('SELECT token_ciphertext FROM publications WHERE id=$1', [draft.id])).rows[0].token_ciphertext, null);
+  await db.close();
+  db = await openDatabase({ path: dataPath });
+  service = createService({ ...config, db });
+  assert.equal((await service.app(restored.appId!)).source.commitSha, SHA);
+});
