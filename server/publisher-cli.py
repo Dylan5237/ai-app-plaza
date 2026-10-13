@@ -19,7 +19,7 @@ import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlparse
 
 
 MAX_FILES = 1000
@@ -53,6 +53,15 @@ SECRET_PATTERNS = [
     re.compile(rb"(?i)\b(?:x-plaza-publish-key|publish[-_]?key|access[-_]?token|api[-_]?key|secret[-_]?key|client[-_]?secret|password)\s*[:=]\s*[\"']?[A-Za-z0-9_./+=-]{20,}"),
     re.compile(rb"\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\b"),
 ]
+ESSENTIAL_SOURCE_SUFFIXES = {
+    ".bash", ".c", ".cc", ".cfg", ".cjs", ".cpp", ".cs", ".css", ".dart", ".go",
+    ".graphql", ".h", ".hpp", ".html", ".ini", ".java", ".js", ".json", ".jsx",
+    ".kt", ".kts", ".lua", ".mjs", ".php", ".pl", ".proto", ".py", ".r", ".rb",
+    ".rs", ".sass", ".scala", ".scss", ".sh", ".sql", ".swift", ".toml", ".ts",
+    ".tsx", ".vue", ".xml", ".yaml", ".yml",
+}
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+PREVIEW_TICKET_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
 class CliError(Exception):
@@ -281,7 +290,11 @@ def _looks_secret(raw: bytes) -> bool:
     return any(pattern.search(raw) for pattern in SECRET_PATTERNS)
 
 
-def _collect(root: Path) -> tuple[dict[str, Any], list[dict[str, str]], str, int, int]:
+def _is_essential_source(path: str) -> bool:
+    return PurePosixPath(path).suffix.casefold() in ESSENTIAL_SOURCE_SUFFIXES
+
+
+def _collect(root: Path) -> tuple[dict[str, Any], list[dict[str, str]], str, int, int, list[str]]:
     root_info = root.lstat()
     if _is_reparse_or_link(root, root_info) or not stat.S_ISDIR(root_info.st_mode):
         raise CliError("项目根目录必须是普通目录，不能是符号链接或 junction。")
@@ -292,15 +305,20 @@ def _collect(root: Path) -> tuple[dict[str, Any], list[dict[str, str]], str, int
     candidates.update(decoded["required"])
     files: list[dict[str, str]] = []
     sizes: list[tuple[str, bytes]] = []
+    skipped: list[str] = []
     total = 0
     for relative in sorted(candidates):
         required = relative in decoded["required"]
         raw = _read_file(root, relative, required=required)
         if raw is None:
+            if _is_essential_source(relative):
+                raise CliError(f"必要源码无法安全读取：{relative}；请调整 AI 的项目范围后重试。")
+            skipped.append(relative)
             continue
         if _looks_secret(raw):
-            if required:
-                raise CliError(f"必需资料疑似包含真实密钥或 token，拒绝上传：{relative}")
+            if required or _is_essential_source(relative):
+                raise CliError(f"必要源码或资料疑似包含真实密钥或 token：{relative}；请调整 AI 的项目范围后重试。")
+            skipped.append(relative)
             continue
         total += len(raw)
         if total > MAX_TOTAL_BYTES:
@@ -324,18 +342,18 @@ def _collect(root: Path) -> tuple[dict[str, Any], list[dict[str, str]], str, int
     digest = hashlib.sha256(canonical).hexdigest()
     for name, raw in sizes:
         files.append({"path": name, "content": base64.b64encode(raw).decode("ascii")})
-    return decoded["manifest"], files, digest, len(files), total
+    return decoded["manifest"], files, digest, len(files), total, skipped
 
 
 def _normalize_origin(value: str) -> tuple[str, str, str, int | None]:
     try:
-        parsed = urlsplit(value)
+        parsed = urlparse(value)
         port = parsed.port
     except ValueError:
         raise CliError("--origin 必须是有效的门户 URL。") from None
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
         raise CliError("--origin 只接受不含凭据的 HTTP(S) 门户地址。")
-    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+    if parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment:
         raise CliError("--origin 只能填写门户根地址，不含路径、查询参数或片段。")
     host = parsed.hostname.casefold()
     if ":" in host and not host.startswith("["):
@@ -531,44 +549,56 @@ def _json_response(raw: bytes) -> dict[str, Any]:
     return value
 
 
-def _public_app_id(response: dict[str, Any]) -> str | None:
-    value = response.get("appId")
-    if not isinstance(value, str) or not value:
-        preview = response.get("preview")
-        value = preview.get("id") if isinstance(preview, dict) else None
-    return value if isinstance(value, str) and value else None
-
-
 def _is_author_preview_url(value: str, origin: str) -> bool:
     try:
-        parsed = urlsplit(value)
-        if parsed.username or parsed.password or not parsed.scheme or not parsed.netloc or parsed.fragment:
+        parsed = urlparse(value)
+        if (
+            parsed.username or parsed.password or not parsed.scheme or not parsed.netloc
+            or parsed.path not in ("", "/") or parsed.params or parsed.query or not parsed.fragment
+        ):
             return False
         preview_origin, _, _, _ = _normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
-        return preview_origin == origin
+        if preview_origin != origin:
+            return False
+        fragment = parse_qs(parsed.fragment, strict_parsing=True, keep_blank_values=True, max_num_fields=2)
+        if set(fragment) != {"publish", "key"}:
+            return False
+        if len(fragment["publish"]) != 1 or len(fragment["key"]) != 1:
+            return False
+        publication_id = fragment["publish"][0]
+        ticket = fragment["key"][0]
+        return bool(UUID_RE.fullmatch(publication_id) and PREVIEW_TICKET_RE.fullmatch(ticket))
     except (CliError, ValueError):
         return False
 
 
-def _get_revision(origin_parts: tuple[str, str, str, int | None], receipt: dict[str, Any]) -> int:
-    saved_revision = receipt.get("revision")
-    public_id = receipt.get("publicAppId")
-    if not isinstance(public_id, str) or not public_id:
-        if isinstance(saved_revision, int) and saved_revision >= 0:
-            return saved_revision
-        raise CliError("本地 receipt 缺少可复核版本；停止更新，不创建新应用。")
+def _get_revision(
+    origin_parts: tuple[str, str, str, int | None],
+    receipt: dict[str, Any],
+    app_key: str,
+    managed_id: str,
+) -> int:
+    publish_key = receipt.get("publishKey")
+    if not isinstance(publish_key, str) or not publish_key:
+        raise CliError("本地 receipt 缺少托管应用凭证；停止更新，不创建新应用。")
     status, raw = _request(
-        origin_parts, "GET", f"/api/apps/{quote(public_id, safe='')}",
-        {"Accept": "application/json"},
+        origin_parts, "GET", f"/api/managed-apps/{quote(managed_id, safe='')}/status",
+        {"Accept": "application/json", "X-Plaza-Publish-Key": publish_key},
     )
-    if status == 404 and isinstance(saved_revision, int) and saved_revision >= 0:
-        return saved_revision
     if status < 200 or status >= 300:
-        raise CliError(f"读取应用当前 revision 失败（HTTP {status}）；尚未提交更新，receipt 已保留。")
+        raise CliError(f"读取托管应用状态失败（HTTP {status}）；尚未提交更新，不会创建新应用，receipt 已保留。")
     response = _json_response(raw)
+    returned_managed = _valid_uuid(response.get("managedAppId"), "托管应用状态 managedAppId")
+    if returned_managed != managed_id or response.get("appKey") != app_key:
+        raise CliError("托管应用状态与本机 receipt 的 managedAppId 或 appKey 不匹配；尚未提交更新。")
     revision = response.get("revision")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
-        raise CliError("应用当前 revision 响应无效；尚未提交更新，receipt 已保留。")
+        raise CliError("托管应用 catalog revision 响应无效；尚未提交更新，receipt 已保留。")
+    catalog_app_id = response.get("appId")
+    if catalog_app_id is not None:
+        catalog_app_id = _valid_uuid(catalog_app_id, "托管应用状态 appId")
+    receipt["catalogAppId"] = catalog_app_id
+    receipt["catalogRevision"] = revision
     return revision
 
 
@@ -596,8 +626,15 @@ def _run(args: argparse.Namespace) -> int:
         if not project_input.is_absolute():
             raise CliError("--project 必须是绝对路径。")
         project_root = _resolve_project_root(project_input)
-        manifest, files, digest, file_count, total_bytes = _collect(project_root)
+        manifest, files, digest, file_count, total_bytes, skipped_paths = _collect(project_root)
         app_key = manifest["appKey"]
+        if skipped_paths:
+            displayed = skipped_paths[:20]
+            extra = len(skipped_paths) - len(displayed)
+            summary = "、".join(displayed)
+            if extra:
+                summary += f" 等 {len(skipped_paths)} 个路径（另有 {extra} 个未显示）"
+            print(f"已排除非必要文件，请让 AI 检查发布范围后再决定是否发布：{summary}", file=sys.stderr)
         if args.dry_run:
             print(json.dumps({"dryRun": True, "appKey": app_key, "fileCount": file_count,
                               "totalBytes": total_bytes, "digest": digest}, ensure_ascii=False))
@@ -618,8 +655,9 @@ def _run(args: argparse.Namespace) -> int:
                 "identity": {"origin": origin, "projectRoot": str(project_root), "appKey": app_key},
                 "publishKey": secrets.token_urlsafe(32),
                 "managedAppId": None,
-                "publicAppId": None,
-                "revision": None,
+                "catalogAppId": None,
+                "catalogRevision": None,
+                "publicationRevision": None,
             }
         old_digest = receipt.get("bundleDigest")
         response_known = receipt.get("responseKnown") is True
@@ -659,7 +697,7 @@ def _run(args: argparse.Namespace) -> int:
         if request_managed_id and isinstance(request_revision, int) and not isinstance(request_revision, bool) and request_revision >= 0:
             expected_revision = request_revision
         elif request_managed_id:
-            expected_revision = _get_revision(origin_parts, receipt)
+            expected_revision = _get_revision(origin_parts, receipt, app_key, request_managed_id)
             receipt["requestExpectedAppRevision"] = expected_revision
             store.save(receipt)
 
@@ -695,12 +733,9 @@ def _run(args: argparse.Namespace) -> int:
             raise CliError("门户返回的 managedAppId 与本机 receipt 不一致；receipt 已保留。")
         revision = response.get("revision")
         if isinstance(revision, int) and not isinstance(revision, bool) and revision >= 0:
-            receipt["revision"] = revision
+            receipt["publicationRevision"] = revision
         receipt["managedAppId"] = returned_managed
         receipt["responseKnown"] = True
-        public_id = _public_app_id(response)
-        if public_id:
-            receipt["publicAppId"] = public_id
         store.save(receipt)
 
         status_value = response.get("status")

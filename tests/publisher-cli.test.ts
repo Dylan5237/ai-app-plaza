@@ -14,6 +14,8 @@ const python = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 
 const MANAGED_ID = 'a86c662d-9f95-4553-8bde-763bb7c8e5a1';
 const WRONG_MANAGED_ID = '08fe067e-0b3a-41d1-9b88-c4d27a5d7bb1';
 const PUBLIC_ID = '8c6dd160-f247-4ff9-8653-b62b7f2866e0';
+const PUBLICATION_ID = '43d40f2f-41bd-49c7-9466-26b8b2e744c4';
+const PREVIEW_TICKET = 'A'.repeat(43);
 
 type CapturedRequest = {
   method: string;
@@ -120,7 +122,7 @@ function publicationResponse(origin: string, overrides: Record<string, unknown> 
     appId: PUBLIC_ID,
     preview: { id: PUBLIC_ID },
     ticket: 'fixture-ticket-must-not-be-printed-alone',
-    previewUrl: origin + '/preview?ticket=fixture-ticket-must-not-be-printed-alone',
+    previewUrl: origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
     managedAppId: MANAGED_ID,
     sourceUploaded: true,
     ...overrides,
@@ -178,6 +180,10 @@ test('non-Git project uploads only safe project files and includes ignored manif
   assert.ok(!requests[0]!.body.toString('utf8').includes('OUTSIDE_SYMLINK_SENTINEL'));
   if (symlinkCreated) assert.ok(!fileMap.has('src/linked-secret.txt'));
   for (const file of body.files) assert.ok(!file.path.includes('\\'), 'paths must use POSIX separators');
+  assert.match(result.stderr, /src\/credential\.txt/);
+  assert.match(result.stderr, /src\/private\.pem/);
+  assert.ok(!result.stderr.includes('glpat-12345678901234567890'));
+  assert.ok(!result.stderr.includes('private material'));
 
   const output = JSON.parse(result.stdout) as Record<string, unknown>;
   assert.equal(output.status, 'preview_ready');
@@ -189,8 +195,10 @@ test('non-Git project uploads only safe project files and includes ignored manif
   } catch {
     // Do not expose a failed fixture URL in test output.
   }
-  assert.ok(authorPreview?.origin === portal.origin && authorPreview.pathname === '/preview' &&
-    authorPreview.searchParams.has('ticket'), 'author preview URL is present');
+  const previewParams = new URLSearchParams(authorPreview?.hash.slice(1));
+  assert.ok(authorPreview?.origin === portal.origin && authorPreview.pathname === '/' &&
+    previewParams.get('publish') === PUBLICATION_ID && previewParams.get('key') === PREVIEW_TICKET,
+  'same-origin author preview URL retains its publish UUID and ticket fragment');
   assert.ok(!result.stdout.includes(String(requests[0]!.headers['x-plaza-publish-key'])));
   assert.ok(!result.stdout.includes(String(requests[0]!.headers['idempotency-key'])));
   assert.ok(!result.stdout.includes('"ticket"'));
@@ -229,6 +237,61 @@ test('Git project respects standard excludes and forcibly includes manifest-refe
   const paths = new Set(body.files.map((file) => file.path));
   for (const required of ['docs/README.md', 'docs/usage.md', 'docs/instructions.md']) assert.ok(paths.has(required));
   assert.ok(!paths.has('src/ignored.txt'));
+});
+
+test('a suspected secret in necessary source stops the upload and reports only its path', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-source-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const fakeSecret = 'glpat-12345678901234567890';
+  await writeFile(path.join(root, 'src', 'main.py'), `TOKEN = "${fakeSecret}"\n`);
+  let requestCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    respondJson(response, {});
+  });
+  t.after(portal.close);
+
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir]);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /必要源码或资料疑似包含真实密钥或 token：src\/main\.py/);
+  assert.ok(!result.stdout.includes(fakeSecret));
+  assert.ok(!result.stderr.includes(fakeSecret));
+  assert.equal(requestCount, 0);
+  await assert.rejects(readFile(stateDir));
+});
+
+test('external, credentialed, or malformed preview URLs are hidden', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-preview-reject-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const previewUrls = (origin: string) => [
+    'https://outside.invalid/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
+    origin.replace('http://', 'http://user:password@') + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
+    origin + '/?unexpected=1#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
+    origin + '/#publish=not-a-uuid&key=short',
+  ];
+  let responseIndex = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    const url = previewUrls(portal.origin)[responseIndex++];
+    respondJson(response, publicationResponse(portal.origin, { previewUrl: url }));
+  });
+  t.after(portal.close);
+
+  const urls = previewUrls(portal.origin);
+  for (let index = 0; index < urls.length; index += 1) {
+    const result = await runCli([
+      '--origin', portal.origin,
+      '--project', root,
+      '--state-dir', path.join(temporary, 'private-state-' + index),
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.ok(!Object.hasOwn(output, 'previewUrl'), 'unsafe author preview link must be hidden');
+  }
 });
 
 test('network failure retries the persisted exact bundle with the same owner and idempotency keys', async (t) => {
@@ -279,8 +342,9 @@ test('updates require the receipt target and use its current revision', async (t
   portal = await createPortal((request, response) => {
     requests.push(request);
     if (request.method === 'GET') {
-      assert.equal(request.url, '/api/apps/' + PUBLIC_ID);
-      respondJson(response, { id: PUBLIC_ID, revision: 7 });
+      assert.equal(request.url, '/api/managed-apps/' + MANAGED_ID + '/status');
+      assert.equal(request.headers['x-plaza-publish-key'], requests[0]!.headers['x-plaza-publish-key']);
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 7 });
       return;
     }
     const revision = requests.filter((item) => item.method === 'POST').length + 1;
@@ -305,6 +369,7 @@ test('updates require the receipt target and use its current revision', async (t
   const updateGet = requests.find((item) => item.method === 'GET');
   const updatePost = requests.filter((item) => item.method === 'POST')[1]!;
   assert.ok(updateGet);
+  assert.equal(updateGet.headers['x-plaza-publish-key'], firstOwner);
   const updateBody = decodedBody(updatePost);
   assert.equal(updateBody.managedAppId, MANAGED_ID);
   assert.equal(updateBody.expectedAppRevision, 7);
@@ -312,6 +377,124 @@ test('updates require the receipt target and use its current revision', async (t
   assert.ok(updatePost.headers['idempotency-key'] !== firstIdempotency, 'changed bundle gets a new idempotency key');
   const updatedSource = updateBody.files.find((file) => file.path === 'src/main.py');
   assert.ok(Buffer.from(updatedSource!.content, 'base64').toString('utf8') === 'print("UPDATED_SOURCE_SENTINEL")\n', 'updated source was sent');
+});
+
+test('unconfirmed preview updates use catalog revision zero, not publication revision', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-unconfirmed-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      assert.equal(request.url, '/api/managed-apps/' + MANAGED_ID + '/status');
+      assert.equal(request.headers['x-plaza-publish-key'], requests[0]!.headers['x-plaza-publish-key']);
+      // The first POST carries publication revision 1, while the app is still unconfirmed.
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', revision: 0 });
+      return;
+    }
+    const postCount = requests.filter((item) => item.method === 'POST').length;
+    respondJson(response, publicationResponse(portal.origin, { revision: postCount }));
+  });
+  t.after(portal.close);
+  const baseArgs = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const first = await runCli(baseArgs);
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).status, 'preview_ready');
+
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("UNCONFIRMED_UPDATE")\n');
+  const update = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.equal(update.code, 0, update.stderr);
+  const updateGet = requests.find((item) => item.method === 'GET');
+  const updatePost = requests.filter((item) => item.method === 'POST')[1]!;
+  assert.ok(updateGet);
+  assert.equal(decodedBody(updatePost).expectedAppRevision, 0);
+});
+
+test('managed status errors stop before update without changing the receipt owner', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-status-denied-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let statusReads = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      statusReads += 1;
+      if (statusReads === 1) {
+        response.writeHead(403);
+        response.end();
+      } else {
+        respondJson(response, { managedAppId: MANAGED_ID, appKey: 'wrong-app-key', revision: 7 });
+      }
+      return;
+    }
+    respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const baseArgs = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const first = await runCli(baseArgs);
+  assert.equal(first.code, 0, first.stderr);
+  const ownerKey = requests[0]!.headers['x-plaza-publish-key'];
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("STATUS_DENIED")\n');
+
+  const update = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.notEqual(update.code, 0);
+  assert.match(update.stderr, /HTTP 403/);
+  const mismatchedStatus = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.notEqual(mismatchedStatus.code, 0);
+  assert.match(mismatchedStatus.stderr, /managedAppId 或 appKey 不匹配/);
+  assert.equal(requests.filter((item) => item.method === 'POST').length, 1);
+  assert.equal(statusReads, 2);
+  assert.equal(requests.at(-1)!.headers['x-plaza-publish-key'], ownerKey);
+});
+
+test('an uncertain managed update reuses its saved request revision and idempotency key', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-update-retry-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let postAttempt = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 7 });
+      return;
+    }
+    postAttempt += 1;
+    if (postAttempt === 2) {
+      response.destroy();
+      return;
+    }
+    respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const baseArgs = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const first = await runCli(baseArgs);
+  assert.equal(first.code, 0, first.stderr);
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("RETRY_UPDATE")\n');
+
+  const uncertain = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.notEqual(uncertain.code, 0);
+  const updateRequest = requests.find((request) => request.method === 'POST' &&
+    decodedBody(request).managedAppId === MANAGED_ID)!;
+  const updateKey = updateRequest.headers['idempotency-key'];
+  assert.equal(decodedBody(updateRequest).expectedAppRevision, 7);
+  const beforeRetryCount = requests.length;
+
+  const recovered = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.equal(recovered.code, 0, recovered.stderr);
+  const retryRequests = requests.slice(beforeRetryCount);
+  assert.equal(retryRequests.length, 1, 'saved request revision avoids a second status lookup');
+  assert.equal(retryRequests[0]!.method, 'POST');
+  assert.equal(retryRequests[0]!.headers['idempotency-key'], updateKey);
+  assert.ok(retryRequests[0]!.body.equals(updateRequest.body));
 });
 
 test('changed files first resolve an uncertain request before starting a new managed update', async (t) => {
@@ -325,7 +508,8 @@ test('changed files first resolve an uncertain request before starting a new man
   portal = await createPortal((request, response) => {
     requests.push(request);
     if (request.method === 'GET') {
-      respondJson(response, { id: PUBLIC_ID, revision: 4 });
+      assert.equal(request.url, '/api/managed-apps/' + MANAGED_ID + '/status');
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 4 });
       return;
     }
     postAttempt += 1;
