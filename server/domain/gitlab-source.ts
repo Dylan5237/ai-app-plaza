@@ -199,13 +199,13 @@ export class GitLabSourceReader {
     const documentBytes = new Map<string, Uint8Array>();
     let documentBytesTotal = 0;
     const paths = [...declaredPaths].sort();
-    const loadedDocuments = await Promise.all(paths.map(async filePath => ({ filePath,
-      bytes: await this.readRegularBlob(projectId, filePath, commitSha, token, MAX_DOCUMENT_BYTES, budget) })));
-    for (const { filePath, bytes } of loadedDocuments) {
+    const loadedDocuments = await Promise.all(paths.map(async filePath => {
+      const bytes = await this.readRegularBlob(projectId, filePath, commitSha, token, MAX_DOCUMENT_BYTES, budget);
       documentBytesTotal += bytes.byteLength;
-      if (documentBytesTotal > MAX_DOCUMENT_BYTES) {
-        throw new DomainError(400, "VALIDATION_FAILED", "共享说明总大小不能超过 512 KiB。");
-      }
+      if (documentBytesTotal > MAX_DOCUMENT_BYTES) throw new DomainError(400, "VALIDATION_FAILED", "共享说明总大小不能超过 512 KiB。");
+      return { filePath, bytes };
+    }));
+    for (const { filePath, bytes } of loadedDocuments) {
       documents[filePath] = decodeUtf8(bytes, "共享说明");
       documentBytes.set(filePath, bytes);
       if (isLfsPointer(bytes)) {

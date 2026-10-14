@@ -105,6 +105,7 @@ const MIGRATIONS = [
     updated_at timestamptz NOT NULL,
     UNIQUE (binding_id, idempotency_digest)
   )`,
+  `ALTER TABLE managed_publish_operations ADD COLUMN IF NOT EXISTS publication_id uuid REFERENCES publications(id)`,
   `CREATE INDEX IF NOT EXISTS published_snapshots_audience_idx ON published_snapshots (audience, app_id)`,
   `CREATE INDEX IF NOT EXISTS publications_expiry_idx ON publications (expires_at)`,
   `CREATE INDEX IF NOT EXISTS managed_publish_operations_binding_idx ON managed_publish_operations (binding_id, created_at DESC)`,
