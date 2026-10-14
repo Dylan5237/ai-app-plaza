@@ -10,9 +10,9 @@ import { MANAGED_GITLAB_TOKEN, startManagedGitLabFixture } from "./helpers/manag
 
 const SECRET = "managed-publisher-test-secret-with-at-least-32-bytes";
 
-async function startManagedHarness() {
+async function startManagedHarness(initialDefaultBranch: string | null = null) {
   const db = await openDatabase({ path: "memory://" });
-  const gitlab = await startManagedGitLabFixture();
+  const gitlab = await startManagedGitLabFixture(initialDefaultBranch);
   const service = createService({ db, gitlabUrl: gitlab.url, publicOrigin: "http://127.0.0.1:3000", secret: SECRET, audience: "测试内网" });
   const publisher = createManagedPublisher({
     db,
@@ -57,6 +57,75 @@ function assertDomainError(error: unknown, code: string): asserts error is Domai
   assert.ok(error instanceof DomainError);
   assert.equal(error.code, code);
 }
+
+test("an empty managed repository with a configured default branch supports first publication and same-key retry", async t => {
+  const h = await startManagedHarness("main");
+  t.after(() => h.close());
+  const key = publishKey();
+  const bundle = makeBundle();
+  const first = await h.publisher.submit(bundle, key, "empty-configured-default-0001");
+  assert.equal(first.status, "preview_ready");
+  assert.equal(first.sourceUploaded, true);
+  const project = h.gitlab.state.projects.get(100)!;
+  assert.equal(project.commits.size, 1);
+  assert.equal(project.branches.size, 1);
+  assert.equal(project.tags.get("v1.0.0"), project.releases.get("v1.0.0"));
+  assert.deepEqual([...project.commits.get(project.tags.get("v1.0.0")!)!.files.keys()].sort(), bundle.files.map(file => file.path).sort());
+  assert.equal((await h.publisher.current(first.managedAppId, key)).revision, 0);
+  assert.equal((await h.service.list()).total, 0);
+  const writes = h.gitlab.state.writes.length;
+  const retried = await h.publisher.submit(bundle, key, "empty-configured-default-0001");
+  assert.equal(retried.managedAppId, first.managedAppId);
+  assert.equal(retried.previewUrl, first.previewUrl);
+  assert.equal(h.gitlab.state.writes.length, writes);
+  assert.equal(h.gitlab.state.projects.size, 1);
+});
+
+test("same-key restart resumes an empty project_ready operation with a configured default branch", async t => {
+  const h = await startManagedHarness("main");
+  t.after(() => h.close());
+  const key = publishKey();
+  const bundle = makeBundle();
+  h.gitlab.state.rejectNextCommitStatus = 503;
+  await assert.rejects(h.publisher.submit(bundle, key, "empty-configured-restart-0001"), error => {
+    assertDomainError(error, "SOURCE_UNAVAILABLE");
+    return true;
+  });
+  const before = (await h.db.query("SELECT * FROM managed_publish_operations")).rows[0]!;
+  assert.equal(before.status, "project_ready");
+  assert.equal(before.commit_sha, null);
+  assert.equal(before.base_commit_sha, null);
+  const project = h.gitlab.state.projects.get(100)!;
+  assert.equal(project.default_branch, "main");
+  assert.equal(project.commits.size, 0);
+  assert.equal(project.branches.size, 0);
+  const restarted = createManagedPublisher({ db: h.db, service: h.service, gitlabUrl: h.gitlab.url, gitlabToken: MANAGED_GITLAB_TOKEN, groupId: "63", secret: SECRET });
+  const recovered = await restarted.submit(bundle, key, "empty-configured-restart-0001");
+  assert.equal(recovered.status, "preview_ready");
+  const after = (await h.db.query("SELECT * FROM managed_publish_operations WHERE id = $1", [before.id])).rows[0]!;
+  for (const field of ["id", "binding_id", "project_id", "idempotency_digest", "request_digest", "branch", "tag"]) assert.equal(after[field], before[field]);
+  assert.equal(after.status, "submitted");
+  assert.equal(project.commits.size, 1);
+  assert.equal(h.gitlab.state.projects.size, 1);
+  assert.equal(writeCount(h, "/api/v4/projects"), 1);
+});
+
+test("a nonempty repository without a default branch still requires a verified managed base", async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const key = publishKey();
+  const first = await h.publisher.submit(makeBundle(), key, "nonempty-no-default-first-0001");
+  const project = h.gitlab.state.projects.get(100)!;
+  project.default_branch = null;
+  project.commits.get(project.tags.get("v1.0.0")!)!.message = "foreign commit";
+  const writes = h.gitlab.state.writes.length;
+  await assert.rejects(h.publisher.submit({ ...makeBundle("1.0.1"), managedAppId: first.managedAppId, expectedAppRevision: 0 }, key, "nonempty-no-default-update-0001"), error => {
+    assertDomainError(error, "MANAGED_SOURCE_CONFLICT");
+    return true;
+  });
+  assert.equal(h.gitlab.state.writes.length, writes);
+  assert.equal(project.branches.size, 1);
+});
 
 test("an unconfirmed revision replaces the complete source tree and preserves earlier immutable versions", async t => {
   const h = await startManagedHarness();

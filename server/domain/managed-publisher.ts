@@ -428,15 +428,20 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     // Revision 0 means no confirmed catalog entry, not an empty Git repository.
     // Repair old project_ready operations too, before any new commit is posted.
     // An existing branch must retain its original base for batch recovery.
-    if (!branchHead && !operation.base_commit_sha && (project.empty_repo === false || project.default_branch)) {
-      const previous = await config.db.query<OperationRecord>(
+    // GitLab can preconfigure a default branch name before any commit exists.
+    // An empty repository needs no base unless we already recorded source.
+    const previous = !branchHead && !operation.base_commit_sha
+      ? (await config.db.query<OperationRecord>(
         `SELECT * FROM managed_publish_operations
           WHERE binding_id = $1 AND project_id = $2 AND id <> $3 AND commit_sha IS NOT NULL
           ORDER BY created_at DESC, id DESC`,
         [operation.binding_id, projectId, operation.id],
-      );
+      )).rows
+      : [];
+    if (!branchHead && !operation.base_commit_sha &&
+        (previous.length > 0 || (project.empty_repo !== true && (project.empty_repo === false || project.default_branch)))) {
       let baseSha: string | undefined;
-      for (const candidate of previous.rows) {
+      for (const candidate of previous) {
         let commit: GitLabCommit;
         try { commit = await api.getCommit(projectId, candidate.commit_sha!); }
         catch (error) {

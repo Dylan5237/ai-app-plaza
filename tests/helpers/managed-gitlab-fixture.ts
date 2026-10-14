@@ -45,7 +45,7 @@ export interface ManagedGitLabFixture {
   close(): Promise<void>;
 }
 
-export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture> {
+export async function startManagedGitLabFixture(initialDefaultBranch: string | null = null): Promise<ManagedGitLabFixture> {
   const projects = new Map<number, Project>();
   const requests: Array<{ method: string; path: string }> = [];
   const writes: Array<{ method: string; path: string }> = [];
@@ -90,7 +90,7 @@ export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture>
     if (url.pathname === "/api/v4/user" && method === "GET") return send(200, { id: 35, username: "fixture-owner", name: "测试发布账号" });
 
     if (url.pathname === "/api/v4/projects" && method === "POST") {
-      const project = newProject(state.nextProjectId++, body, request.headers.host ?? "127.0.0.1");
+      const project = newProject(state.nextProjectId++, body, request.headers.host ?? "127.0.0.1", initialDefaultBranch);
       projects.set(project.id, project);
       return send(201, projectJson(project));
     }
@@ -263,7 +263,7 @@ export async function startManagedGitLabFixture(): Promise<ManagedGitLabFixture>
   };
 }
 
-function newProject(id: number, body: Record<string, unknown>, host: string): Project {
+function newProject(id: number, body: Record<string, unknown>, host: string, initialDefaultBranch: string | null): Project {
   const path = String(body.path ?? "");
   return {
     id,
@@ -276,7 +276,7 @@ function newProject(id: number, body: Record<string, unknown>, host: string): Pr
     initialize_with_readme: body.initialize_with_readme === true,
     created_at: "2026-10-13T00:00:00Z",
     web_url: `http://${host}/sky-efficiency-skills/ai-apps/${path}`,
-    default_branch: null,
+    default_branch: initialDefaultBranch,
     branches: new Map(),
     commits: new Map(),
     tags: new Map(),
