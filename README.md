@@ -60,7 +60,10 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 | 作者确认收录 | `POST /api/publications/:id/confirm`，本次凭证及预览 revision/digest |
 | 恢复核验/已确认收录 | `POST /api/publications/:id/retry`，本次凭证 |
 | 发现与作者标签 | `GET /api/apps?query=...&tags=...&page=1`，多标签为交集，每页 8 项 |
+| 已有能力标签 | `GET /api/tags`，返回已有名称及单应用最多 3 个的上限；发布规范也返回 `tagPolicy` |
 | 详情与接入说明 | `GET /api/apps/:id`、`GET /api/apps/:id/instructions/:entryId` |
+
+单个应用最多 3 个核心能力标签，优先复用已有名称。目录与详情的 `tags` 是有效分类，`manifest.tags` 保留固定来源原文；两者在未整理时相同。存量整理与回滚操作见 [标签清洗说明](docs/ops/capability-tag-cleanup.md)。
 
 可选 MCP 通过官方 TypeScript SDK 的 stdio 适配器连接同一 HTTP 服务；不另建后端。项目目录内运行 `npm run mcp`；Host 配置由 Agent 自动生成：Node 的参数使用本 checkout 中 `node_modules/tsx/dist/cli.mjs` 与 `server/mcp.ts` 的**绝对路径**，环境配置 `PLAZA_URL` 和本机安全提供的 `GITLAB_TOKEN`。后者只用于发布，可不配置以使用只读工具。
 

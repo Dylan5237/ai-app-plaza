@@ -58,6 +58,19 @@ function assertDomainError(error: unknown, code: string): asserts error is Domai
   assert.equal(error.code, code);
 }
 
+test('four capability tags are rejected before managed bindings or GitLab writes', async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const bundle = makeBundle();
+  const file = bundle.files.find(file => file.path === 'ai-app.json')!;
+  const source = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
+  file.content = Buffer.from(JSON.stringify({ ...source, tags: ['MCP', '需求管理', 'AI协作', '第四项'] })).toString('base64');
+  await assert.rejects(h.publisher.submit(bundle, publishKey(), 'too-many-tags-0001'), /最多 3 个/);
+  assert.equal(h.gitlab.state.writes.length, 0);
+  assert.equal((await h.db.query('SELECT count(*) AS total FROM managed_app_bindings')).rows[0]?.total, 0);
+  assert.equal((await h.db.query('SELECT count(*) AS total FROM managed_publish_operations')).rows[0]?.total, 0);
+});
+
 test("an empty managed repository with a configured default branch supports first publication and same-key retry", async t => {
   const h = await startManagedHarness("main");
   t.after(() => h.close());

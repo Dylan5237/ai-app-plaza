@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import * as formatsModule from "ajv-formats";
 import { DomainError } from "./errors.js";
+import { validateCapabilityTags } from './tags.js';
 import { parseTree, type ParseError, type Node as JsonNode } from "jsonc-parser";
 
 export interface WebEntry {
@@ -105,6 +106,7 @@ export function validateManifest(value: unknown, expectedAppKey: string): AppMan
     throw new DomainError(400, "VALIDATION_FAILED", "新发布资料需要使用 schemaVersion 2。请先读取 GET /api/publish-contract；历史已收录的 v1 快照仍按原样保留。请勿从 GitLab 用户名、邮箱或 Git 配置推测作者姓名。");
   }
   if (value && typeof value === "object") {
+    validateCapabilityTags((value as { tags?: unknown }).tags);
     const candidate = value as { projectVersion?: unknown; maintainers?: unknown };
     if (typeof candidate.projectVersion !== "string" || !normalizeProjectVersion(candidate.projectVersion)) {
       throw new DomainError(400, "VALIDATION_FAILED", "projectVersion 必须是有效的 MAJOR.MINOR.PATCH，可带 v 前缀和合法预发布号，例如 1.2.3 或 v1.2.3-rc.1；请确保它与 GitLab tag 和 Release 一致。");
@@ -155,12 +157,6 @@ export function validateManifest(value: unknown, expectedAppKey: string): AppMan
 
   validateRepoPath(manifest.docs.readme, "docs.readme");
   validateRepoPath(manifest.docs.usage, "docs.usage");
-  const normalizedTags = new Set<string>();
-  for (const tag of manifest.tags) {
-    const key = tag.normalize("NFKC").trim().toLocaleLowerCase("zh-CN");
-    if (normalizedTags.has(key)) throw new DomainError(400, "VALIDATION_FAILED", "标签规范化后不能重复。");
-    normalizedTags.add(key);
-  }
 
   const urls = [
     ...manifest.entries.filter((entry): entry is WebEntry => entry.kind === "web").map((entry) => entry.url),

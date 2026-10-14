@@ -3,6 +3,7 @@ import { DomainError } from "./errors.js";
 import type { Database } from "./database.js";
 import type { PlazaService, SubmitResult } from "./service.js";
 import { compareProjectVersions, decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath } from "./manifest.js";
+import { validateTagReuse } from './tags.js';
 
 const MAX_FILES = 1_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -599,6 +600,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       const bundle = validateBundle(input, config.gitlabToken);
       validatePublishKey(publishKey);
       validateIdempotencyKey(idempotencyKey);
+      validateTagReuse(bundle.manifest.tags, await config.service.tags());
       const keyHash = keyDigest(publishKey);
       return withKeyLock(keyHash, async () => {
         const loaded = await loadOwnedBinding(input, keyHash);

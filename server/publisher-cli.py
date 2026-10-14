@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
@@ -92,6 +93,17 @@ def _load_manifest(raw: bytes) -> dict[str, Any]:
     version = value.get("projectVersion")
     if not isinstance(version, str) or len(version) > 80 or not VERSION_RE.fullmatch(version):
         raise CliError("ai-app.json 必须填写有效的 projectVersion。")
+    tags = value.get("tags")
+    if not isinstance(tags, list) or len(tags) > 3:
+        raise CliError("单个应用最多 3 个能力标签，请保留核心能力并优先复用已有标签。")
+    tag_keys: set[str] = set()
+    for tag in tags:
+        if not isinstance(tag, str) or not tag.strip() or len(tag) > 32:
+            raise CliError("能力标签须为 1 至 32 个字符的非空文本。")
+        key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", tag).strip()).lower()
+        if key in tag_keys:
+            raise CliError("标签规范化后不能重复。")
+        tag_keys.add(key)
     maintainers = value.get("maintainers")
     if not isinstance(maintainers, list) or not maintainers:
         raise CliError("ai-app.json 必须填写作者中文姓名和英文姓名。")

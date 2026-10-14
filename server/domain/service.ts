@@ -18,11 +18,13 @@ import {
   type SourceInput,
 } from "./gitlab-source.js";
 import { compareProjectVersions, type AgentEntry, type AppManifest, type StoredAppManifest } from "./manifest.js";
+import { catalogTags, EFFECTIVE_TAGS, TAG_OVERRIDE_JOIN, validateTagReuse } from './tags.js';
 
 export interface AppView {
   id: string;
   revision: number;
   manifest: StoredAppManifest;
+  tags: string[];
   version: string;
   createdAt: string;
   updatedAt: string;
@@ -72,6 +74,7 @@ export interface ServiceConfig {
 
 export interface PlazaService {
   cleanupExpiredTokens(): Promise<void>;
+  tags(): Promise<string[]>;
   submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult>;
   publication(id: string, ticket: string): Promise<PublicationView>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
@@ -126,6 +129,7 @@ interface AppRecord {
   documents: Record<string, string> | string | null;
   project_url: string | null;
   source_created_at: Date | string | null;
+  effective_tags: string[] | string | null;
 }
 
 interface EncryptedToken {
@@ -139,9 +143,11 @@ const PAGE_SIZE = 8 as const;
 const APP_SELECT = `
   SELECT a.id, a.instance_id, a.project_id, a.app_key, a.current_snapshot_id, a.revision,
          a.created_at, a.updated_at, s.id AS snap_id, s.commit_sha, s.manifest_path, s.tag,
-         s.digest, s.audience, s.version, s.manifest, s.documents, s.project_url, s.source_created_at
+         s.digest, s.audience, s.version, s.manifest, s.documents, s.project_url, s.source_created_at,
+         ${EFFECTIVE_TAGS} AS effective_tags
     FROM catalog_apps a
-    LEFT JOIN published_snapshots s ON s.id = a.current_snapshot_id`;
+    LEFT JOIN published_snapshots s ON s.id = a.current_snapshot_id
+    ${TAG_OVERRIDE_JOIN}`;
 
 export function createService(config: ServiceConfig): PlazaService {
   const reader = new GitLabSourceReader(config.gitlabUrl);
@@ -282,6 +288,7 @@ export function createService(config: ServiceConfig): PlazaService {
       id: record.id,
       revision: record.revision,
       manifest: parseJsonValue<StoredAppManifest>(record.manifest),
+      tags: parseJsonValue<string[]>(record.effective_tags ?? []),
       version: record.version,
       createdAt: asIso(record.created_at),
       updatedAt: asIso(record.updated_at),
@@ -301,6 +308,7 @@ export function createService(config: ServiceConfig): PlazaService {
       id: existing?.id ?? candidateAppId,
       revision: (existing?.revision ?? 0) + 1,
       manifest: source.manifest,
+      tags: [...source.manifest.tags],
       version: source.version,
       createdAt: existing ? asIso(existing.created_at) : source.sourceCreatedAt,
       updatedAt: now,
@@ -367,6 +375,7 @@ export function createService(config: ServiceConfig): PlazaService {
   }
 
   async function preparePreview(record: PublicationRecord, source: LoadedSource): Promise<PublicationRecord> {
+    validateTagReuse(source.manifest.tags, await catalogTags(config.db, config.audience));
     const input = getInput(record);
     const projectId = validateProjectId(input.projectId);
     return config.db.transaction(async (tx) => {
@@ -669,7 +678,7 @@ export function createService(config: ServiceConfig): PlazaService {
         throw new DomainError(400, "VALIDATION_FAILED", "page 必须是有效的正整数。");
       }
       const tokens = searchTokens(options.query ?? "");
-      // Filter the original displayed labels; PostgreSQL applies case folding to both sides.
+      // All catalog filters use the same snapshot-scoped classification as the displayed tags.
       const requestedTags = (options.tags ?? []).filter(tag => tag.trim());
       if (requestedTags.length > 12) throw new DomainError(400, "VALIDATION_FAILED", "一次最多筛选 12 个标签。");
       const filters: string[] = ["s.audience = $1"];
@@ -681,7 +690,7 @@ export function createService(config: ServiceConfig): PlazaService {
           const placeholder = `$${params.length}`;
           alternatives.push(`position(${placeholder} in s.search_text) > 0`);
           alternatives.push(`EXISTS (
-            SELECT 1 FROM jsonb_array_elements_text(s.manifest->'tags') AS tag(value)
+            SELECT 1 FROM jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
              WHERE position(${placeholder} in lower(tag.value)) > 0
           )`);
         }
@@ -690,23 +699,17 @@ export function createService(config: ServiceConfig): PlazaService {
       for (const tag of [...new Set(requestedTags)]) {
         params.push(tag);
         filters.push(`EXISTS (
-          SELECT 1 FROM jsonb_array_elements_text(s.manifest->'tags') AS tag(value)
+          SELECT 1 FROM jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
            WHERE lower(tag.value) = lower($${params.length})
         )`);
       }
       const where = filters.join(" AND ");
       const totalResult = await config.db.query<{ total: string | number }>(
-        `SELECT count(*) AS total FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id WHERE ${where}`,
+        `SELECT count(*) AS total FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id ${TAG_OVERRIDE_JOIN} WHERE ${where}`,
         params,
       );
       const total = Number(totalResult.rows[0]?.total ?? 0);
-      const tagResult = await config.db.query<{ tag: string }>(
-        `SELECT DISTINCT tag.value AS tag
-           FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id
-           CROSS JOIN LATERAL jsonb_array_elements_text(s.manifest->'tags') AS tag(value)
-          WHERE s.audience = $1 ORDER BY tag.value`,
-        [config.audience],
-      );
+      const tags = await catalogTags(config.db, config.audience);
       const itemParams = [...params, PAGE_SIZE, (page - 1) * PAGE_SIZE];
       const limitParam = `$${itemParams.length - 1}`;
       const offsetParam = `$${itemParams.length}`;
@@ -719,9 +722,11 @@ export function createService(config: ServiceConfig): PlazaService {
         total,
         page,
         pageSize: PAGE_SIZE,
-        tags: tagResult.rows.map((row) => row.tag),
+        tags,
       };
     },
+
+    tags: () => catalogTags(config.db, config.audience),
 
     async app(id) {
       await cleanupExpiredTokens();

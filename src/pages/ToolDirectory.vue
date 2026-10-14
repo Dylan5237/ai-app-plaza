@@ -95,7 +95,7 @@ function formatVersion(value) {
 }
 
 function appTags(app) {
-  return Array.isArray(app?.manifest?.tags) ? app.manifest.tags : []
+  return Array.isArray(app?.tags) ? app.tags : Array.isArray(app?.manifest?.tags) ? app.manifest.tags : []
 }
 
 function maintainerName(value) {
@@ -644,14 +644,14 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
               <p class="app-summary">{{ appSummary(app) }}</p>
               <div v-if="appTags(app).length" class="app-tags" aria-label="应用作者标签">
                 <button
-                  v-for="tag in appTags(app).slice(0, 2)"
+                  v-for="tag in appTags(app).slice(0, 3)"
                   :key="tag"
                   class="app-tag"
                   :class="{ active: selectedTags.includes(tag) }"
                   :aria-label="`按标签 ${tag} 筛选`"
                   @click="toggleTag(tag)"
                 >{{ tag }}</button>
-                <span v-if="appTags(app).length > 2" class="app-tag-more">+{{ appTags(app).length - 2 }}</span>
+                <span v-if="appTags(app).length > 3" class="app-tag-more">+{{ appTags(app).length - 3 }}</span>
               </div>
               <div class="app-card-footer">
                 <span class="app-author">{{ appMaintainers(app) }}</span>
@@ -908,6 +908,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .app-tag { cursor: pointer; }
 .app-tag:hover, .app-tag.active { border-color: #c2d1e7; background: #f1f5fb; color: #4a6792; }
 .app-tag-more { border-color: transparent; background: transparent; color: #8993a2; }
+.app-tag { max-width: calc((100% - 10px) / 3); min-width: 0; flex-shrink: 1; }
 .app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px; margin-top: auto; padding-top: 8px; border-top: 1px solid #edf0f3; }
 .app-author { max-width: 150px; overflow: hidden; color: #53647a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .app-dates { display: grid; gap: 3px; color: #8993a2; font-size: 10px; line-height: 1.25; text-align: right; white-space: nowrap; }

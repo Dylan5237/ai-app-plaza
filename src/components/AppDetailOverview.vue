@@ -9,7 +9,7 @@ const emit = defineEmits(['read-documents', 'read-source'])
 
 const manifest = computed(() => props.app?.manifest || {})
 const capabilities = computed(() => manifest.value.capabilities || {})
-const tags = computed(() => Array.isArray(manifest.value.tags) ? manifest.value.tags : [])
+const tags = computed(() => Array.isArray(props.app?.tags) ? props.app.tags : Array.isArray(manifest.value.tags) ? manifest.value.tags : [])
 const maintainers = computed(() => {
   const values = manifest.value.maintainers
   return Array.isArray(values) ? values : values ? [values] : []

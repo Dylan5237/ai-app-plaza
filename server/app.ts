@@ -85,9 +85,9 @@ export async function createApp(config: Config, db: Database) {
   };
   const publicationId = (params: unknown) => idValue.parse((params as any).id);
   app.get('/api/health', async () => ({ status: 'ok', mode: config.local ? 'local' : 'configured', loginRequired: false }));
-  app.get('/api/publish-contract', (request) => {
+  app.get('/api/publish-contract', async (request) => {
     const query = z.object({ mode: z.enum(['managed', 'gitlab']).optional() }).parse(request.query);
-    return publishContract(config, undefined, undefined, query.mode === 'gitlab');
+    return publishContract(config, undefined, undefined, query.mode === 'gitlab', await service.tags());
   });
   app.get('/api/publisher-cli.py', async (_request, reply) => {
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务尚未启用统一托管发布');
@@ -100,11 +100,12 @@ export async function createApp(config: Config, db: Database) {
     if (tags.length > 12 || tags.some(t => t.length > 32)) throw new DomainError(400, 'INVALID_REQUEST', '标签筛选超出限制');
     return service.list({ query: search.query, tags, page: search.page });
   });
+  app.get('/api/tags', async () => ({ tags: await service.tags(), maxTagsPerApp: 3 }));
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
   app.get('/api/apps/:id/publish-contract', async (request) => {
     const id = publicationId(request.params);
     const current = await service.app(id);
-    return publishContract(config, current, await managed?.findByAppId(id));
+    return publishContract(config, current, await managed?.findByAppId(id), false, await service.tags());
   });
   app.get('/api/managed-apps/:id/status', (request) => {
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');

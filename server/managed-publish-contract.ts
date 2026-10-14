@@ -31,6 +31,7 @@ ${JSON.stringify(updateTarget, null, 2)}
 广场地址：${origin}
 统一托管空间：${groupPath}
 规范与 JSON Schema：GET ${origin}/api/publish-contract
+已有能力标签：GET ${origin}/api/tags。准备或更新资料前先读取该列表，优先复用已有名称。单应用最多3个标签，不要求凑足；选择核心能力或任务，不把语言、框架、内部组件或单条操作拆成细碎标签。当前应用如有 tags 字段，以它作为已整理的目录标签参考；manifest.tags 保留来源原文。
 本次无需我预建 GitLab 仓库或配置个人 GitLab 令牌。共享 GitLab 授权由广场服务器保管，不获取或索要该账号密码、令牌。
 ${context}
 1. 先读取当前项目的实际代码、README 和运行说明，确定本次应用根目录与允许分享的源码范围，保留已有版本管理和本地改动。若项目受既有分享/授权规则约束，先核对，不擅自上传禁止外传的内容。不要修改 git remote、改写历史、合并或部署项目。
