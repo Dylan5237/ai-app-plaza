@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { DomainError } from "./errors.js";
+import { GitLabConcurrency, gitlabConcurrency } from "./gitlab-concurrency.js";
 import { decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath, type AppManifest } from "./manifest.js";
 
 export interface SourceInput {
@@ -77,6 +78,10 @@ const MAX_LOAD_REQUESTS = 80;
 interface RequestBudget {
   deadline: number;
   requests: number;
+  controller: AbortController;
+  parallel: GitLabConcurrency;
+  pending: Set<Promise<unknown>>;
+  trees: Map<string, Promise<GitLabTreeEntry[]>>;
 }
 
 export class GitLabSourceReader {
@@ -96,16 +101,46 @@ export class GitLabSourceReader {
     this.baseUrl = parsed;
   }
 
-  async currentUser(token: string): Promise<{ actorId: string }> {
-    const user = await this.getJson<GitLabUser>("api/v4/user", token);
+  async currentUser(token: string, budget?: RequestBudget): Promise<{ actorId: string }> {
+    const user = await this.getJson<GitLabUser>("api/v4/user", token, budget);
     if ((typeof user.id !== "number" && typeof user.id !== "string") || !String(user.id).trim()) {
       throw new DomainError(401, "AUTH_TOKEN_INVALID", "GitLab 授权无法识别当前用户。");
     }
     return { actorId: String(user.id) };
   }
 
+  private context(): RequestBudget {
+    return { deadline: performance.now() + LOAD_TIMEOUT_MS, requests: 0, controller: new AbortController(),
+      parallel: new GitLabConcurrency(3), pending: new Set(), trees: new Map() };
+  }
+
+  private async finish(budget: RequestBudget): Promise<void> {
+    budget.controller.abort();
+    await Promise.allSettled([...budget.pending]);
+    budget.trees.clear();
+  }
+
   async load(input: SourceInput, token: string): Promise<LoadedSource> {
-    const budget: RequestBudget = { deadline: performance.now() + LOAD_TIMEOUT_MS, requests: 0 };
+    const budget = this.context();
+    try { return await this.loadSource(input, token, budget); }
+    finally { await this.finish(budget); }
+  }
+
+  /** One authorization scope per submission/confirmation. No cross-request cache. */
+  async withAuthor<T>(input: SourceInput, token: string,
+    work: (actorId: string, load: () => Promise<LoadedSource>) => Promise<T>): Promise<T> {
+    const budget = this.context();
+    const project = this.getProject(validateProjectId(input.projectId), token, budget);
+    // A reused receipt may not need source content; settle its speculative read too.
+    void project.catch(() => undefined);
+    try {
+      const { actorId } = await this.currentUser(token, budget);
+      return await work(actorId, () => this.loadSource(input, token, budget, project));
+    } finally { await this.finish(budget); }
+  }
+
+  private async loadSource(input: SourceInput, token: string, budget: RequestBudget,
+    projectTask?: Promise<GitLabProject>): Promise<LoadedSource> {
     const projectId = validateProjectId(input.projectId);
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.appKey) || input.appKey.length > 64) {
       throw new DomainError(400, "VALIDATION_FAILED", "appKey 格式无效。");
@@ -119,7 +154,7 @@ export class GitLabSourceReader {
     }
     const commitSha = input.commitSha.toLowerCase();
 
-    const project = await this.getProject(projectId, token, budget);
+    const project = await (projectTask ?? this.getProject(projectId, token, budget));
     if (String(project.id) !== projectId) {
       throw new DomainError(502, "SOURCE_UNAVAILABLE", "GitLab 返回的项目标识与请求不一致。");
     }
@@ -129,59 +164,25 @@ export class GitLabSourceReader {
       throw new DomainError(403, "PERMISSION_DENIED", "当前 GitLab 用户需要对项目拥有 Maintainer 或 Owner 权限。");
     }
 
-    let commit: GitLabCommit;
-    try {
-      commit = await this.getJson<GitLabCommit>(
-        `api/v4/projects/${projectId}/repository/commits/${encodeURIComponent(commitSha)}`,
-        token,
-        budget,
-      );
-    } catch (error) {
-      if (error instanceof GitLabHttpError && error.status === 404) {
-        throw new DomainError(400, "VALIDATION_FAILED", "GitLab 项目中不存在请求的固定 commit。");
+    const checkedJson = async <T>(path: string, missing: string): Promise<T> => {
+      try { return await this.getJson<T>(path, token, budget); }
+      catch (error) {
+        if (error instanceof GitLabHttpError && error.status === 404) throw new DomainError(400, "VALIDATION_FAILED", missing);
+        throw error;
       }
-      throw error;
-    }
-    if (commit.id?.toLowerCase() !== commitSha) {
-      throw new DomainError(400, "VALIDATION_FAILED", "GitLab 未返回与请求一致的固定 commit。");
-    }
-
-    let tag: GitLabTag;
-    try {
-      tag = await this.getJson<GitLabTag>(
-        `api/v4/projects/${projectId}/repository/tags/${encodeURIComponent(input.tag)}`,
-        token,
-        budget,
-      );
-    } catch (error) {
-      if (error instanceof GitLabHttpError && error.status === 404) {
-        throw new DomainError(400, "VALIDATION_FAILED", "GitLab 项目中不存在指定版本 tag。请按项目发布流程为目标 commit 创建 tag 和对应 Release 后重新提交候选。");
-      }
-      throw error;
-    }
-    if (tag.commit?.id?.toLowerCase() !== commitSha) {
-      throw new DomainError(400, "VALIDATION_FAILED", "指定版本 tag 当前未指向请求中的 commit，可能已移动。请为正确 commit 准备新的匹配版本 tag/Release 后重新提交候选。");
-    }
-
-    let release: GitLabRelease;
-    try {
-      release = await this.getJson<GitLabRelease>(
-        `api/v4/projects/${projectId}/releases/${encodeURIComponent(input.tag)}`,
-        token,
-        budget,
-      );
-    } catch (error) {
-      if (error instanceof GitLabHttpError && error.status === 404) {
-        throw new DomainError(400, "VALIDATION_FAILED", "该版本 tag 尚无正式 GitLab Release。请作者 Agent 使用已有授权按项目发布流程创建此 Release，再用相同 tag 和 commit SHA 重新提交；门户不会代作者操作 GitLab。");
-      }
-      throw error;
-    }
-    if (release.tag_name !== input.tag) {
-      throw new DomainError(400, "VALIDATION_FAILED", "GitLab Release 返回的版本 tag 与提交不一致。请核对项目版本、tag 和 Release 后重新提交候选。");
-    }
-    if (release.commit?.id?.toLowerCase() !== commitSha) {
-      throw new DomainError(400, "VALIDATION_FAILED", "GitLab Release 关联的 commit 与请求不一致，版本 Release 可能指向旧提交。请勿移动已有 tag；为正确 commit 准备新的匹配版本、tag 和 Release 后重新提交候选。");
-    }
+    };
+    const [commit, tag, release] = await Promise.all([
+      checkedJson<GitLabCommit>(`api/v4/projects/${projectId}/repository/commits/${encodeURIComponent(commitSha)}`,
+        "GitLab 项目中不存在请求的固定 commit。"),
+      checkedJson<GitLabTag>(`api/v4/projects/${projectId}/repository/tags/${encodeURIComponent(input.tag)}`,
+        "GitLab 项目中不存在指定版本 tag。请按项目发布流程为目标 commit 创建 tag 和对应 Release 后重新提交候选。"),
+      checkedJson<GitLabRelease>(`api/v4/projects/${projectId}/releases/${encodeURIComponent(input.tag)}`,
+        "该版本 tag 尚无正式 GitLab Release。请作者 Agent 使用已有授权按项目发布流程创建此 Release，再用相同 tag 和 commit SHA 重新提交；门户不会代作者操作 GitLab。"),
+    ]);
+    if (commit.id?.toLowerCase() !== commitSha) throw new DomainError(400, "VALIDATION_FAILED", "GitLab 未返回与请求一致的固定 commit。");
+    if (tag.commit?.id?.toLowerCase() !== commitSha) throw new DomainError(400, "VALIDATION_FAILED", "指定版本 tag 当前未指向请求中的 commit，可能已移动。请为正确 commit 准备新的匹配版本 tag/Release 后重新提交候选。");
+    if (release.tag_name !== input.tag) throw new DomainError(400, "VALIDATION_FAILED", "GitLab Release 返回的版本 tag 与提交不一致。请核对项目版本、tag 和 Release 后重新提交候选。");
+    if (release.commit?.id?.toLowerCase() !== commitSha) throw new DomainError(400, "VALIDATION_FAILED", "GitLab Release 关联的 commit 与请求不一致，版本 Release 可能指向旧提交。请勿移动已有 tag；为正确 commit 准备新的匹配版本、tag 和 Release 后重新提交候选。");
 
     const webUrl = checkedProjectUrl(project.web_url, this.baseUrl);
     const manifestBytes = await this.readRegularBlob(projectId, manifestPath, commitSha, token, MAX_MANIFEST_BYTES, budget);
@@ -197,8 +198,10 @@ export class GitLabSourceReader {
     const documents: Record<string, string> = {};
     const documentBytes = new Map<string, Uint8Array>();
     let documentBytesTotal = 0;
-    for (const filePath of [...declaredPaths].sort()) {
-      const bytes = await this.readRegularBlob(projectId, filePath, commitSha, token, MAX_DOCUMENT_BYTES, budget);
+    const paths = [...declaredPaths].sort();
+    const loadedDocuments = await Promise.all(paths.map(async filePath => ({ filePath,
+      bytes: await this.readRegularBlob(projectId, filePath, commitSha, token, MAX_DOCUMENT_BYTES, budget) })));
+    for (const { filePath, bytes } of loadedDocuments) {
       documentBytesTotal += bytes.byteLength;
       if (documentBytesTotal > MAX_DOCUMENT_BYTES) {
         throw new DomainError(400, "VALIDATION_FAILED", "共享说明总大小不能超过 512 KiB。");
@@ -287,7 +290,9 @@ export class GitLabSourceReader {
       url.searchParams.set("page", String(page));
       let entries: GitLabTreeEntry[];
       try {
-        entries = await this.getJson<GitLabTreeEntry[]>(url, token, budget);
+        let task = budget.trees.get(url.href);
+        if (!task) { task = this.getJson<GitLabTreeEntry[]>(url, token, budget); budget.trees.set(url.href, task); }
+        entries = await task;
       } catch (error) {
         if (error instanceof GitLabHttpError && error.status === 404) {
           throw new DomainError(400, "VALIDATION_FAILED", "固定 commit 中找不到声明的共享文件。");
@@ -312,23 +317,34 @@ export class GitLabSourceReader {
   }
 
   private async getBytes(pathOrUrl: string | URL, token: string, maxBytes: number, budget?: RequestBudget): Promise<Uint8Array> {
-    const url = typeof pathOrUrl === "string" ? this.apiUrl(pathOrUrl) : pathOrUrl;
-    let timeoutMs = REQUEST_TIMEOUT_MS;
-    if (budget) {
-      const remaining = Math.floor(budget.deadline - performance.now());
-      if (remaining <= 0 || budget.requests >= MAX_LOAD_REQUESTS) {
-        throw new DomainError(503, "SOURCE_UNAVAILABLE", "GitLab 来源核验超过请求时限或请求数量上限。");
-      }
-      budget.requests++;
-      timeoutMs = Math.min(REQUEST_TIMEOUT_MS, remaining);
+    if (budget && (budget.controller.signal.aborted || performance.now() >= budget.deadline || budget.requests >= MAX_LOAD_REQUESTS)) {
+      throw new DomainError(503, "SOURCE_UNAVAILABLE", "GitLab 来源核验超过请求时限或请求数量上限。");
     }
+    if (budget) budget.requests++;
+    const remaining = budget ? Math.max(1, Math.floor(budget.deadline - performance.now())) : REQUEST_TIMEOUT_MS;
+    const signal = budget ? AbortSignal.any([budget.controller.signal, AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining))]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const execute = () => gitlabConcurrency(this.baseUrl).run(signal, () => this.fetchBytes(pathOrUrl, token, maxBytes, signal));
+    const task = budget ? budget.parallel.run(signal, execute) : execute();
+    if (budget) {
+      budget.pending.add(task);
+      void task.then(() => budget.pending.delete(task), () => budget.pending.delete(task));
+    }
+    try { return await task; }
+    catch (error) {
+      if (error instanceof DomainError || error instanceof GitLabHttpError) throw error;
+      throw new DomainError(503, "SOURCE_UNAVAILABLE", "暂时无法从配置的 GitLab 读取固定来源。");
+    }
+  }
+
+  private async fetchBytes(pathOrUrl: string | URL, token: string, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
+    const url = typeof pathOrUrl === "string" ? this.apiUrl(pathOrUrl) : pathOrUrl;
     let response: Response;
     try {
       response = await fetch(url, {
         method: "GET",
         headers: { "PRIVATE-TOKEN": token, Accept: "application/json, text/plain" },
         redirect: "error",
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
     } catch {
       throw new DomainError(503, "SOURCE_UNAVAILABLE", "暂时无法从配置的 GitLab 读取固定来源。");
