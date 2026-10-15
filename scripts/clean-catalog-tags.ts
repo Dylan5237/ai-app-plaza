@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { openDatabase, type Database } from '../server/domain/database.js';
 import { parseStrictJson } from '../server/domain/manifest.js';
 import { DomainError } from '../server/domain/errors.js';
-import { cleanCatalogTags, restoreCatalogTags, parseCleanupPlan, parseCleanupBackup, type TagCleanupBackup } from '../server/domain/tag-cleanup.js';
+import { cleanCatalogTags, restoreCatalogTags, parseCleanupPlan, parseCleanupBackup, cleanupPlanHash, type TagCleanupBackup } from '../server/domain/tag-cleanup.js';
 
 async function saveBackup(file: string, backup: TagCleanupBackup): Promise<void> {
   try { await writeFile(file, JSON.stringify(backup, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
@@ -27,11 +27,20 @@ export async function runTagCleanup(args: string[], env = process.env) {
   }
   const raw = parseStrictJson(await readFile(resolve(values.plan ?? values.rollback!), 'utf8'));
   const input = values.rollback ? parseCleanupBackup(raw) : parseCleanupPlan(raw);
+  let originalBackup: TagCleanupBackup | undefined;
+  if (values.plan && values.backup) {
+    try { originalBackup = parseCleanupBackup(parseStrictJson(await readFile(resolve(values.backup), 'utf8'))); }
+    catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+  }
+  if (originalBackup && (originalBackup.operationId !== input.operationId || originalBackup.planHash !== cleanupPlanHash(input))) {
+    throw new DomainError(409, 'TAG_CLEANUP_CONFLICT', '原备份与清洗计划不一致，停止操作。');
+  }
   let db: Database | undefined;
   try {
     db = await openDatabase({ ...(env.DATABASE_URL ? { url: env.DATABASE_URL } : { path: resolve(values['database-path']!) }), migrate: false });
     return values.rollback ? await restoreCatalogTags(db, input, values.apply) : await cleanCatalogTags(db, input, {
       apply: values.apply,
+      ...(originalBackup ? { originalBackup } : {}),
       ...(values.backup ? { saveBackup: (backup: TagCleanupBackup) => saveBackup(resolve(values.backup!), backup) } : {}),
     });
   } finally { await db?.close(); }

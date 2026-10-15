@@ -87,6 +87,11 @@ const MIGRATIONS = [
     reason text NOT NULL,
     updated_at timestamptz NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS catalog_tag_cleanup_operations (
+    operation_id uuid PRIMARY KEY,
+    plan_hash text NOT NULL CHECK (plan_hash ~ '^[a-f0-9]{64}$'),
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
   `CREATE TABLE IF NOT EXISTS managed_app_bindings (
     id uuid PRIMARY KEY,
     app_key text NOT NULL,
