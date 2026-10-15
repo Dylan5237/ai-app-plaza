@@ -131,3 +131,26 @@ test('a newly confirmed author version uses its own tags instead of inheriting h
   assert.equal(current.revision, previous.revision + 1);
   assert.equal((await h.db.query('SELECT count(*) AS total FROM catalog_tag_overrides')).rows[0]?.total, 1);
 });
+
+for (const keepCurated of [false, true]) test(`update preview compares effective catalog tags when ${keepCurated ? 'keeping curated labels' : 'restoring source labels'}`, async t => {
+  const h = await startHarness(); t.after(() => h.close());
+  const originalTags = ['MCP', '知识整理', '文档处理'];
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify({ ...manifest(), tags: originalTags }));
+  const input = { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const first = await h.service.submit(input, TOKEN, randomUUID());
+  const saved = await h.service.confirm(first.id, first.ticket, { revision: first.revision, digest: first.digest! });
+  const previous = await h.service.app(saved.appId!);
+  await cleanCatalogTags(h.db, { schemaVersion: 1, operationId: randomUUID(), audience: h.config.audience, entries: [{ appId: previous.id, appKey: 'sample-1', expectedRevision: previous.revision, expectedCommitSha: SHA, expectedTags: originalTags, tags: ['MCP'], reason: '验证公开标签变更摘要' }] }, { apply: true, saveBackup: async () => {} });
+  const nextTags = keepCurated ? ['MCP'] : originalTags;
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify({ ...manifest(), projectVersion: '1.1.0', tags: nextTags }));
+  h.gitlab.state.tagName='v1.1.0'; h.gitlab.state.tagSha=SHA2; h.gitlab.state.releaseSha=SHA2;
+  const next = await h.service.submit({ ...input, commitSha: SHA2, tag: 'v1.1.0', expectedAppRevision: previous.revision }, TOKEN, randomUUID());
+  assert.equal(next.status, 'preview_ready');
+  assert.deepEqual(next.change?.changedFields, keepCurated ? [] : ['能力标签']);
+  assert.deepEqual(next.preview?.tags, nextTags);
+  assert.deepEqual((await h.service.app(previous.id)).manifest.tags, originalTags);
+  const confirmed = await h.service.confirm(next.id, next.ticket, { revision: next.revision, digest: next.digest! });
+  assert.equal(confirmed.status, 'registered');
+  assert.deepEqual(confirmed.change?.changedFields, next.change?.changedFields);
+  assert.deepEqual((await h.service.app(previous.id)).tags, nextTags);
+});

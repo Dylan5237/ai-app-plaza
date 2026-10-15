@@ -326,7 +326,7 @@ export function createService(config: ServiceConfig): PlazaService {
     const groups: Array<[string, unknown, unknown]> = [
       ["应用名称", previous.manifest.name, source.manifest.name],
       ["应用简介", previous.manifest.summary, source.manifest.summary],
-      ["能力标签", previous.manifest.tags, source.manifest.tags],
+      ["能力标签", previous.tags, source.manifest.tags],
       ["作者信息", previous.manifest.maintainers, source.manifest.maintainers],
       ["应用能力", previous.manifest.capabilities, source.manifest.capabilities],
       ["使用条件", [previous.manifest.requirements, previous.manifest.limitations], [source.manifest.requirements, source.manifest.limitations]],
