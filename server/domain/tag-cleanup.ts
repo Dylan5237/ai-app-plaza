@@ -3,9 +3,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { Database, Queryable } from './database.js';
 import { DomainError } from './errors.js';
-import { validateCapabilityTags } from './tags.js';
+import { tagKey, validateCapabilityTags } from './tags.js';
 
-const tagList = z.array(z.string().min(1).max(32));
+const tagList = z.array(z.string().min(1).refine(value => [...value].length <= 32));
 const desiredTags = tagList.max(3);
 const entrySchema = z.object({
   appId: z.string().uuid(), appKey: z.string().min(1).max(64),
@@ -93,6 +93,22 @@ async function writeOverride(db: Queryable, snapshotId: string, value: Omit<Over
   );
 }
 
+async function validatePostPlanNames(db: Queryable, audience: string, entries: TagCleanupBackup['entries'], overrides: boolean): Promise<void> {
+  const rows = await db.query<{ snapshot_id: string; tags: string[] }>(
+    `SELECT s.id AS snapshot_id, ${overrides ? "COALESCE(o.tags, s.manifest->'tags', '[]'::jsonb)" : "COALESCE(s.manifest->'tags', '[]'::jsonb)"} AS tags
+       FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id
+       ${overrides ? 'LEFT JOIN catalog_tag_overrides o ON o.snapshot_id = s.id' : ''}
+      WHERE s.audience = $1`, [audience],
+  );
+  const replacements = new Map(entries.map(entry => [entry.snapshotId, entry.tags]));
+  const names = new Map<string, string>();
+  for (const row of rows.rows) for (const tag of replacements.get(row.snapshot_id) ?? row.tags) {
+    const key = tagKey(tag), previous = names.get(key);
+    if (previous !== undefined && previous !== tag) conflict('规范化后相同的标签必须使用同一名称，请统一整批整理后的目录标签。');
+    names.set(key, tag);
+  }
+}
+
 export async function cleanCatalogTags(db: Database, input: unknown, options: {
   apply?: boolean; saveBackup?: (backup: TagCleanupBackup) => Promise<void>;
 } = {}) {
@@ -100,6 +116,7 @@ export async function cleanCatalogTags(db: Database, input: unknown, options: {
   if (options.apply && !options.saveBackup) throw new DomainError(400, 'VALIDATION_FAILED', '执行清洗前必须保存备份。');
   return db.transaction(async tx => {
     if (!options.apply) await tx.query('SET TRANSACTION READ ONLY');
+    else await tx.query('LOCK TABLE catalog_apps IN SHARE ROW EXCLUSIVE MODE');
     const overrides = await hasOverrides(tx);
     if (options.apply && !overrides) conflict('标签数据迁移尚未安装，请先部署已验证的服务版本。');
     const entries: TagCleanupBackup['entries'] = [];
@@ -111,6 +128,7 @@ export async function cleanCatalogTags(db: Database, input: unknown, options: {
       else if (!same(effective, entry.expectedTags)) conflict('有效标签与清洗预览不同，停止整批操作并重新盘点。');
       entries.push({ ...entry, snapshotId: row.snapshot_id, before: row.override });
     }
+    await validatePostPlanNames(tx, plan.audience, entries, overrides);
     if (applied && applied !== entries.length) conflict('发现部分清洗记录，停止操作并核对原回执。');
     const changes = applied ? [] : entries.filter(entry => !same(entry.expectedTags, entry.tags));
     const backupPayload = { schemaVersion: 1 as const, operationId: plan.operationId, audience: plan.audience, planHash: cleanupPlanHash(plan), entries: plan.entries.map(entry => entries.find(row => row.appId === entry.appId)!) };
@@ -128,6 +146,7 @@ export async function restoreCatalogTags(db: Database, input: unknown, apply = f
   const backup = parseCleanupBackup(input);
   return db.transaction(async tx => {
     if (!apply) await tx.query('SET TRANSACTION READ ONLY');
+    else await tx.query('LOCK TABLE catalog_apps IN SHARE ROW EXCLUSIVE MODE');
     const overrides = await hasOverrides(tx);
     const entries: TagCleanupBackup['entries'] = [];
     let restored = 0;

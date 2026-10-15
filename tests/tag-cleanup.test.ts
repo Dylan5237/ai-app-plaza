@@ -103,3 +103,34 @@ test('preview works against a pre-migration database without installing any sche
   assert.equal((await db.query("SELECT to_regclass('catalog_tag_overrides') IS NULL AS absent")).rows[0]?.absent, true);
   await assert.rejects(cleanCatalogTags(db, plan, { apply: true, saveBackup: async () => {} }), /迁移尚未安装/);
 });
+
+test('cleanup rejects a variant retained by an unplanned app before backup or any override write', async t => {
+  const { db, b, plan } = await setup(t);
+  plan.entries = [{ ...b.entry, tags: ['mcp'] }];
+  let backups = 0;
+  await assert.rejects(cleanCatalogTags(db, plan), /规范化.*标签|标签.*规范化/);
+  await assert.rejects(cleanCatalogTags(db, plan, { apply: true, saveBackup: async () => { backups++; } }), /规范化.*标签|标签.*规范化/);
+  assert.equal(backups, 0); assert.deepEqual(await overrides(db), []);
+  plan.entries[0].tags = ['MCP'];
+  assert.equal((await cleanCatalogTags(db, plan, { apply: true, saveBackup: async () => {} })).changedApps, 1);
+});
+
+test('cleanup validates the complete replacement set so a batch may consolidate but never create variants', async t => {
+  const { db, plan } = await setup(t);
+  plan.entries[0].tags = ['ＭＣＰ']; plan.entries[1].tags = ['mcp'];
+  await assert.rejects(cleanCatalogTags(db, plan, { apply: true, saveBackup: async () => { throw new Error('must reject before backup'); } }), /规范化.*标签|标签.*规范化/);
+  assert.deepEqual(await overrides(db), []);
+  plan.entries[0].tags = ['MCP']; plan.entries[1].tags = ['MCP'];
+  assert.equal((await cleanCatalogTags(db, plan)).changedApps, 2);
+  assert.equal((await cleanCatalogTags(db, plan, { apply: true, saveBackup: async () => {} })).changedApps, 2);
+});
+
+test('cleanup and rollback use the schema Unicode code-point tag length', async t => {
+  const { db, plan } = await setup(t);
+  for (const entry of plan.entries) entry.tags = ['😀'.repeat(32)];
+  let backup: TagCleanupBackup | undefined;
+  assert.equal((await cleanCatalogTags(db, plan)).status, 'preview');
+  await cleanCatalogTags(db, plan, { apply: true, saveBackup: async value => { backup=value; } });
+  assert.equal((await restoreCatalogTags(db, backup)).status, 'rollback_preview');
+  assert.equal((await overrides(db)).length, 2);
+});

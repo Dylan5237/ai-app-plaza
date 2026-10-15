@@ -17,6 +17,17 @@ test('new manifests allow three capability tags and reject four or normalized du
   validateTagReuse(['MCP', '新能力'], ['MCP']);
 });
 
+test('manifest validation and HTTP tag filters count supplementary characters as code points', async t => {
+  const tag = '😀'.repeat(32);
+  assert.deepEqual(validateManifest({ ...manifest(), tags: [tag] }, 'sample-1').tags, [tag]);
+  assert.throws(() => validateManifest({ ...manifest(), tags: [tag+'😀'] }, 'sample-1'), /32 个字符/);
+  const h = await startHarness(); t.after(() => h.close());
+  await seedTagCatalog(h.db, h.config.audience, [tag]);
+  const response = await fetch(h.origin+'/api/apps?tags='+encodeURIComponent(tag));
+  assert.equal(response.status, 200); assert.equal((await response.json()).total, 1);
+  assert.equal((await fetch(h.origin+'/api/apps?tags='+encodeURIComponent(tag+'😀'))).status, 400);
+});
+
 test('HTTP exposes existing tags, preserves source manifests, and filters the same curated tags as details', async t => {
   const harness = await startHarness();
   t.after(() => harness.close());

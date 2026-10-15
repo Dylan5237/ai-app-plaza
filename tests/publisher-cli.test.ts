@@ -119,6 +119,10 @@ test('CLI dry-run permits three tags and rejects four or normalized duplicates w
   assert.match(four.stderr, /最多 3 个/);
   await writeFile(file, JSON.stringify({ ...source, tags: ['MCP', 'ｍｃｐ'] }));
   assert.equal((await runCli(args)).code, 2);
+  await writeFile(file, JSON.stringify({ ...source, tags: ['😀'.repeat(32)] }));
+  assert.equal((await runCli(args)).code, 0);
+  await writeFile(file, JSON.stringify({ ...source, tags: ['😀'.repeat(33)] }));
+  assert.equal((await runCli(args)).code, 2);
   assert.equal(requests, 0);
   await assert.rejects(access(state), { code: 'ENOENT' });
 });

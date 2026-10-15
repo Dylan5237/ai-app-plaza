@@ -15,7 +15,7 @@ export function validateCapabilityTags(value: unknown): asserts value is string[
   }
   const seen = new Set<string>();
   for (const tag of value) {
-    if (typeof tag !== 'string' || !tag.trim() || tag.length > 32) {
+    if (typeof tag !== 'string' || !tag.trim() || [...tag].length > 32) {
       throw new DomainError(400, 'VALIDATION_FAILED', '能力标签须为 1 至 32 个字符的非空文本。');
     }
     const key = tagKey(tag);
