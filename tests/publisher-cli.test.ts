@@ -399,6 +399,16 @@ test('CLI dry-run permits JS/TS credential references but still blocks secret li
       secret: 'DocumentedCredentialValueLong12345',
     },
     {
+      path: 'src/view.js',
+      content: 'const view = <pre>password=DocumentedCredentialValueLong12345;</pre>;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/fragment.js',
+      content: 'const view = <>password=DocumentedCredentialValueLong12345;</>;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
       path: 'src/JsxForm.vue',
       content: '<script lang="tsx">const view = <pre>password=DocumentedCredentialValueLong12345;</pre>;</script>\n',
       secret: 'DocumentedCredentialValueLong12345',

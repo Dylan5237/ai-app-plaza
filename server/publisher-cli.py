@@ -392,6 +392,10 @@ def _js_code_mask(raw: bytes) -> bytearray:
             close = raw.find(b"*/", index + 2)
             index = len(raw) if close < 0 else close + 2
             continue
+        if raw.startswith(b"</", index):
+            # JSX also occurs in .js files. Its text is not a JS reference;
+            # keep the generic scan conservative for this unsupported syntax.
+            return bytearray(len(raw))
         if current == 0x2F and expect_expression:
             index = _js_regex_literal_end(raw, index)
             expect_expression = False
