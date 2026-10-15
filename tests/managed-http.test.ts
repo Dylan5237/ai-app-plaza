@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -35,6 +35,12 @@ interface ManagedPortal {
   submissions: CapturedSubmission[];
   statusKeys: string[];
   close(): Promise<void>;
+}
+
+interface ManagedHttpResponse {
+  status?: string;
+  previewUrl?: string;
+  error?: { code?: string; message?: string };
 }
 
 async function allocatePort(): Promise<number> {
@@ -114,6 +120,47 @@ async function writeVersion(root: string, version: string, summary: string, sour
   await writeFile(path.join(root, "docs", "usage-1.md"), `# 使用说明\n\n${summary}\n`);
   await writeFile(path.join(root, "docs", "agent-1.md"), "# Agent 接入说明\n\n核对环境后执行最小验证。\n");
   await writeFile(path.join(root, "src", "main.ts"), source);
+}
+
+function makeManagedCandidate(appKey = APP_KEY): Record<string, unknown> {
+  const summary = "整理文档并生成可核对的 Markdown 输出。";
+  const appManifest = {
+    ...manifest(1),
+    appKey,
+    projectVersion: "1.0.0",
+    summary,
+    docs: { readme: "README.md", usage: "docs/usage-1.md" },
+  };
+  const files = [
+    { path: "ai-app.json", text: JSON.stringify(appManifest) },
+    { path: "README.md", text: "# 文档助手\n\n用于受控测试的应用说明。" },
+    { path: "docs/usage-1.md", text: `# 使用说明\n\n${summary}` },
+    { path: "docs/agent-1.md", text: "# Agent 接入说明\n\n核对环境后执行最小验证。" },
+  ];
+  return {
+    appKey,
+    manifestPath: "ai-app.json",
+    files: files.map(({ path: filePath, text }) => ({ path: filePath, content: Buffer.from(text, "utf8").toString("base64") })),
+  };
+}
+
+async function postManagedCandidate(
+  portal: ManagedPortal,
+  ownerKey: string,
+  idempotencyKey: string,
+  body: Record<string, unknown>,
+): Promise<{ status: number; text: string; json: ManagedHttpResponse }> {
+  const response = await fetch(`${portal.origin}/api/managed-publications`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-plaza-publish-key": ownerKey,
+      "idempotency-key": idempotencyKey,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  return { status: response.status, text, json: JSON.parse(text) as ManagedHttpResponse };
 }
 
 function runCli(scriptPath: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -197,6 +244,108 @@ function gitLabWriteCounts(gitlab: Awaited<ReturnType<typeof startManagedGitLabF
     releases: gitlab.state.writes.filter((item) => item.method === "POST" && item.path.endsWith("/releases")).length,
   };
 }
+
+test("managed HTTP returns sanitized permanent errors for confirmed project-creation refusals", async t => {
+  const portal = await startManagedPortal();
+  t.after(() => portal.close());
+
+  for (const status of [400, 403, 422]) {
+    const ownerKey = randomBytes(32).toString("base64url");
+    portal.gitlab.state.rejectNextProjectStatus = status;
+    const idempotencyKey = randomUUID();
+    const requestBody = makeManagedCandidate(`sample-${status}`);
+    const response = await postManagedCandidate(portal, ownerKey, idempotencyKey, requestBody);
+    assert.equal(response.status, status);
+    assert.ok(response.json.error);
+    assert.equal(response.json.error.code, "MANAGED_PROJECT_CREATE_REJECTED");
+    assert.match(response.json.error.message ?? "", new RegExp(`HTTP ${status}`));
+    assert.ok(!response.text.includes(MANAGED_GITLAB_TOKEN));
+    assert.ok(!response.text.includes("fixture-private-header-sentinel"));
+    assert.ok(!response.text.includes("private-preview.invalid"));
+    assert.equal(portal.gitlab.state.projects.size, 0);
+    const counts = gitLabWriteCounts(portal.gitlab);
+    assert.equal(counts.commits, 0);
+    assert.equal(counts.tags, 0);
+    assert.equal(counts.releases, 0);
+    const submission = portal.submissions.at(-1)!;
+    assert.equal(submission.ownerKey, ownerKey);
+    assert.equal(submission.idempotencyKey, idempotencyKey);
+    assert.deepEqual(submission.body, requestBody);
+  }
+  assert.deepEqual(gitLabWriteCounts(portal.gitlab), {
+    projects: 0,
+    projectCreates: 3,
+    commits: 0,
+    tags: 0,
+    releases: 0,
+  });
+});
+
+test("managed HTTP keeps uncertain create outcomes retryable with the same credentials and content", async t => {
+  const portal = await startManagedPortal();
+  t.after(() => portal.close());
+
+  const retrySameRequest = async (appKey: string, status: number, readbackStatus?: number) => {
+    const ownerKey = randomBytes(32).toString("base64url");
+    const idempotencyKey = randomUUID();
+    const requestBody = makeManagedCandidate(appKey);
+    portal.gitlab.state.rejectNextProjectStatus = status;
+    portal.gitlab.state.rejectNextProjectReadbackStatus = readbackStatus ?? null;
+    const unavailable = await postManagedCandidate(portal, ownerKey, idempotencyKey, requestBody);
+    assert.equal(unavailable.status, 503, unavailable.text);
+    assert.ok(unavailable.json.error);
+    assert.equal(unavailable.json.error.code, "SOURCE_UNAVAILABLE");
+    assert.ok(!unavailable.text.includes(MANAGED_GITLAB_TOKEN));
+    assert.ok(!unavailable.text.includes("private-preview.invalid"));
+    const retry = await postManagedCandidate(portal, ownerKey, idempotencyKey, requestBody);
+    assert.equal(retry.status, 201, retry.text);
+    const attempts = portal.submissions.slice(-2);
+    assert.equal(attempts[0]!.ownerKey, ownerKey);
+    assert.equal(attempts[1]!.ownerKey, ownerKey);
+    assert.equal(attempts[0]!.idempotencyKey, idempotencyKey);
+    assert.equal(attempts[1]!.idempotencyKey, idempotencyKey);
+    assert.deepEqual(attempts[0]!.body, requestBody);
+    assert.deepEqual(attempts[1]!.body, requestBody);
+  };
+
+  await retrySameRequest("sample-upstream-5xx", 503);
+  await retrySameRequest("sample-readback-403", 400, 403);
+  await retrySameRequest("sample-readback-503", 400, 503);
+  assert.deepEqual(gitLabWriteCounts(portal.gitlab), {
+    projects: 3,
+    projectCreates: 6,
+    commits: 3,
+    tags: 3,
+    releases: 3,
+  });
+});
+
+test("managed HTTP recovers a created project after its create response is lost", async t => {
+  const portal = await startManagedPortal();
+  t.after(() => portal.close());
+  const ownerKey = randomBytes(32).toString("base64url");
+  const idempotencyKey = randomUUID();
+  const requestBody = makeManagedCandidate();
+  portal.gitlab.state.dropNextProjectCreateResponse = true;
+
+  const first = await postManagedCandidate(portal, ownerKey, idempotencyKey, requestBody);
+  assert.equal(first.status, 201, first.text);
+  assert.equal(first.json.status, "preview_ready");
+  assert.equal(portal.gitlab.state.projects.size, 1);
+  const firstCounts = gitLabWriteCounts(portal.gitlab);
+  const retry = await postManagedCandidate(portal, ownerKey, idempotencyKey, requestBody);
+  assert.equal(retry.status, 201, retry.text);
+  assert.equal(retry.json.previewUrl, first.json.previewUrl);
+  assert.deepEqual(gitLabWriteCounts(portal.gitlab), firstCounts);
+  assert.deepEqual(firstCounts, { projects: 1, projectCreates: 1, commits: 1, tags: 1, releases: 1 });
+  const attempts = portal.submissions;
+  assert.equal(attempts[0]!.ownerKey, ownerKey);
+  assert.equal(attempts[1]!.ownerKey, ownerKey);
+  assert.equal(attempts[0]!.idempotencyKey, idempotencyKey);
+  assert.equal(attempts[1]!.idempotencyKey, idempotencyKey);
+  assert.deepEqual(attempts[0]!.body, requestBody);
+  assert.deepEqual(attempts[1]!.body, requestBody);
+});
 
 test("publisher CLI revises an unconfirmed preview and resumes the same legacy failed request", async t => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "plaza-unconfirmed-http-"));
