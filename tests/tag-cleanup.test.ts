@@ -65,6 +65,7 @@ test('backup failure and interrupted database writes roll back the complete batc
   } })) };
   await assert.rejects(cleanCatalogTags(failing, plan, { apply: true, saveBackup: async () => {} }), /write interrupted/);
   assert.deepEqual(await overrides(db), []);
+  assert.equal((await db.query('SELECT count(*) AS total FROM catalog_tag_cleanup_operations')).rows[0]?.total,0);
 });
 
 test('rollback refuses changed cleanup identity, changed tags and corrupted backup', async t => {
@@ -99,6 +100,7 @@ test('rollback restores a prior classification and its original operation metada
 test('preview works against a pre-migration database without installing any schema', async t => {
   const { db, plan } = await setup(t);
   await db.query('DROP TABLE catalog_tag_overrides');
+  await db.query('DROP TABLE catalog_tag_cleanup_operations');
   assert.equal((await cleanCatalogTags(db, plan)).status, 'preview');
   assert.equal((await db.query("SELECT to_regclass('catalog_tag_overrides') IS NULL AS absent")).rows[0]?.absent, true);
   await assert.rejects(cleanCatalogTags(db, plan, { apply: true, saveBackup: async () => {} }), /迁移尚未安装/);

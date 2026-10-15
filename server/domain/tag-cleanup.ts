@@ -69,6 +69,34 @@ async function hasOverrides(db: Queryable): Promise<boolean> {
   return Boolean((await db.query<{ present: boolean }>("SELECT to_regclass('catalog_tag_overrides') IS NOT NULL AS present")).rows[0]?.present);
 }
 
+async function validateOperationIdentity(db: Queryable, plan: TagCleanupPlan, overrides: boolean, originalBackup?: unknown): Promise<boolean> {
+  const available = Boolean((await db.query<{ present: boolean }>("SELECT to_regclass('catalog_tag_cleanup_operations') IS NOT NULL AS present")).rows[0]?.present);
+  const stored = available ? (await db.query<{ plan_hash: string }>('SELECT plan_hash FROM catalog_tag_cleanup_operations WHERE operation_id = $1', [plan.operationId])).rows[0] : undefined;
+  if (stored && stored.plan_hash !== cleanupPlanHash(plan)) conflict('操作 ID 已用于不同的清洗计划，请保留原计划和原备份，新的调整使用新的操作 ID。');
+  if (originalBackup !== undefined) {
+    const backup = parseCleanupBackup(originalBackup);
+    if (backup.operationId !== plan.operationId || backup.planHash !== cleanupPlanHash(plan)) conflict('原备份与清洗计划不一致，停止操作。');
+  }
+  if (!stored && overrides) {
+    const legacy = (await db.query<{ snapshot_id: string; tags: string[]; reason: string }>('SELECT snapshot_id, tags, reason FROM catalog_tag_overrides WHERE operation_id = $1', [plan.operationId])).rows;
+    if (legacy.length) {
+      if (originalBackup === undefined) conflict('该历史操作缺少计划身份记录，请使用原备份核验后再恢复，不能仅按操作 ID 或标签推断已完成。');
+      const backup = parseCleanupBackup(originalBackup);
+      if (legacy.length !== backup.entries.length || legacy.some(row => {
+        const entry = backup.entries.find(entry => entry.snapshotId === row.snapshot_id);
+        return !entry || !same(row.tags, entry.tags) || row.reason !== entry.reason;
+      })) conflict('历史清洗记录与原备份不一致，停止操作。');
+    }
+  }
+  return available;
+}
+
+async function rememberOperation(db: Queryable, plan: TagCleanupPlan): Promise<void> {
+  await db.query('INSERT INTO catalog_tag_cleanup_operations (operation_id, plan_hash) VALUES ($1, $2) ON CONFLICT (operation_id) DO NOTHING', [plan.operationId, cleanupPlanHash(plan)]);
+  const saved = (await db.query<{ plan_hash: string }>('SELECT plan_hash FROM catalog_tag_cleanup_operations WHERE operation_id = $1', [plan.operationId])).rows[0];
+  if (saved?.plan_hash !== cleanupPlanHash(plan)) conflict('操作 ID 的清洗计划身份不一致，停止操作。');
+}
+
 async function readRow(db: Queryable, entry: TagCleanupPlan['entries'][number], audience: string, overrides: boolean, lock: boolean): Promise<Row> {
   const result = await db.query<Row>(
     `SELECT a.id, a.app_key, a.revision, s.id AS snapshot_id, s.commit_sha, s.manifest->'tags' AS source_tags,
@@ -110,7 +138,7 @@ async function validatePostPlanNames(db: Queryable, audience: string, entries: T
 }
 
 export async function cleanCatalogTags(db: Database, input: unknown, options: {
-  apply?: boolean; saveBackup?: (backup: TagCleanupBackup) => Promise<void>;
+  apply?: boolean; saveBackup?: (backup: TagCleanupBackup) => Promise<void>; originalBackup?: unknown;
 } = {}) {
   const plan = parseCleanupPlan(input);
   if (options.apply && !options.saveBackup) throw new DomainError(400, 'VALIDATION_FAILED', '执行清洗前必须保存备份。');
@@ -119,12 +147,17 @@ export async function cleanCatalogTags(db: Database, input: unknown, options: {
     else await tx.query('LOCK TABLE catalog_apps IN SHARE ROW EXCLUSIVE MODE');
     const overrides = await hasOverrides(tx);
     if (options.apply && !overrides) conflict('标签数据迁移尚未安装，请先部署已验证的服务版本。');
+    const operations = await validateOperationIdentity(tx, plan, overrides, options.originalBackup);
+    if (options.apply && !operations) conflict('清洗操作身份迁移尚未安装，请先部署已验证的服务版本。');
     const entries: TagCleanupBackup['entries'] = [];
     let applied = 0;
     for (const entry of [...plan.entries].sort((a, b) => a.appId.localeCompare(b.appId))) {
       const row = await readRow(tx, entry, plan.audience, overrides, Boolean(options.apply));
       const effective = row.override?.tags ?? row.source_tags;
-      if (row.override?.operationId === plan.operationId && same(effective, entry.tags)) applied++;
+      if (row.override?.operationId === plan.operationId) {
+        if (!same(effective, entry.tags) || row.override.reason !== entry.reason) conflict('已记录的操作结果与固定计划不一致，停止整批标签操作。');
+        applied++;
+      }
       else if (!same(effective, entry.expectedTags)) conflict('有效标签与清洗预览不同，停止整批操作并重新盘点。');
       entries.push({ ...entry, snapshotId: row.snapshot_id, before: row.override });
     }
@@ -133,36 +166,42 @@ export async function cleanCatalogTags(db: Database, input: unknown, options: {
     const changes = applied ? [] : entries.filter(entry => !same(entry.expectedTags, entry.tags));
     const backupPayload = { schemaVersion: 1 as const, operationId: plan.operationId, audience: plan.audience, planHash: cleanupPlanHash(plan), entries: plan.entries.map(entry => entries.find(row => row.appId === entry.appId)!) };
     const backup: TagCleanupBackup = { ...backupPayload, checksum: digest(backupPayload) };
-    if (options.apply && !applied) {
-      await options.saveBackup!(backup);
-      for (const entry of entries) await writeOverride(tx, entry.snapshotId, { tags: entry.tags, operationId: plan.operationId, reason: entry.reason });
+    if (options.apply) {
+      if (!applied) await options.saveBackup!(backup);
+      await rememberOperation(tx, plan);
+      if (!applied) for (const entry of entries) await writeOverride(tx, entry.snapshotId, { tags: entry.tags, operationId: plan.operationId, reason: entry.reason });
     }
-    return { status: applied ? 'already_applied' : options.apply ? 'applied' : 'preview', operationId: plan.operationId,
+    return { status: applied ? 'already_applied' : options.apply ? 'applied' : 'preview', operationId: plan.operationId, planHash: cleanupPlanHash(plan),
       changedApps: changes.length, entries: entries.map(entry => ({ appId: entry.appId, appKey: entry.appKey, before: entry.expectedTags, after: entry.tags })) };
   });
 }
 
 export async function restoreCatalogTags(db: Database, input: unknown, apply = false) {
   const backup = parseCleanupBackup(input);
+  const plan = parseCleanupPlan({ schemaVersion: backup.schemaVersion, operationId: backup.operationId, audience: backup.audience,
+    entries: backup.entries.map(({ snapshotId, before, ...entry }) => entry) });
   return db.transaction(async tx => {
     if (!apply) await tx.query('SET TRANSACTION READ ONLY');
     else await tx.query('LOCK TABLE catalog_apps IN SHARE ROW EXCLUSIVE MODE');
     const overrides = await hasOverrides(tx);
+    const operations = await validateOperationIdentity(tx, plan, overrides, backup);
+    if (apply && !operations) conflict('清洗操作身份迁移尚未安装，请先部署已验证的服务版本。');
     const entries: TagCleanupBackup['entries'] = [];
     let restored = 0;
     for (const entry of [...backup.entries].sort((a, b) => a.appId.localeCompare(b.appId))) {
       const row = await readRow(tx, entry, backup.audience, overrides, apply);
       if (row.snapshot_id !== entry.snapshotId) conflict('目录快照已变化，停止整批回滚。');
       if (same(row.override, entry.before)) restored++;
-      else if (row.override?.operationId !== backup.operationId || !same(row.override.tags, entry.tags)) conflict('清洗后标签或操作身份已变化，停止整批回滚。');
+      else if (row.override?.operationId !== backup.operationId || !same(row.override.tags, entry.tags) || row.override.reason !== entry.reason) conflict('清洗后标签或操作身份已变化，停止整批回滚。');
       entries.push(entry);
     }
     if (restored && restored !== entries.length) conflict('发现部分回滚记录，停止操作并核对原回执。');
+    if (apply) await rememberOperation(tx, plan);
     if (apply && !restored) for (const entry of entries) {
       if (entry.before) await writeOverride(tx, entry.snapshotId, entry.before);
       else await tx.query('DELETE FROM catalog_tag_overrides WHERE snapshot_id = $1 AND operation_id = $2', [entry.snapshotId, backup.operationId]);
     }
-    return { status: restored ? 'already_restored' : apply ? 'restored' : 'rollback_preview', operationId: backup.operationId,
+    return { status: restored ? 'already_restored' : apply ? 'restored' : 'rollback_preview', operationId: backup.operationId, planHash: backup.planHash,
       changedApps: restored ? 0 : entries.length, entries: entries.map(entry => ({ appId: entry.appId, before: entry.tags, after: entry.before?.tags ?? entry.expectedTags })) };
   });
 }
