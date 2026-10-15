@@ -51,9 +51,17 @@ SECRET_PATTERNS = [
     re.compile(rb"\bnpm_[A-Za-z0-9]{30,}\b"),
     re.compile(rb"-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(rb"-----BEGIN PGP PRIVATE KEY BLOCK-----"),
-    re.compile(rb"(?i)\b(?:x-plaza-publish-key|publish[-_]?key|access[-_]?token|api[-_]?key|secret[-_]?key|client[-_]?secret|password)\s*[:=]\s*[\"']?[A-Za-z0-9_./+=-]{20,}"),
     re.compile(rb"\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\b"),
 ]
+SECRET_ASSIGNMENT_PATTERN = re.compile(
+    rb"(?i)(?<![A-Za-z0-9_])(?P<key_quote>[\"']?)"
+    rb"(?:x-plaza-publish-key|publish[-_]?key|access[-_]?token|api[-_]?key|secret[-_]?key|client[-_]?secret|password)"
+    rb"(?P=key_quote)?\s*[:=]\s*(?P<quote>[\"'`]?)\s*(?P<value>[A-Za-z0-9_./+=-]{20,})(?P=quote)?"
+)
+JS_SOURCE_SUFFIXES = {".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx", ".vue"}
+JS_MEMBER_REFERENCE_RE = re.compile(
+    rb"[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*"
+)
 ESSENTIAL_SOURCE_SUFFIXES = {
     ".bash", ".c", ".cc", ".cfg", ".cjs", ".cpp", ".cs", ".css", ".dart", ".go",
     ".graphql", ".h", ".hpp", ".html", ".ini", ".java", ".js", ".json", ".jsx",
@@ -298,8 +306,20 @@ def _read_file(root: Path, relative: str, *, required: bool) -> bytes | None:
     return raw
 
 
-def _looks_secret(raw: bytes) -> bool:
-    return any(pattern.search(raw) for pattern in SECRET_PATTERNS)
+def _looks_secret(raw: bytes, path: str) -> bool:
+    if any(pattern.search(raw) for pattern in SECRET_PATTERNS):
+        return True
+    is_js_source = PurePosixPath(path).suffix.casefold() in JS_SOURCE_SUFFIXES
+    for match in SECRET_ASSIGNMENT_PATTERN.finditer(raw):
+        value = match.group("value")
+        if (
+            is_js_source
+            and not match.group("quote")
+            and JS_MEMBER_REFERENCE_RE.fullmatch(value)
+        ):
+            continue
+        return True
+    return False
 
 
 def _is_essential_source(path: str) -> bool:
@@ -327,7 +347,7 @@ def _collect(root: Path) -> tuple[dict[str, Any], list[dict[str, str]], str, int
                 raise CliError(f"必要源码无法安全读取：{relative}；请调整 AI 的项目范围后重试。")
             skipped.append(relative)
             continue
-        if _looks_secret(raw):
+        if _looks_secret(raw, relative):
             if required or _is_essential_source(relative):
                 raise CliError(f"必要源码或资料疑似包含真实密钥或 token：{relative}；请调整 AI 的项目范围后重试。")
             skipped.append(relative)

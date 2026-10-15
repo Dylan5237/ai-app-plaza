@@ -290,6 +290,100 @@ test('a suspected secret in necessary source stops the upload and reports only i
   await assert.rejects(readFile(stateDir));
 });
 
+test('CLI dry-run permits JS/TS credential references but still blocks secret literals and config credentials', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-scan-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const sourcePath = path.join(root, 'src', 'main.ts');
+  await writeFile(sourcePath, [
+    'const password = patchSegment.password;',
+    'function loadPassword(configuredPasswordFromVault) { const password = configuredPasswordFromVault; }',
+    'const publishKey = bootstrap.publisher.publishKey;',
+    'const accessToken = process.env.ACCESS_TOKEN;',
+    'const clientSecret = context.auth.clientSecret;',
+    '',
+  ].join('\n'));
+
+  let requestCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    respondJson(response, {});
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--dry-run'];
+  const safeReferences = await runCli(args);
+  assert.equal(safeReferences.code, 0, safeReferences.stderr);
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+
+  const cases = [
+    {
+      path: 'src/main.ts',
+      content: 'const password = "literalPasswordValueLongEnough123456";\n',
+      secret: 'literalPasswordValueLongEnough123456',
+    },
+    {
+      path: 'src/token.ts',
+      content: 'const token = "glpat-12345678901234567890";\n',
+      secret: 'glpat-12345678901234567890',
+    },
+    {
+      path: 'src/private-key.ts',
+      content: 'const key = "-----BEGIN PRIVATE KEY-----\\nprivate material";\n',
+      secret: 'private material',
+    },
+    {
+      path: 'config/settings.json',
+      content: '{"password":"jsonPasswordValueLongEnough123456"}\n',
+      secret: 'jsonPasswordValueLongEnough123456',
+    },
+    {
+      path: 'config/service.yaml',
+      content: 'access-token: yamlCredentialValueLongEnough123456\n',
+      secret: 'yamlCredentialValueLongEnough123456',
+    },
+    {
+      path: '.env.example',
+      content: 'ACCESS_TOKEN=envCredentialValueLongEnough123456\n',
+      secret: 'envCredentialValueLongEnough123456',
+    },
+    {
+      path: '.vscode/settings.json',
+      content: '{"publishKey":"machineConfigCredential123456789"}\n',
+      secret: 'machineConfigCredential123456789',
+    },
+  ];
+
+  for (const item of cases) {
+    const filePath = path.join(root, ...item.path.split('/'));
+    let requiredReadme: string | undefined;
+    if (item.path === '.env.example') {
+      const manifestPath = path.join(root, 'ai-app.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { docs: { readme: string } };
+      requiredReadme = manifest.docs.readme;
+      manifest.docs.readme = item.path;
+      await writeFile(manifestPath, JSON.stringify(manifest));
+    }
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, item.content);
+    const result = await runCli(args);
+    assert.equal(result.code, 2, item.path + ': ' + result.stderr);
+    assert.ok(result.stderr.includes(item.path), 'reports the path for ' + item.path);
+    assert.ok(!result.stdout.includes(item.secret) && !result.stderr.includes(item.secret), 'does not echo secrets');
+    assert.equal(requestCount, 0, 'dry-run performs no HTTP requests');
+    await assert.rejects(access(stateDir), { code: 'ENOENT' });
+    await rm(filePath, { force: true });
+    if (requiredReadme !== undefined) {
+      const manifestPath = path.join(root, 'ai-app.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { docs: { readme: string } };
+      manifest.docs.readme = requiredReadme;
+      await writeFile(manifestPath, JSON.stringify(manifest));
+    }
+  }
+});
+
 test('external, credentialed, or malformed preview URLs are hidden', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-preview-reject-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
