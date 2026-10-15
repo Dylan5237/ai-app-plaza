@@ -512,10 +512,39 @@ test("large bundles recover a dropped middle chunk without duplicating the repo,
 test("different publish keys create independent repositories even when appKey matches", async t => {
   const h = await startManagedHarness();
   t.after(() => h.close());
-  await h.publisher.submit(makeBundle(), publishKey(), "same-app-key-upload-one-0001");
-  await h.publisher.submit(makeBundle(), publishKey(), "same-app-key-upload-two-0001");
+  const bundle = makeBundle(), firstKey = publishKey(), secondKey = publishKey();
+  const first = await h.publisher.submit(bundle, firstKey, "same-app-key-upload-one-0001");
+  const firstFiles = [...h.gitlab.state.projects.get(100)!.commits.values()].map(commit => [...commit.files]);
+  const second = await h.publisher.submit(bundle, secondKey, "same-app-key-upload-two-0001");
+  assert.equal(first.status, "preview_ready"); assert.equal(second.status, "preview_ready");
+  assert.notEqual(first.managedAppId, second.managedAppId);
   assert.equal(h.gitlab.state.projects.size, 2);
-  assert.equal(new Set([...h.gitlab.state.projects.values()].map(project => project.path)).size, 2);
+  const projects = [...h.gitlab.state.projects.values()];
+  assert.equal(new Set(projects.map(project => project.path)).size, 2);
+  assert.equal(new Set(projects.map(project => project.name)).size, 2);
+  assert.ok(projects.every(project => project.namespace.id === 63 && project.name === `${project.path} · AI 应用广场`));
+  assert.deepEqual([...h.gitlab.state.projects.get(100)!.commits.values()].map(commit => [...commit.files]), firstFiles);
+  const writes = h.gitlab.state.writes.length;
+  assert.equal((await h.publisher.submit(bundle, firstKey, "same-app-key-upload-one-0001")).id, first.id);
+  assert.equal((await h.publisher.submit(bundle, secondKey, "same-app-key-upload-two-0001")).id, second.id);
+  await assert.rejects(h.publisher.submit({ ...makeBundle("1.0.1"), managedAppId: first.managedAppId, expectedAppRevision: 0 }, secondKey, "wrong-owner-same-app-key-0001"), error => {
+    assertDomainError(error, "MANAGED_APP_OWNER_REQUIRED"); return true;
+  });
+  assert.equal(h.gitlab.state.writes.length, writes);
+});
+
+test("a bound legacy project keeps its original name and repository during updates", async t => {
+  const h = await startManagedHarness();t.after(() => h.close());
+  const key = publishKey();
+  const first = await h.publisher.submit(makeBundle(), key, "legacy-name-first-0001");
+  const project = h.gitlab.state.projects.get(100)!;
+  project.name = "sample-1 · AI 应用广场";
+  const path = project.path;
+  const update = await h.publisher.submit({ ...makeBundle("1.0.1"), managedAppId: first.managedAppId, expectedAppRevision: 0 }, key, "legacy-name-update-0001");
+  assert.equal(update.status, "preview_ready");
+  assert.equal(update.managedAppId, first.managedAppId);
+  assert.equal(project.name, "sample-1 · AI 应用广场"); assert.equal(project.path, path);
+  assert.equal(h.gitlab.state.projects.size, 1); assert.equal(writeCount(h, "/api/v4/projects"), 1);
 });
 
 test("catalog ownership follows the confirmed app when another pending candidate was recorded last", async t => {

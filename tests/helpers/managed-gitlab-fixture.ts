@@ -90,6 +90,10 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     if (url.pathname === "/api/v4/user" && method === "GET") return send(200, { id: 35, username: "fixture-owner", name: "测试发布账号" });
 
     if (url.pathname === "/api/v4/projects" && method === "POST") {
+      if ([...projects.values()].some(project => project.namespace.id === Number(body.namespace_id)
+        && (project.name === String(body.name) || project.path === String(body.path)))) {
+        return fail(400, "project name or path has already been taken in this namespace");
+      }
       const project = newProject(state.nextProjectId++, body, request.headers.host ?? "127.0.0.1", initialDefaultBranch);
       projects.set(project.id, project);
       return send(201, projectJson(project));
