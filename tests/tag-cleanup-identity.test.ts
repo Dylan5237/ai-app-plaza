@@ -93,3 +93,19 @@ test('an existing operation rejects stored result drift instead of applying or r
   await assert.rejects(restoreCatalogTags(db,backup,true),/标签或操作身份已变化/);
   assert.deepEqual(await classifications(db),before);
 });
+
+for (const restored of [false,true]) test(`fixed operation rejects extra attributed snapshots even when original targets are ${restored?'restored':'applied'}`,async t=>{
+  const {db,plan,backup}=await setup(t);
+  if(restored) await restoreCatalogTags(db,backup,true);
+  const extra=await seedTagCatalog(db,audience,['其他能力'],3);
+  await db.query('INSERT INTO catalog_tag_overrides(snapshot_id,tags,operation_id,reason,updated_at) VALUES($1,$2::jsonb,$3,$4,now())',[extra.snapshotId,JSON.stringify(['MCP']),plan.operationId,'异常导入归因到原操作']);
+  const before=await classifications(db),identity=(await db.query('SELECT * FROM catalog_tag_cleanup_operations')).rows;let saves=0;
+  for(const action of [
+    ()=>cleanCatalogTags(db,plan),
+    ()=>cleanCatalogTags(db,plan,{apply:true,saveBackup:async()=>{saves++;}}),
+    ()=>restoreCatalogTags(db,backup),
+    ()=>restoreCatalogTags(db,backup,true),
+  ]) await assert.rejects(action,/操作 ID.*完整目标集不一致/);
+  assert.equal(saves,0);assert.deepEqual(await classifications(db),before);
+  assert.deepEqual((await db.query('SELECT * FROM catalog_tag_cleanup_operations')).rows,identity);
+});

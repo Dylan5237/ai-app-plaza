@@ -97,6 +97,15 @@ async function rememberOperation(db: Queryable, plan: TagCleanupPlan): Promise<v
   if (saved?.plan_hash !== cleanupPlanHash(plan)) conflict('操作 ID 的清洗计划身份不一致，停止操作。');
 }
 
+async function validateOperationTargets(db: Queryable, operationId: string, snapshotIds: string[], overrides: boolean): Promise<void> {
+  if (!overrides) return;
+  const actual = (await db.query<{ snapshot_id: string }>('SELECT snapshot_id FROM catalog_tag_overrides WHERE operation_id = $1', [operationId])).rows;
+  const expected = new Set(snapshotIds);
+  if (actual.length && (actual.length !== expected.size || actual.some(row => !expected.has(row.snapshot_id)))) {
+    conflict('操作 ID 对应的完整目标集不一致，停止整批操作并核对原备份。');
+  }
+}
+
 async function readRow(db: Queryable, entry: TagCleanupPlan['entries'][number], audience: string, overrides: boolean, lock: boolean): Promise<Row> {
   const result = await db.query<Row>(
     `SELECT a.id, a.app_key, a.revision, s.id AS snapshot_id, s.commit_sha, s.manifest->'tags' AS source_tags,
@@ -163,6 +172,7 @@ export async function cleanCatalogTags(db: Database, input: unknown, options: {
     }
     await validatePostPlanNames(tx, plan.audience, entries, overrides);
     if (applied && applied !== entries.length) conflict('发现部分清洗记录，停止操作并核对原回执。');
+    await validateOperationTargets(tx, plan.operationId, entries.map(entry => entry.snapshotId), overrides);
     const changes = applied ? [] : entries.filter(entry => !same(entry.expectedTags, entry.tags));
     const backupPayload = { schemaVersion: 1 as const, operationId: plan.operationId, audience: plan.audience, planHash: cleanupPlanHash(plan), entries: plan.entries.map(entry => entries.find(row => row.appId === entry.appId)!) };
     const backup: TagCleanupBackup = { ...backupPayload, checksum: digest(backupPayload) };
@@ -196,6 +206,7 @@ export async function restoreCatalogTags(db: Database, input: unknown, apply = f
       entries.push(entry);
     }
     if (restored && restored !== entries.length) conflict('发现部分回滚记录，停止操作并核对原回执。');
+    await validateOperationTargets(tx, backup.operationId, entries.map(entry => entry.snapshotId), overrides);
     if (apply) await rememberOperation(tx, plan);
     if (apply && !restored) for (const entry of entries) {
       if (entry.before) await writeOverride(tx, entry.snapshotId, entry.before);
