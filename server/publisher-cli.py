@@ -360,7 +360,11 @@ def _js_code_mask(raw: bytes) -> bytearray:
     quote = 0
     expect_expression = True
     pending_control_paren = False
+    pending_for_await = False
     pending_block = False
+    pending_label_candidate = False
+    pending_labeled_block = False
+    statement_start = True
     paren_stack: list[bool] = []
     brace_stack: list[bool] = []
     last_code_char = 0
@@ -378,6 +382,10 @@ def _js_code_mask(raw: bytes) -> bytearray:
             continue
         if current in (0x22, 0x27, 0x60):  # double, single, or template quote
             quote = current
+            pending_for_await = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = False
             index += 1
             continue
         if current in b" \t\r\n\v\f":
@@ -400,6 +408,10 @@ def _js_code_mask(raw: bytes) -> bytearray:
             index = _js_regex_literal_end(raw, index)
             expect_expression = False
             last_code_char = 0x2F
+            pending_for_await = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = False
             continue
         if current == 0x5F or current == 0x24 or 0x41 <= current <= 0x5A or 0x61 <= current <= 0x7A or current >= 0x80:
             start = index
@@ -413,14 +425,30 @@ def _js_code_mask(raw: bytes) -> bytearray:
             mask[start:index] = b"\x01" * (index - start)
             token = raw[start:index].lower()
             is_property = last_code_char == 0x2E
-            pending_control_paren = not is_property and token in JS_CONTROL_PAREN_KEYWORDS
+            is_for_await = pending_for_await and token == b"await" and not is_property
+            if not is_property and token == b"for":
+                pending_control_paren = True
+                pending_for_await = True
+            elif is_for_await:
+                pending_control_paren = True
+                pending_for_await = False
+            else:
+                pending_control_paren = not is_property and token in JS_CONTROL_PAREN_KEYWORDS
+                pending_for_await = False
             pending_block = not is_property and token in JS_BLOCK_KEYWORDS
             expect_expression = not is_property and token in JS_REGEX_PREFIX_KEYWORDS
+            pending_label_candidate = statement_start and not is_property
+            statement_start = not is_property and token in JS_BLOCK_KEYWORDS
+            pending_labeled_block = False
             last_code_char = raw[index - 1]
             continue
         if 0x30 <= current <= 0x39:
             mask[index] = 1
             expect_expression = False
+            pending_for_await = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = False
             last_code_char = current
             index += 1
             continue
@@ -428,38 +456,87 @@ def _js_code_mask(raw: bytes) -> bytearray:
         if current == 0x28:
             paren_stack.append(pending_control_paren)
             pending_control_paren = False
+            pending_for_await = False
             expect_expression = True
+            statement_start = False
         elif current == 0x29:
             expect_expression = paren_stack.pop() if paren_stack else False
             pending_control_paren = False
             pending_block = expect_expression
+            pending_for_await = False
+            statement_start = expect_expression
         elif current == 0x7B:
-            is_block = pending_block or not expect_expression or last_code_char in (0, 0x3B, 0x7B)
+            is_block = (
+                pending_block
+                or pending_labeled_block
+                or not expect_expression
+                or last_code_char in (0, 0x3B, 0x7B)
+            )
             brace_stack.append(is_block)
             expect_expression = True
             pending_block = False
             pending_control_paren = False
+            pending_for_await = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = is_block
         elif current == 0x7D:
             is_block = brace_stack.pop() if brace_stack else False
             expect_expression = is_block
             pending_block = False
             pending_control_paren = False
+            pending_for_await = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = is_block
         elif current == 0x5D:
             expect_expression = False
             pending_control_paren = False
+            pending_for_await = False
             pending_block = False
-        elif current in b"[,:;?=+-*%&|^!~<>":
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = False
+        elif current == 0x3A:
+            pending_labeled_block = pending_label_candidate
+            statement_start = pending_label_candidate
+            pending_label_candidate = False
             expect_expression = True
             pending_control_paren = False
+            pending_for_await = False
+            pending_block = False
+        elif current == 0x3B:
+            expect_expression = True
+            pending_control_paren = False
+            pending_for_await = False
+            pending_block = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = not paren_stack
+        elif current in b"[,?=+-*%&|^!~<>":
+            expect_expression = True
+            pending_control_paren = False
+            pending_for_await = False
             pending_block = current == 0x3E and last_code_char == 0x3D
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = False
         elif current == 0x2F:
             expect_expression = True
             pending_control_paren = False
+            pending_for_await = False
             pending_block = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = False
         else:
             expect_expression = False
             pending_control_paren = False
+            pending_for_await = False
             pending_block = False
+            pending_label_candidate = False
+            pending_labeled_block = False
+            statement_start = False
         last_code_char = current
         index += 1
     return mask

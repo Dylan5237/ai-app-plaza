@@ -379,6 +379,16 @@ test('CLI dry-run permits JS/TS credential references but still blocks secret li
       secret: 'DocumentedCredentialValueLong12345',
     },
     {
+      path: 'src/for-await-regex.ts',
+      content: 'async function f(items) { for await (const item of items) /password=DocumentedCredentialValueLong12345;/.test(item); }\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/labeled-block-regex.ts',
+      content: 'function f(input) { label: {} /password=DocumentedCredentialValueLong12345;/.test(input); }\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
       path: 'src/return-regex.ts',
       content: 'function find() { return /password=DocumentedCredentialValueLong12345;/; }\n',
       secret: 'DocumentedCredentialValueLong12345',
