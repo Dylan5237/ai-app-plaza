@@ -359,6 +359,66 @@ test('CLI dry-run permits JS/TS credential references but still blocks secret li
       secret: 'DocumentedCredentialValueLong12345',
     },
     {
+      path: 'src/regex.ts',
+      content: 'const rx = /password=DocumentedCredentialValueLong12345;/;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/regex-with-string.ts',
+      content: 'const rx = /password=referenceIdentifierNameLongEnough; "password=EmbeddedRegexCredentialValueLong12345";/;\n',
+      secret: 'EmbeddedRegexCredentialValueLong12345',
+    },
+    {
+      path: 'src/if-regex.ts',
+      content: 'if (ready) /password=DocumentedCredentialValueLong12345;/.test(input);\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/if-block-regex.ts',
+      content: 'if (ready) {} /password=DocumentedCredentialValueLong12345;/.test(input);\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/return-regex.ts',
+      content: 'function find() { return /password=DocumentedCredentialValueLong12345;/; }\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/array-regex.ts',
+      content: 'const patterns = [/password=DocumentedCredentialValueLong12345;/];\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/object-regex.ts',
+      content: 'const settings = { matcher: /password=DocumentedCredentialValueLong12345;/ };\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/view.tsx',
+      content: 'const view = <pre>password=DocumentedCredentialValueLong12345;</pre>;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/JsxForm.vue',
+      content: '<script lang="tsx">const view = <pre>password=DocumentedCredentialValueLong12345;</pre>;</script>\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/Comment.vue',
+      content: '<!-- <script>password=DocumentedCredentialValueLong12345;</script> -->\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/Nested.vue',
+      content: '<template><pre><script>password=DocumentedCredentialValueLong12345;</script></pre></template>\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/Unclosed.vue',
+      content: '<script>password=UnclosedCredentialValueLong12345;\n',
+      secret: 'UnclosedCredentialValueLong12345',
+    },
+    {
       path: 'src/combined-plus.ts',
       content: 'const password = vault.secretReferenceNameLongEnough + "literalPasswordValueLongEnough123456";\n',
       secret: 'literalPasswordValueLongEnough123456',

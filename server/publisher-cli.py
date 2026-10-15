@@ -58,15 +58,27 @@ SECRET_ASSIGNMENT_PATTERN = re.compile(
     rb"(?:x-plaza-publish-key|publish[-_]?key|access[-_]?token|api[-_]?key|secret[-_]?key|client[-_]?secret|password)"
     rb"(?P=key_quote)?\s*[:=]\s*(?P<quote>[\"'`]?)\s*(?P<value>[A-Za-z0-9_./+=-]{20,})(?P=quote)?"
 )
-JS_SOURCE_SUFFIXES = {".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx", ".vue"}
+JS_SOURCE_SUFFIXES = {".cjs", ".cts", ".js", ".mjs", ".mts", ".ts", ".vue"}
 JS_MEMBER_REFERENCE_RE = re.compile(
     rb"[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*"
 )
-VUE_SCRIPT_BLOCK_PATTERN = re.compile(
-    rb"<script\b[^>]*>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL
-)
 JS_REFERENCE_CONTINUATION = b".[(+-*/%|&?^<>=!`"
 JS_REFERENCE_END = b";,)]}"
+JS_REGEX_PREFIX_KEYWORDS = {
+    b"await", b"case", b"delete", b"do", b"else", b"in", b"instanceof",
+    b"new", b"of", b"return", b"throw", b"typeof", b"void", b"yield",
+}
+JS_CONTROL_PAREN_KEYWORDS = {b"catch", b"for", b"if", b"switch", b"while", b"with"}
+JS_BLOCK_KEYWORDS = {b"do", b"else", b"finally", b"try"}
+VUE_LANG_ATTRIBUTE_PATTERN = re.compile(
+    rb"(?:^|\s)(lang|:lang|v-bind:lang)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s/>]+)))?(?=\s|/?>|$)",
+    re.IGNORECASE,
+)
+VUE_JS_LANGUAGES = {b"js", b"javascript", b"ts", b"typescript"}
+VUE_VOID_ELEMENTS = {
+    b"area", b"base", b"br", b"col", b"embed", b"hr", b"img", b"input",
+    b"link", b"meta", b"param", b"source", b"track", b"wbr",
+}
 ESSENTIAL_SOURCE_SUFFIXES = {
     ".bash", ".c", ".cc", ".cfg", ".cjs", ".cpp", ".cs", ".css", ".dart", ".go",
     ".graphql", ".h", ".hpp", ".html", ".ini", ".java", ".js", ".json", ".jsx",
@@ -311,8 +323,32 @@ def _read_file(root: Path, relative: str, *, required: bool) -> bytes | None:
     return raw
 
 
+def _js_regex_literal_end(raw: bytes, start: int) -> int:
+    """Return the end of a regex literal, or the input end if it is malformed."""
+    index = start + 1
+    in_character_class = False
+    while index < len(raw):
+        current = raw[index]
+        if current in (0x0A, 0x0D):
+            return len(raw)
+        if current == 0x5C:
+            index += 2
+            continue
+        if current == 0x5B and not in_character_class:
+            in_character_class = True
+        elif current == 0x5D and in_character_class:
+            in_character_class = False
+        elif current == 0x2F and not in_character_class:
+            index += 1
+            while index < len(raw) and (raw[index] == 0x5F or raw[index] == 0x24 or 0x30 <= raw[index] <= 0x39 or 0x41 <= raw[index] <= 0x5A or 0x61 <= raw[index] <= 0x7A):
+                index += 1
+            return index
+        index += 1
+    return len(raw)
+
+
 def _js_code_mask(raw: bytes) -> bytearray:
-    """Mark offsets in JS code, excluding strings and comments.
+    """Mark offsets in JS code, excluding strings, comments, and regex literals.
 
     This intentionally uses a small lexical scan rather than a parser. Template
     literals are treated as strings in full, including their interpolations; a
@@ -322,6 +358,12 @@ def _js_code_mask(raw: bytes) -> bytearray:
     mask = bytearray(len(raw))
     index = 0
     quote = 0
+    expect_expression = True
+    pending_control_paren = False
+    pending_block = False
+    paren_stack: list[bool] = []
+    brace_stack: list[bool] = []
+    last_code_char = 0
     while index < len(raw):
         current = raw[index]
         if quote:
@@ -330,10 +372,16 @@ def _js_code_mask(raw: bytes) -> bytearray:
                 continue
             if current == quote:
                 quote = 0
+                expect_expression = False
+                last_code_char = current
             index += 1
             continue
         if current in (0x22, 0x27, 0x60):  # double, single, or template quote
             quote = current
+            index += 1
+            continue
+        if current in b" \t\r\n\v\f":
+            mask[index] = 1
             index += 1
             continue
         if raw.startswith(b"//", index):
@@ -344,9 +392,176 @@ def _js_code_mask(raw: bytes) -> bytearray:
             close = raw.find(b"*/", index + 2)
             index = len(raw) if close < 0 else close + 2
             continue
+        if current == 0x2F and expect_expression:
+            index = _js_regex_literal_end(raw, index)
+            expect_expression = False
+            last_code_char = 0x2F
+            continue
+        if current == 0x5F or current == 0x24 or 0x41 <= current <= 0x5A or 0x61 <= current <= 0x7A or current >= 0x80:
+            start = index
+            index += 1
+            while index < len(raw):
+                following = raw[index]
+                if following == 0x5F or following == 0x24 or 0x30 <= following <= 0x39 or 0x41 <= following <= 0x5A or 0x61 <= following <= 0x7A or following >= 0x80:
+                    index += 1
+                else:
+                    break
+            mask[start:index] = b"\x01" * (index - start)
+            token = raw[start:index].lower()
+            is_property = last_code_char == 0x2E
+            pending_control_paren = not is_property and token in JS_CONTROL_PAREN_KEYWORDS
+            pending_block = not is_property and token in JS_BLOCK_KEYWORDS
+            expect_expression = not is_property and token in JS_REGEX_PREFIX_KEYWORDS
+            last_code_char = raw[index - 1]
+            continue
+        if 0x30 <= current <= 0x39:
+            mask[index] = 1
+            expect_expression = False
+            last_code_char = current
+            index += 1
+            continue
         mask[index] = 1
+        if current == 0x28:
+            paren_stack.append(pending_control_paren)
+            pending_control_paren = False
+            expect_expression = True
+        elif current == 0x29:
+            expect_expression = paren_stack.pop() if paren_stack else False
+            pending_control_paren = False
+            pending_block = expect_expression
+        elif current == 0x7B:
+            is_block = pending_block or not expect_expression or last_code_char in (0, 0x3B, 0x7B)
+            brace_stack.append(is_block)
+            expect_expression = True
+            pending_block = False
+            pending_control_paren = False
+        elif current == 0x7D:
+            is_block = brace_stack.pop() if brace_stack else False
+            expect_expression = is_block
+            pending_block = False
+            pending_control_paren = False
+        elif current == 0x5D:
+            expect_expression = False
+            pending_control_paren = False
+            pending_block = False
+        elif current in b"[,:;?=+-*%&|^!~<>":
+            expect_expression = True
+            pending_control_paren = False
+            pending_block = current == 0x3E and last_code_char == 0x3D
+        elif current == 0x2F:
+            expect_expression = True
+            pending_control_paren = False
+            pending_block = False
+        else:
+            expect_expression = False
+            pending_control_paren = False
+            pending_block = False
+        last_code_char = current
         index += 1
     return mask
+
+
+def _markup_tag_end(raw: bytes, start: int) -> int:
+    quote = 0
+    index = start
+    while index < len(raw):
+        current = raw[index]
+        if quote:
+            if current == quote:
+                quote = 0
+        elif current in (0x22, 0x27):
+            quote = current
+        elif current == 0x3E:
+            return index
+        index += 1
+    return -1
+
+
+def _vue_script_language_allowed(attributes: bytes) -> bool:
+    matches = list(VUE_LANG_ATTRIBUTE_PATTERN.finditer(attributes))
+    for match in matches:
+        value = next((group for group in match.groups()[1:] if group is not None), None)
+        if match.group(1) != b"lang" or value not in VUE_JS_LANGUAGES:
+            return False
+    return True
+
+
+def _vue_script_ranges(raw: bytes) -> list[tuple[int, int]]:
+    """Find script bodies that are direct children of a Vue SFC document."""
+    lower = raw.lower()
+    stack: list[bytes] = []
+    ranges: list[tuple[int, int]] = []
+    index = 0
+    while index < len(raw):
+        tag_start = lower.find(b"<", index)
+        if tag_start < 0:
+            break
+        if lower.startswith(b"<!--", tag_start):
+            comment_end = lower.find(b"-->", tag_start + 4)
+            if comment_end < 0:
+                break
+            index = comment_end + 3
+            continue
+        if lower.startswith(b"<![cdata[", tag_start):
+            cdata_end = lower.find(b"]]>", tag_start + 9)
+            if cdata_end < 0:
+                break
+            index = cdata_end + 3
+            continue
+        if lower.startswith((b"<!", b"<?"), tag_start):
+            tag_end = _markup_tag_end(raw, tag_start + 2)
+            if tag_end < 0:
+                break
+            index = tag_end + 1
+            continue
+
+        name_start = tag_start + 1
+        closing = name_start < len(raw) and lower[name_start] == 0x2F
+        if closing:
+            name_start += 1
+        if name_start >= len(raw) or not (0x61 <= lower[name_start] <= 0x7A):
+            index = tag_start + 1
+            continue
+        name_end = name_start + 1
+        while name_end < len(raw) and (
+            0x61 <= lower[name_end] <= 0x7A
+            or 0x30 <= lower[name_end] <= 0x39
+            or lower[name_end] in b"_.:-"
+        ):
+            name_end += 1
+        name = lower[name_start:name_end]
+        tag_end = _markup_tag_end(raw, name_end)
+        if tag_end < 0:
+            break
+
+        if closing:
+            if stack and stack[-1] == name:
+                stack.pop()
+        else:
+            tail = tag_end - 1
+            while tail > name_end and raw[tail] in b" \t\r\n":
+                tail -= 1
+            self_closing = raw[tail:tail + 1] == b"/"
+            if name == b"script" and not stack and not self_closing:
+                body_start = tag_end + 1
+                close_start = lower.find(b"</script", body_start)
+                while close_start >= 0:
+                    after_name = close_start + len(b"</script")
+                    if after_name == len(raw) or lower[after_name] in b" \t\r\n>":
+                        close_end = _markup_tag_end(raw, after_name)
+                        if close_end >= 0:
+                            if _vue_script_language_allowed(lower[name_end:tag_end]):
+                                ranges.append((body_start, close_start))
+                            index = close_end + 1
+                            break
+                    close_start = lower.find(b"</script", close_start + 2)
+                else:
+                    break
+                continue
+            if not self_closing and name not in VUE_VOID_ELEMENTS:
+                stack.append(name)
+        index = tag_end + 1
+    return ranges
 
 
 def _js_reference_ends_expression(raw: bytes, offset: int) -> bool:
@@ -392,26 +607,27 @@ def _looks_secret(raw: bytes, path: str) -> bool:
     suffix = PurePosixPath(path).suffix.casefold()
     is_js_source = suffix in JS_SOURCE_SUFFIXES
     code_mask = None
-    if is_js_source:
-        code_mask = bytearray(len(raw))
-        if suffix == ".vue":
-            for script in VUE_SCRIPT_BLOCK_PATTERN.finditer(raw):
-                start, end = script.span(1)
-                code_mask[start:end] = _js_code_mask(script.group(1))
-        else:
-            code_mask = _js_code_mask(raw)
     for match in SECRET_ASSIGNMENT_PATTERN.finditer(raw):
         value = match.group("value")
-        if (
+        is_reference_candidate = (
             is_js_source
             and not match.group("quote")
             and JS_MEMBER_REFERENCE_RE.fullmatch(value)
-            and code_mask is not None
-            and code_mask[match.start("value")]
-            and _js_reference_ends_expression(raw, match.end("value"))
+        )
+        if not is_reference_candidate:
+            return True
+        if code_mask is None:
+            code_mask = bytearray(len(raw))
+            if suffix == ".vue":
+                for start, end in _vue_script_ranges(raw):
+                    code_mask[start:end] = _js_code_mask(raw[start:end])
+            else:
+                code_mask = _js_code_mask(raw)
+        if (
+            not code_mask[match.start("value")]
+            or not _js_reference_ends_expression(raw, match.end("value"))
         ):
-            continue
-        return True
+            return True
     return False
 
 
