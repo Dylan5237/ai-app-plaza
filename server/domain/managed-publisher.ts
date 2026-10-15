@@ -359,6 +359,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     const path = `${binding.app_key}-${binding.id.replaceAll("-", "").slice(0, 16)}`;
     let project = await api.findManagedProject(groupId, path);
     if (!project) {
+      let createError: unknown;
       try {
         project = await api.createProject({
           name: `${path} · AI 应用广场`,
@@ -369,10 +370,21 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
           builds_access_level: "disabled",
           shared_runners_enabled: false,
         });
-      } catch {
+      } catch (error) {
+        createError = error;
         // A lost POST response is resolved by the deterministic namespace/path pair.
-        project = await api.findManagedProject(groupId, path).catch(() => undefined);
-        if (!project) throw gitlabUnavailable();
+        // A failed readback is unknown state, even when the POST returned a 4xx.
+        try {
+          project = await api.findManagedProject(groupId, path);
+        } catch {
+          throw gitlabUnavailable();
+        }
+        if (!project) {
+          if (createError instanceof GitLabApiError && isProjectCreateRejectionStatus(createError.status)) {
+            throw managedProjectCreateRejected(createError.status);
+          }
+          throw gitlabUnavailable();
+        }
       }
     }
     assertManagedProject(project, groupId);
@@ -1050,4 +1062,19 @@ function stateConflict(): DomainError {
 
 function gitlabUnavailable(): DomainError {
   return new DomainError(503, "SOURCE_UNAVAILABLE", "暂时无法确认 GitLab 项目或提交状态，请使用相同幂等键重试。");
+}
+
+function isProjectCreateRejectionStatus(status: number): status is 400 | 403 | 422 {
+  return status === 400 || status === 403 || status === 422;
+}
+
+function managedProjectCreateRejected(status: 400 | 403 | 422): DomainError {
+  const reason = status === 403
+    ? "托管账号没有在固定 GitLab 命名空间创建项目的权限"
+    : "GitLab 拒绝了固定托管项目的创建请求";
+  return new DomainError(
+    status,
+    "MANAGED_PROJECT_CREATE_REJECTED",
+    `${reason}（HTTP ${status}）。请核对托管命名空间配置；项目未创建，修正后可使用相同幂等键重试。`,
+  );
 }
