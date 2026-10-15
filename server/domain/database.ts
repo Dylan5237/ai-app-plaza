@@ -23,6 +23,7 @@ export interface Database extends Queryable {
 export interface OpenDatabaseOptions {
   url?: string;
   path?: string;
+  migrate?: boolean;
 }
 
 const MIGRATIONS = [
@@ -78,6 +79,13 @@ const MIGRATIONS = [
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
     UNIQUE (actor_id, idempotency_digest)
+  )`,
+  `CREATE TABLE IF NOT EXISTS catalog_tag_overrides (
+    snapshot_id uuid PRIMARY KEY REFERENCES published_snapshots(id),
+    tags jsonb NOT NULL CHECK (jsonb_typeof(tags) = 'array' AND jsonb_array_length(tags) <= 3),
+    operation_id uuid NOT NULL,
+    reason text NOT NULL,
+    updated_at timestamptz NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS managed_app_bindings (
     id uuid PRIMARY KEY,
@@ -170,7 +178,7 @@ export async function openDatabase(options: OpenDatabaseOptions): Promise<Databa
       close: async () => { await pool.end(); },
     };
     try {
-      await migrate(database);
+      if (options.migrate !== false) await migrate(database);
     } catch (error) {
       await database.close();
       throw error;
@@ -188,7 +196,7 @@ export async function openDatabase(options: OpenDatabaseOptions): Promise<Databa
     close: async () => { await pglite.close(); },
   };
   try {
-    await migrate(database);
+    if (options.migrate !== false) await migrate(database);
   } catch (error) {
     await database.close();
     throw error;

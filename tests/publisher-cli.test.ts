@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,6 +99,33 @@ function runCli(args: string[]) {
     }));
   });
 }
+
+test('CLI dry-run permits three tags and rejects four or normalized duplicates without network or receipts', async t => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-tags-cli-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const file = path.join(root, 'ai-app.json');
+  const source = JSON.parse(await readFile(file, 'utf8'));
+  const state = path.join(temporary, 'private-state');
+  let requests = 0;
+  const portal = await createPortal((_request, response) => { requests++; response.writeHead(500); response.end(); });
+  t.after(() => portal.close());
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', state, '--dry-run'];
+  await writeFile(file, JSON.stringify({ ...source, tags: ['MCP', '需求管理', 'AI协作'] }));
+  assert.equal((await runCli(args)).code, 0);
+  await writeFile(file, JSON.stringify({ ...source, tags: ['MCP', '需求管理', 'AI协作', '第四项'] }));
+  const four = await runCli(args);
+  assert.equal(four.code, 2);
+  assert.match(four.stderr, /最多 3 个/);
+  await writeFile(file, JSON.stringify({ ...source, tags: ['MCP', 'ｍｃｐ'] }));
+  assert.equal((await runCli(args)).code, 2);
+  await writeFile(file, JSON.stringify({ ...source, tags: ['😀'.repeat(32)] }));
+  assert.equal((await runCli(args)).code, 0);
+  await writeFile(file, JSON.stringify({ ...source, tags: ['😀'.repeat(33)] }));
+  assert.equal((await runCli(args)).code, 2);
+  assert.equal(requests, 0);
+  await assert.rejects(access(state), { code: 'ENOENT' });
+});
 
 function decodedBody(request: CapturedRequest) {
   return JSON.parse(request.body.toString('utf8')) as {

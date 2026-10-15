@@ -12,7 +12,8 @@
     "summary": {"type": "string", "minLength": 1, "maxLength": 240},
     "projectVersion": {"type": "string", "minLength": 1, "maxLength": 80, "description": "可选的作者维护的正式版本声明；缺省时使用核验 tag 或快照版本，不证明远端运行版本。"},
     "tags": {
-      "type": "array", "maxItems": 12, "uniqueItems": true,
+      "type": "array", "maxItems": 3, "uniqueItems": true,
+      "description": "最多3个核心能力标签；优先复用 GET /api/tags 中已有名称，避免语言、框架、内部组件和单条操作形成细碎标签。",
       "items": {"type": "string", "minLength": 1, "maxLength": 32}
     },
     "maintainers": {

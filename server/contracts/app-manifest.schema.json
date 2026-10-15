@@ -12,7 +12,8 @@
     "summary": {"type": "string", "minLength": 1, "maxLength": 240},
     "projectVersion": {"type": "string", "maxLength": 80, "pattern": "^v?(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?![\\s\\S])", "description": "必须与 GitLab Release 的版本 tag 对应；支持 1.2.3 / v1.2.3 及合法预发布号。"},
     "tags": {
-      "type": "array", "maxItems": 12, "uniqueItems": true,
+      "type": "array", "maxItems": 3, "uniqueItems": true,
+      "description": "最多3个核心能力标签；优先复用 GET /api/tags 中已有名称，避免语言、框架、内部组件和单条操作形成细碎标签。",
       "items": {"type": "string", "minLength": 1, "maxLength": 32}
     },
     "maintainers": {

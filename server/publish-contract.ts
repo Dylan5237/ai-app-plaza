@@ -3,9 +3,10 @@ import type { Config } from './config.js';
 import type { AppView } from './domain/service.js';
 import { managedPublishContract, type ManagedTarget } from './managed-publish-contract.js';
 
-export async function publishContract(config: Pick<Config, 'publicOrigin' | 'gitlabUrl' | 'audience' | 'managedPublishing'>, current?: AppView, managedTarget?: ManagedTarget, direct = false) {
+export async function publishContract(config: Pick<Config, 'publicOrigin' | 'gitlabUrl' | 'audience' | 'managedPublishing'>, current?: AppView, managedTarget?: ManagedTarget, direct = false, existingTags: string[] = []) {
   const schema = JSON.parse(await readFile(new URL('./contracts/app-manifest.schema.json', import.meta.url), 'utf8'));
-  if (config.managedPublishing && !direct && (!current || managedTarget)) return managedPublishContract(config, schema, current, managedTarget);
+  const tagPolicy = { maxTagsPerApp: 3, existingTags };
+  if (config.managedPublishing && !direct && (!current || managedTarget)) return { ...await managedPublishContract(config, schema, current, managedTarget), tagPolicy };
   const submitUrl = `${config.publicOrigin}/api/publications`;
   const updateTarget = current ? {
     appId: current.id, name: current.manifest.name, version: current.version,
@@ -24,6 +25,7 @@ ${JSON.stringify(updateTarget, null, 2)}
 GitLab 实例：${config.gitlabUrl}
 分享范围：${config.audience}
 规范与 JSON Schema：GET ${config.publicOrigin}/api/publish-contract
+已有能力标签：GET ${config.publicOrigin}/api/tags。准备或更新资料前先读取该列表，优先复用已有名称。单应用最多3个标签，不要求凑足；选择核心能力或任务，不把语言、框架、内部组件或单条操作拆成细碎标签。当前应用如有 tags 字段，以它作为已整理的目录标签参考；manifest.tags 保留来源原文。
 ${updateContext}
 
 1. 先读取项目实际代码、README、运行说明与已有 GitLab remote。按 schemaVersion 2 规范生成 ai-app.json 和明确可共享的 Markdown；可以用一个 docs/plaza-usage.md 同时作为介绍和使用说明。项目名称、能力、作者自定义标签、示例、条件、限制与两类入口均须有项目依据。summary 用一句话说明价值，scenarios 提炼约 3 项主要用途，requirements 和 limitations 先列关键项并尽量一句一项；操作细节写入完整 Markdown，不删去必要限制。不确定的关键项只向我澄清，不要猜测，不要让我手填表单。不要自动改变已有 appKey。每位作者都必须提供中文姓名和英文全名或完整拼音；任一缺失时先向我询问，再继续准备资料。不得从 GitLab 用户名、邮箱或 Git 配置推测或补全姓名。
@@ -35,5 +37,5 @@ ${updateContext}
 7. 用返回的 id/ticket 查询 GET /api/publications/{id}（Authorization: Bearer ticket）取得真实结果。失败按 nextAction 处理，必要时 POST /api/publications/{id}/retry；只恢复广场收录，不重复源码上传。若已经收录，提供条目链接，不声称安装或业务执行已经成功。
 
 如果当前 Host 已配置本广场 MCP，可使用 get_publish_contract、submit_candidate、get_publish_status、retry_registration；这些工具不提供确认收录能力。`;
-  return { mode: 'gitlab', prompt, schema, gitlabUrl: config.gitlabUrl, submitUrl, audience: config.audience, ...(updateTarget ? { updateTarget } : {}) };
+  return { mode: 'gitlab', prompt, schema, tagPolicy, gitlabUrl: config.gitlabUrl, submitUrl, audience: config.audience, ...(updateTarget ? { updateTarget } : {}) };
 }
