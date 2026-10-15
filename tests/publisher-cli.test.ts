@@ -290,6 +290,217 @@ test('a suspected secret in necessary source stops the upload and reports only i
   await assert.rejects(readFile(stateDir));
 });
 
+test('CLI dry-run permits JS/TS credential references but still blocks secret literals and config credentials', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-scan-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const sourcePath = path.join(root, 'src', 'main.ts');
+  await writeFile(sourcePath, [
+    'const password = patchSegment.password;',
+    'function loadPassword(configuredPasswordFromVault) { const password = configuredPasswordFromVault; }',
+    'const publishKey = bootstrap.publisher.publishKey;',
+    'const accessToken = process.env.ACCESS_TOKEN;',
+    'const clientSecret = context.auth.clientSecret;',
+    '',
+  ].join('\n'));
+  await writeFile(
+    path.join(root, 'src', 'ReferenceForm.vue'),
+    '<script setup lang="ts">\nconst password = patchSegment.password;\n</script>\n',
+  );
+
+  let requestCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    respondJson(response, {});
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--dry-run'];
+  const safeReferences = await runCli(args);
+  assert.equal(safeReferences.code, 0, safeReferences.stderr);
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+
+  const cases = [
+    {
+      path: 'src/main.ts',
+      content: 'const password = "literalPasswordValueLongEnough123456";\n',
+      secret: 'literalPasswordValueLongEnough123456',
+    },
+    {
+      path: 'src/token.ts',
+      content: 'const token = "glpat-12345678901234567890";\n',
+      secret: 'glpat-12345678901234567890',
+    },
+    {
+      path: 'src/private-key.ts',
+      content: 'const key = "-----BEGIN PRIVATE KEY-----\\nprivate material";\n',
+      secret: 'private material',
+    },
+    {
+      path: 'src/CredentialForm.vue',
+      content: '<CredentialForm password=UnquotedCredentialValueLong12345 />\n',
+      secret: 'UnquotedCredentialValueLong12345',
+    },
+    {
+      path: 'src/environment.ts',
+      content: 'const envExample = "password=EmbeddedCredentialValueLong12345";\n',
+      secret: 'EmbeddedCredentialValueLong12345',
+    },
+    {
+      path: 'src/comment.ts',
+      content: '// password=DocumentedCredentialValueLong12345\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/template.ts',
+      content: 'const doc = `password=DocumentedCredentialValueLong12345`;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/regex.ts',
+      content: 'const rx = /password=DocumentedCredentialValueLong12345;/;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/regex-with-string.ts',
+      content: 'const rx = /password=referenceIdentifierNameLongEnough; "password=EmbeddedRegexCredentialValueLong12345";/;\n',
+      secret: 'EmbeddedRegexCredentialValueLong12345',
+    },
+    {
+      path: 'src/if-regex.ts',
+      content: 'if (ready) /password=DocumentedCredentialValueLong12345;/.test(input);\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/if-block-regex.ts',
+      content: 'if (ready) {} /password=DocumentedCredentialValueLong12345;/.test(input);\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/return-regex.ts',
+      content: 'function find() { return /password=DocumentedCredentialValueLong12345;/; }\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/array-regex.ts',
+      content: 'const patterns = [/password=DocumentedCredentialValueLong12345;/];\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/object-regex.ts',
+      content: 'const settings = { matcher: /password=DocumentedCredentialValueLong12345;/ };\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/view.tsx',
+      content: 'const view = <pre>password=DocumentedCredentialValueLong12345;</pre>;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/JsxForm.vue',
+      content: '<script lang="tsx">const view = <pre>password=DocumentedCredentialValueLong12345;</pre>;</script>\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/Comment.vue',
+      content: '<!-- <script>password=DocumentedCredentialValueLong12345;</script> -->\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/Nested.vue',
+      content: '<template><pre><script>password=DocumentedCredentialValueLong12345;</script></pre></template>\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/Unclosed.vue',
+      content: '<script>password=UnclosedCredentialValueLong12345;\n',
+      secret: 'UnclosedCredentialValueLong12345',
+    },
+    {
+      path: 'src/combined-plus.ts',
+      content: 'const password = vault.secretReferenceNameLongEnough + "literalPasswordValueLongEnough123456";\n',
+      secret: 'literalPasswordValueLongEnough123456',
+    },
+    {
+      path: 'src/combined-or.ts',
+      content: 'const password = vault.secretReferenceNameLongEnough || "literalPasswordValueLongEnough123456";\n',
+      secret: 'literalPasswordValueLongEnough123456',
+    },
+    {
+      path: 'config/settings.json',
+      content: '{"password":"jsonPasswordValueLongEnough123456"}\n',
+      secret: 'jsonPasswordValueLongEnough123456',
+    },
+    {
+      path: 'config/service.yaml',
+      content: 'access-token: yamlCredentialValueLongEnough123456\n',
+      secret: 'yamlCredentialValueLongEnough123456',
+    },
+    {
+      path: '.env.example',
+      content: 'ACCESS_TOKEN=envCredentialValueLongEnough123456\n',
+      secret: 'envCredentialValueLongEnough123456',
+    },
+    {
+      path: '.vscode/settings.json',
+      content: '{"publishKey":"machineConfigCredential123456789"}\n',
+      secret: 'machineConfigCredential123456789',
+    },
+  ];
+
+  for (const item of cases) {
+    const filePath = path.join(root, ...item.path.split('/'));
+    let requiredReadme: string | undefined;
+    if (item.path === '.env.example') {
+      const manifestPath = path.join(root, 'ai-app.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { docs: { readme: string } };
+      requiredReadme = manifest.docs.readme;
+      manifest.docs.readme = item.path;
+      await writeFile(manifestPath, JSON.stringify(manifest));
+    }
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, item.content);
+    const result = await runCli(args);
+    assert.equal(result.code, 2, item.path + ': ' + result.stderr);
+    assert.ok(result.stderr.includes(item.path), 'reports the path for ' + item.path);
+    assert.ok(!result.stdout.includes(item.secret) && !result.stderr.includes(item.secret), 'does not echo secrets');
+    assert.equal(requestCount, 0, 'dry-run performs no HTTP requests');
+    await assert.rejects(access(stateDir), { code: 'ENOENT' });
+    await rm(filePath, { force: true });
+    if (requiredReadme !== undefined) {
+      const manifestPath = path.join(root, 'ai-app.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { docs: { readme: string } };
+      manifest.docs.readme = requiredReadme;
+      await writeFile(manifestPath, JSON.stringify(manifest));
+    }
+  }
+});
+
+test('CLI blocks an embedded credential literal in publish mode before HTTP or receipt creation', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-publish-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const secret = 'EmbeddedCredentialValueLong12345';
+  await writeFile(path.join(root, 'src', 'environment.ts'), `const envExample = "password=${secret}";\n`);
+  let requestCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    respondJson(response, {});
+  });
+  t.after(portal.close);
+
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir]);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /src\/environment\.ts/);
+  assert.ok(!result.stdout.includes(secret) && !result.stderr.includes(secret));
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+});
+
 test('external, credentialed, or malformed preview URLs are hidden', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-preview-reject-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
