@@ -62,6 +62,11 @@ JS_SOURCE_SUFFIXES = {".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".ts
 JS_MEMBER_REFERENCE_RE = re.compile(
     rb"[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*"
 )
+VUE_SCRIPT_BLOCK_PATTERN = re.compile(
+    rb"<script\b[^>]*>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL
+)
+JS_REFERENCE_CONTINUATION = b".[(+-*/%|&?^<>=!`"
+JS_REFERENCE_END = b";,)]}"
 ESSENTIAL_SOURCE_SUFFIXES = {
     ".bash", ".c", ".cc", ".cfg", ".cjs", ".cpp", ".cs", ".css", ".dart", ".go",
     ".graphql", ".h", ".hpp", ".html", ".ini", ".java", ".js", ".json", ".jsx",
@@ -306,16 +311,104 @@ def _read_file(root: Path, relative: str, *, required: bool) -> bytes | None:
     return raw
 
 
+def _js_code_mask(raw: bytes) -> bytearray:
+    """Mark offsets in JS code, excluding strings and comments.
+
+    This intentionally uses a small lexical scan rather than a parser. Template
+    literals are treated as strings in full, including their interpolations; a
+    credential-like assignment inside an interpolation is therefore rejected
+    conservatively instead of receiving the reference exception.
+    """
+    mask = bytearray(len(raw))
+    index = 0
+    quote = 0
+    while index < len(raw):
+        current = raw[index]
+        if quote:
+            if current == 0x5C:  # backslash
+                index += 2
+                continue
+            if current == quote:
+                quote = 0
+            index += 1
+            continue
+        if current in (0x22, 0x27, 0x60):  # double, single, or template quote
+            quote = current
+            index += 1
+            continue
+        if raw.startswith(b"//", index):
+            newline = raw.find(b"\n", index + 2)
+            index = len(raw) if newline < 0 else newline + 1
+            continue
+        if raw.startswith(b"/*", index):
+            close = raw.find(b"*/", index + 2)
+            index = len(raw) if close < 0 else close + 2
+            continue
+        mask[index] = 1
+        index += 1
+    return mask
+
+
+def _js_reference_ends_expression(raw: bytes, offset: int) -> bool:
+    """Accept only a complete reference RHS, followed by a real boundary."""
+    index = offset
+    saw_newline = False
+    while index < len(raw):
+        if raw[index] in b" \t\r\n\v\f":
+            saw_newline = saw_newline or raw[index] in (0x0A, 0x0D)
+            index += 1
+            continue
+        if raw.startswith(b"//", index):
+            newline = raw.find(b"\n", index + 2)
+            if newline < 0:
+                return True
+            saw_newline = True
+            index = newline + 1
+            continue
+        if raw.startswith(b"/*", index):
+            close = raw.find(b"*/", index + 2)
+            if close < 0:
+                return False
+            comment = raw[index + 2:close]
+            saw_newline = saw_newline or b"\n" in comment or b"\r" in comment
+            index = close + 2
+            continue
+        break
+
+    if index == len(raw) or raw[index] in JS_REFERENCE_END:
+        return True
+    if saw_newline:
+        if raw[index:index + 1] in JS_REFERENCE_CONTINUATION:
+            return False
+        if re.match(rb"(?:in|instanceof|as|satisfies)\b", raw[index:]):
+            return False
+        return True
+    return False
+
+
 def _looks_secret(raw: bytes, path: str) -> bool:
     if any(pattern.search(raw) for pattern in SECRET_PATTERNS):
         return True
-    is_js_source = PurePosixPath(path).suffix.casefold() in JS_SOURCE_SUFFIXES
+    suffix = PurePosixPath(path).suffix.casefold()
+    is_js_source = suffix in JS_SOURCE_SUFFIXES
+    code_mask = None
+    if is_js_source:
+        code_mask = bytearray(len(raw))
+        if suffix == ".vue":
+            for script in VUE_SCRIPT_BLOCK_PATTERN.finditer(raw):
+                start, end = script.span(1)
+                code_mask[start:end] = _js_code_mask(script.group(1))
+        else:
+            code_mask = _js_code_mask(raw)
     for match in SECRET_ASSIGNMENT_PATTERN.finditer(raw):
         value = match.group("value")
         if (
             is_js_source
             and not match.group("quote")
             and JS_MEMBER_REFERENCE_RE.fullmatch(value)
+            and code_mask is not None
+            and code_mask[match.start("value")]
+            and _js_reference_ends_expression(raw, match.end("value"))
         ):
             continue
         return True

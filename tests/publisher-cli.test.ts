@@ -304,6 +304,10 @@ test('CLI dry-run permits JS/TS credential references but still blocks secret li
     'const clientSecret = context.auth.clientSecret;',
     '',
   ].join('\n'));
+  await writeFile(
+    path.join(root, 'src', 'ReferenceForm.vue'),
+    '<script setup lang="ts">\nconst password = patchSegment.password;\n</script>\n',
+  );
 
   let requestCount = 0;
   let portal: Awaited<ReturnType<typeof createPortal>>;
@@ -333,6 +337,36 @@ test('CLI dry-run permits JS/TS credential references but still blocks secret li
       path: 'src/private-key.ts',
       content: 'const key = "-----BEGIN PRIVATE KEY-----\\nprivate material";\n',
       secret: 'private material',
+    },
+    {
+      path: 'src/CredentialForm.vue',
+      content: '<CredentialForm password=UnquotedCredentialValueLong12345 />\n',
+      secret: 'UnquotedCredentialValueLong12345',
+    },
+    {
+      path: 'src/environment.ts',
+      content: 'const envExample = "password=EmbeddedCredentialValueLong12345";\n',
+      secret: 'EmbeddedCredentialValueLong12345',
+    },
+    {
+      path: 'src/comment.ts',
+      content: '// password=DocumentedCredentialValueLong12345\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/template.ts',
+      content: 'const doc = `password=DocumentedCredentialValueLong12345`;\n',
+      secret: 'DocumentedCredentialValueLong12345',
+    },
+    {
+      path: 'src/combined-plus.ts',
+      content: 'const password = vault.secretReferenceNameLongEnough + "literalPasswordValueLongEnough123456";\n',
+      secret: 'literalPasswordValueLongEnough123456',
+    },
+    {
+      path: 'src/combined-or.ts',
+      content: 'const password = vault.secretReferenceNameLongEnough || "literalPasswordValueLongEnough123456";\n',
+      secret: 'literalPasswordValueLongEnough123456',
     },
     {
       path: 'config/settings.json',
@@ -382,6 +416,29 @@ test('CLI dry-run permits JS/TS credential references but still blocks secret li
       await writeFile(manifestPath, JSON.stringify(manifest));
     }
   }
+});
+
+test('CLI blocks an embedded credential literal in publish mode before HTTP or receipt creation', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-publish-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const secret = 'EmbeddedCredentialValueLong12345';
+  await writeFile(path.join(root, 'src', 'environment.ts'), `const envExample = "password=${secret}";\n`);
+  let requestCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    respondJson(response, {});
+  });
+  t.after(portal.close);
+
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir]);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /src\/environment\.ts/);
+  assert.ok(!result.stdout.includes(secret) && !result.stderr.includes(secret));
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
 });
 
 test('external, credentialed, or malformed preview URLs are hidden', async (t) => {
