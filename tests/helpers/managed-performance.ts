@@ -27,12 +27,13 @@ export async function performanceHarness(delayMs = 0, factories = { createApp, o
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const origin = `http://127.0.0.1:${port}`;
   const db = await factories.openDatabase({ path: 'memory://' });
-  const { app, service, managed } = await factories.createApp({ host: '127.0.0.1', port, publicOrigin: origin,
+  const config = { host: '127.0.0.1', port, publicOrigin: origin,
     gitlabUrl: fixture.url, secret: 'performance-fixture-only-secret-at-least-32-bytes', audience: '协议测试',
     local: true, dataDir: '', staticDir: resolve('dist'), rateLimit: false,
-    managedPublishing: { groupId: '63', groupPath: 'sky-efficiency-skills/ai-apps', token: MANAGED_GITLAB_TOKEN } }, db);
+    managedPublishing: { groupId: '63', groupPath: 'sky-efficiency-skills/ai-apps', token: MANAGED_GITLAB_TOKEN } };
+  const { app, service, managed } = await factories.createApp(config, db);
   await app.listen({ port, host: '127.0.0.1' });
-  return { origin, fixture, db, app, service, managed: managed!,
+  return { origin, fixture, db, app, service, config, managed: managed!,
     async submit(value: object, key = randomBytes(32).toString('base64url'), idempotency = randomUUID()) {
       const response = await fetch(`${origin}/api/managed-publications`, { method: 'POST', headers: {
         'Content-Type': 'application/json', 'X-Plaza-Publish-Key': key, 'Idempotency-Key': idempotency }, body: JSON.stringify(value) });

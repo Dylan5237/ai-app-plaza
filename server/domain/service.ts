@@ -77,6 +77,7 @@ export interface PlazaService {
   tags(): Promise<string[]>;
   submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult>;
   publication(id: string, ticket: string): Promise<PublicationView>;
+  managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   retry(id: string, ticket: string): Promise<PublicationView>;
   list(options?: { query?: string; tags?: string[]; page?: number }): Promise<{ items: AppView[]; total: number; page: number; pageSize: 8; tags: string[] }>;
@@ -614,7 +615,12 @@ export function createService(config: ServiceConfig): PlazaService {
           }
           return { record: existing, isNew: false };
         });
-        if (!created.isNew) return submitView(created.record);
+        if (!created.isNew) {
+          if (new Date(created.record.expires_at).getTime() <= Date.now()) {
+            throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+          }
+          return submitView(created.record);
+        }
 
         try {
           const source = await load();
@@ -624,6 +630,15 @@ export function createService(config: ServiceConfig): PlazaService {
           return submitView(await markFailed(created.record.id, error));
         }
       });
+    },
+
+    // Internal only: the managed publisher has already checked ownership and bundle identity.
+    async managedReceipt(id, input) {
+      await cleanupExpiredTokens();
+      const record = (await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id])).rows[0];
+      if (!record || record.request_hash !== hashInput(input)) throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "原发布回执与本次固定来源不一致，已停止恢复。");
+      if (new Date(record.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+      return submitView(record);
     },
 
     async publication(id, ticket) {
