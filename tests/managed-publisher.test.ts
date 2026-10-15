@@ -7,6 +7,7 @@ import { createService } from "../server/domain/service.js";
 import { DomainError } from "../server/domain/errors.js";
 import { manifest } from "./helpers/gitlab-fixture.js";
 import { MANAGED_GITLAB_TOKEN, startManagedGitLabFixture } from "./helpers/managed-gitlab-fixture.js";
+import { seedTagCatalog } from './helpers/tag-catalog.js';
 
 const SECRET = "managed-publisher-test-secret-with-at-least-32-bytes";
 
@@ -69,6 +70,60 @@ test('four capability tags are rejected before managed bindings or GitLab writes
   assert.equal(h.gitlab.state.writes.length, 0);
   assert.equal((await h.db.query('SELECT count(*) AS total FROM managed_app_bindings')).rows[0]?.total, 0);
   assert.equal((await h.db.query('SELECT count(*) AS total FROM managed_publish_operations')).rows[0]?.total, 0);
+});
+
+test('same-key managed retries survive canonical-name changes while new requests still validate before writes', async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const bundle = makeBundle(), key = publishKey(), idem = 'tag-policy-recovery-existing-0001';
+  const file = bundle.files.find(file => file.path === 'ai-app.json')!;
+  const source = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
+  file.content = Buffer.from(JSON.stringify({ ...source, tags: ['mcp'] })).toString('base64');
+  const first = await h.publisher.submit(bundle, key, idem);
+  const before = (await h.db.query('SELECT * FROM managed_publish_operations')).rows[0]!;
+  const writes = h.gitlab.state.writes.length;
+  await seedTagCatalog(h.db, '测试内网', ['MCP']);
+  const replay = await h.publisher.submit(bundle, key, idem);
+  assert.equal(replay.id, first.id);
+  assert.equal(replay.previewUrl, first.previewUrl);
+  assert.equal(replay.sourceUploaded, true);
+  assert.equal(h.gitlab.state.writes.length, writes);
+  await assert.rejects(h.publisher.submit(bundle, publishKey(), 'tag-policy-new-rejected-0001'), /复用已有标签/);
+  const changed = structuredClone(bundle); changed.files[0]!.content = Buffer.from(JSON.stringify({ ...source, tags: ['mcp'], summary: '不同内容' })).toString('base64');
+  await assert.rejects(h.publisher.submit(changed, key, idem), error => { assertDomainError(error, 'IDEMPOTENCY_CONFLICT'); return true; });
+  assert.equal((await h.db.query('SELECT count(*) AS total FROM managed_app_bindings')).rows[0]?.total, 1);
+  assert.equal((await h.db.query('SELECT count(*) AS total FROM managed_publish_operations')).rows[0]?.total, 1);
+  const after = (await h.db.query('SELECT * FROM managed_publish_operations')).rows[0]!;
+  for (const field of ['id','binding_id','idempotency_digest','request_digest','project_id','branch','tag','commit_sha']) assert.equal(after[field], before[field]);
+  assert.equal(h.gitlab.state.writes.length, writes);
+});
+
+test('an interrupted managed upload resumes after tag curation and reports source uploaded without bypassing preview policy', async t => {
+  const h = await startManagedHarness();
+  t.after(() => h.close());
+  const bundle = makeBundle(), key = publishKey(), idem = 'tag-policy-recovery-partial-0001';
+  const file = bundle.files.find(file => file.path === 'ai-app.json')!;
+  const source = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
+  file.content = Buffer.from(JSON.stringify({ ...source, tags: ['mcp'] })).toString('base64');
+  h.gitlab.state.rejectNextCommitStatus = 503;
+  await assert.rejects(h.publisher.submit(bundle, key, idem), error => { assertDomainError(error, 'SOURCE_UNAVAILABLE'); return true; });
+  const before = (await h.db.query('SELECT * FROM managed_publish_operations')).rows[0]!;
+  assert.equal(before.status, 'project_ready');
+  await seedTagCatalog(h.db, '测试内网', ['MCP']);
+  const result = await h.publisher.submit(bundle, key, idem);
+  assert.equal(result.sourceUploaded, true);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error?.code, 'VALIDATION_FAILED');
+  assert.match(result.error?.message ?? '', /复用已有标签/);
+  const after = (await h.db.query('SELECT * FROM managed_publish_operations')).rows[0]!;
+  for (const field of ['id','binding_id','idempotency_digest','request_digest','project_id','branch','tag']) assert.equal(after[field], before[field]);
+  assert.equal(after.status, 'submitted');
+  assert.equal(writeCount(h, '/api/v4/projects'), 1);
+  assert.equal(h.gitlab.state.projects.get(100)!.commits.size, 1);
+  const writes = h.gitlab.state.writes.length;
+  const replay = await h.publisher.submit(bundle, key, idem);
+  assert.equal(replay.id, result.id);
+  assert.equal(h.gitlab.state.writes.length, writes);
 });
 
 test("an empty managed repository with a configured default branch supports first publication and same-key retry", async t => {

@@ -63,6 +63,41 @@ test('HTTP publication rejects four tags and existing label variants before offe
   assert.equal((await harness.db.query('SELECT count(*) AS total FROM published_snapshots')).rows[0]?.total, 1);
 });
 
+test('confirmation rechecks canonical names added after its preview without changing the source', async t => {
+  const h = await startHarness(2);
+  t.after(() => h.close());
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify({ ...manifest(), tags: ['mcp'] }));
+  h.gitlab.state.files.set('.ai-apps/sample-2/ai-app.json', JSON.stringify({ ...manifest(2), tags: ['MCP'] }));
+  const submit = (index: number) => h.service.submit({ projectId: 1, appKey: `sample-${index}`, manifestPath: index === 1 ? 'ai-app.json' : '.ai-apps/sample-2/ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());
+  const stale = await submit(1), canonical = await submit(2);
+  assert.equal(stale.status, 'preview_ready');
+  assert.equal(canonical.status, 'preview_ready');
+  await h.service.confirm(canonical.id, canonical.ticket, { revision: canonical.revision, digest: canonical.digest! });
+  const result = await h.service.confirm(stale.id, stale.ticket, { revision: stale.revision, digest: stale.digest! });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error?.code, 'VALIDATION_FAILED');
+  assert.match(result.error?.message ?? '', /复用已有标签/);
+  assert.deepEqual(await h.service.tags(), ['MCP']);
+  assert.equal((await h.service.list()).total, 1);
+  assert.deepEqual((await h.service.publication(stale.id, stale.ticket)).preview?.manifest.tags, ['mcp']);
+});
+
+test('competing confirmations can register only one spelling of a new capability tag', async t => {
+  const h = await startHarness(2);
+  t.after(() => h.close());
+  const drafts = [];
+  for (const index of [1, 2]) {
+    const manifestPath = index === 1 ? 'ai-app.json' : '.ai-apps/sample-2/ai-app.json';
+    h.gitlab.state.files.set(manifestPath, JSON.stringify({ ...manifest(index), tags: [index === 1 ? 'mcp' : 'MCP'] }));
+    drafts.push(await h.service.submit({ projectId: 1, appKey: `sample-${index}`, manifestPath, commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID()));
+  }
+  const results = await Promise.all(drafts.map(draft => h.service.confirm(draft.id, draft.ticket, { revision: draft.revision, digest: draft.digest! })));
+  assert.deepEqual(results.map(result => result.status).sort(), ['failed', 'registered']);
+  assert.equal(results.find(result => result.status === 'failed')?.error?.code, 'VALIDATION_FAILED');
+  assert.equal((await h.service.tags()).length, 1);
+  assert.equal((await h.service.list()).total, 1);
+});
+
 test('a newly confirmed author version uses its own tags instead of inheriting historical curation', async t => {
   const h = await startHarness();
   t.after(() => h.close());

@@ -181,7 +181,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     return createHmac("sha256", secret).update(`managed-idempotency-v1\0${bindingId}\0`).update(value).digest("hex");
   }
 
-  async function loadOwnedBinding(input: ManagedSubmitInput, keyHash: string): Promise<{ binding: BindingRecord; isNew: boolean }> {
+  async function loadOwnedBinding(input: ManagedSubmitInput, keyHash: string, tags: string[]): Promise<{ binding: BindingRecord; isNew: boolean }> {
     if (input.managedAppId !== undefined) {
       if (!isUuid(input.managedAppId)) throw ownerError();
       const result = await config.db.query<BindingRecord>("SELECT * FROM managed_app_bindings WHERE id = $1", [input.managedAppId]);
@@ -199,6 +199,9 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       return { binding: found, isNew: false };
     }
 
+    // Reject a new request before creating a binding. Existing operations must
+    // first be matched by owner, idempotency key and request digest.
+    validateTagReuse(tags, await config.service.tags());
     const id = randomUUID();
     const now = new Date();
     const inserted = await config.db.query<BindingRecord>(
@@ -600,10 +603,9 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       const bundle = validateBundle(input, config.gitlabToken);
       validatePublishKey(publishKey);
       validateIdempotencyKey(idempotencyKey);
-      validateTagReuse(bundle.manifest.tags, await config.service.tags());
       const keyHash = keyDigest(publishKey);
       return withKeyLock(keyHash, async () => {
-        const loaded = await loadOwnedBinding(input, keyHash);
+        const loaded = await loadOwnedBinding(input, keyHash, bundle.manifest.tags);
         const binding = loaded.binding;
         const idemDigest = idempotencyDigest(binding.id, idempotencyKey);
         let operation = await findOperation(binding.id, idemDigest);
@@ -615,6 +617,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         }
 
         if (!operation) {
+          if (!loaded.isNew) validateTagReuse(bundle.manifest.tags, await config.service.tags());
           const baseCommitSha = await ensureUpdateOwnership(binding, input, bundle);
           if (loaded.isNew && (input.managedAppId !== undefined || input.expectedAppRevision !== undefined)) throw ownerError();
           await ensureVersionIsNewForBinding(binding, bundle);

@@ -445,6 +445,9 @@ export function createService(config: ServiceConfig): PlazaService {
         throw new DomainError(409, "CONFIRMATION_REQUIRED", "请先确认与当前摘要一致的预览。");
       }
 
+      // Serialize catalog writers across service instances before checking the
+      // current canonical names; the preview may predate another registration.
+      await tx.query("LOCK TABLE catalog_apps IN SHARE ROW EXCLUSIVE MODE");
       let app = await findAppByKey(tx, projectId, input.appKey, true);
       if (
         app?.digest === source.digest &&
@@ -463,6 +466,7 @@ export function createService(config: ServiceConfig): PlazaService {
         return updated.rows[0]!;
       }
 
+      validateTagReuse(source.manifest.tags, await catalogTags(tx, config.audience));
       const currentRevision = app?.revision ?? 0;
       if (lockedPublication.expected_app_revision !== currentRevision) {
         throw new DomainError(409, "REVISION_CONFLICT", "应用修订已变化，旧预览不能覆盖新版本，请重新提交候选。");
