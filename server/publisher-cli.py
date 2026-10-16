@@ -88,38 +88,48 @@ ESSENTIAL_SOURCE_SUFFIXES = {
 }
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 PREVIEW_TICKET_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-DIAGNOSTIC_CODES = {
-    "APP_KEY_INVALID", "FILE_COUNT_INVALID", "REVISION_INVALID", "FILE_ENTRY_INVALID",
-    "REPOSITORY_PATH_INVALID", "FILE_ENCODING_INVALID", "FILE_SIZE_EXCEEDED",
-    "BUNDLE_SIZE_EXCEEDED", "FORBIDDEN_PATH", "PATH_COLLISION", "SECRET_MARKER_FOUND",
-    "FILE_DIRECTORY_COLLISION", "MANIFEST_MISSING", "MANIFEST_SIZE_EXCEEDED",
-    "MANIFEST_UTF8_INVALID", "MANIFEST_JSON_INVALID", "SCHEMA_VERSION_UNSUPPORTED",
-    "CAPABILITY_TAGS_INVALID", "PROJECT_VERSION_INVALID", "MAINTAINER_NAME_REQUIRED",
-    "MANIFEST_SCHEMA_INVALID", "APP_KEY_MISMATCH", "MANIFEST_TEXT_EMPTY",
-    "ENTRY_ID_DUPLICATE", "ENTRY_INSTRUCTIONS_PATH_INVALID", "PRIMARY_ENTRY_INVALID",
-    "README_PATH_INVALID", "USAGE_PATH_INVALID", "ENTRY_URL_INVALID", "DOCUMENT_MISSING",
-    "DOCUMENT_SIZE_EXCEEDED", "DOCUMENT_TOTAL_SIZE_EXCEEDED", "DOCUMENT_UTF8_INVALID",
-    "LFS_POINTER_NOT_ALLOWED", "TAG_NAME_MISMATCH", "REQUEST_FIELD_INVALID",
-}
-DIAGNOSTIC_RULES = {
-    "APP_KEY_INVALID": "app_key", "FILE_COUNT_INVALID": "file_count",
-    "REVISION_INVALID": "revision", "FILE_ENTRY_INVALID": "file_entry",
-    "REPOSITORY_PATH_INVALID": "repository_path", "FILE_ENCODING_INVALID": "file_encoding",
-    "FILE_SIZE_EXCEEDED": "file_size", "BUNDLE_SIZE_EXCEEDED": "bundle_size",
-    "FORBIDDEN_PATH": "forbidden_path", "PATH_COLLISION": "path_collision",
-    "SECRET_MARKER_FOUND": "secret_marker", "FILE_DIRECTORY_COLLISION": "file_directory_collision",
-    "MANIFEST_MISSING": "manifest_missing", "MANIFEST_SIZE_EXCEEDED": "manifest_size",
-    "MANIFEST_UTF8_INVALID": "manifest_utf8", "MANIFEST_JSON_INVALID": "manifest_json",
-    "SCHEMA_VERSION_UNSUPPORTED": "schema_version", "CAPABILITY_TAGS_INVALID": "capability_tags",
-    "PROJECT_VERSION_INVALID": "project_version", "MAINTAINER_NAME_REQUIRED": "maintainer_name",
-    "MANIFEST_SCHEMA_INVALID": "manifest_schema", "APP_KEY_MISMATCH": "app_key_mismatch",
-    "MANIFEST_TEXT_EMPTY": "manifest_text", "ENTRY_ID_DUPLICATE": "entry_id_unique",
-    "ENTRY_INSTRUCTIONS_PATH_INVALID": "entry_instructions_path",
-    "PRIMARY_ENTRY_INVALID": "primary_entry", "README_PATH_INVALID": "readme_path",
-    "USAGE_PATH_INVALID": "usage_path", "ENTRY_URL_INVALID": "entry_url",
-    "DOCUMENT_MISSING": "document_missing", "DOCUMENT_SIZE_EXCEEDED": "document_size",
-    "DOCUMENT_TOTAL_SIZE_EXCEEDED": "document_total_size", "DOCUMENT_UTF8_INVALID": "document_utf8",
-    "LFS_POINTER_NOT_ALLOWED": "lfs_pointer", "TAG_NAME_MISMATCH": "tag_name_mismatch",
+DIAGNOSTIC_RULES: dict[str, frozenset[str]] = {
+    "APP_KEY_INVALID": frozenset({"managed.bundle.app_key"}),
+    "FILE_COUNT_INVALID": frozenset({"managed.bundle.file_count"}),
+    "REVISION_INVALID": frozenset({"managed.bundle.expected_app_revision"}),
+    "FILE_ENTRY_INVALID": frozenset({"managed.bundle.file_entry"}),
+    "REPOSITORY_PATH_INVALID": frozenset({
+        "managed.bundle.manifest_path",
+        "managed.bundle.file_path",
+        "managed.bundle.document_path",
+    }),
+    "FILE_ENCODING_INVALID": frozenset({"managed.bundle.file_encoding"}),
+    "FILE_SIZE_EXCEEDED": frozenset({"managed.bundle.file_size"}),
+    "BUNDLE_SIZE_EXCEEDED": frozenset({"managed.bundle.bundle_size"}),
+    "FORBIDDEN_PATH": frozenset({"managed.bundle.forbidden_path"}),
+    "PATH_COLLISION": frozenset({"managed.bundle.path_collision"}),
+    "SECRET_MARKER_FOUND": frozenset({"managed.bundle.secret_marker"}),
+    "FILE_DIRECTORY_COLLISION": frozenset({"managed.bundle.file_directory_collision"}),
+    "MANIFEST_MISSING": frozenset({"managed.bundle.manifest_missing"}),
+    "MANIFEST_SIZE_EXCEEDED": frozenset({"managed.bundle.manifest_size"}),
+    "MANIFEST_UTF8_INVALID": frozenset({"managed.bundle.manifest_utf8"}),
+    "MANIFEST_JSON_INVALID": frozenset({"managed.bundle.manifest_json"}),
+    "MANIFEST_INVALID": frozenset({"managed.bundle.manifest"}),
+    "SCHEMA_VERSION_UNSUPPORTED": frozenset({"managed.bundle.schema_version"}),
+    "CAPABILITY_TAGS_INVALID": frozenset({"managed.bundle.capability_tags"}),
+    "PROJECT_VERSION_INVALID": frozenset({"managed.bundle.project_version"}),
+    "MAINTAINER_NAME_REQUIRED": frozenset({"managed.bundle.maintainer_name"}),
+    "MANIFEST_SCHEMA_INVALID": frozenset({"managed.bundle.manifest_schema"}),
+    "APP_KEY_MISMATCH": frozenset({"managed.bundle.app_key_mismatch"}),
+    "MANIFEST_TEXT_EMPTY": frozenset({"managed.bundle.manifest_text"}),
+    "ENTRY_ID_DUPLICATE": frozenset({"managed.bundle.entry_id_unique"}),
+    "ENTRY_INSTRUCTIONS_PATH_INVALID": frozenset({"managed.bundle.entry_instructions_path"}),
+    "PRIMARY_ENTRY_INVALID": frozenset({"managed.bundle.primary_entry"}),
+    "README_PATH_INVALID": frozenset({"managed.bundle.readme_path"}),
+    "USAGE_PATH_INVALID": frozenset({"managed.bundle.usage_path"}),
+    "ENTRY_URL_INVALID": frozenset({"managed.bundle.entry_url"}),
+    "DOCUMENT_MISSING": frozenset({"managed.bundle.document_missing"}),
+    "DOCUMENT_SIZE_EXCEEDED": frozenset({"managed.bundle.document_size"}),
+    "DOCUMENT_TOTAL_SIZE_EXCEEDED": frozenset({"managed.bundle.document_total_size"}),
+    "DOCUMENT_UTF8_INVALID": frozenset({"managed.bundle.document_utf8"}),
+    "LFS_POINTER_NOT_ALLOWED": frozenset({"managed.bundle.lfs_pointer"}),
+    "TAG_NAME_MISMATCH": frozenset({"managed.bundle.tags"}),
+    "REQUEST_FIELD_INVALID": frozenset({"managed.request.schema"}),
 }
 SAFE_DIAGNOSTIC_FIELDS = {
     "request", "appKey", "manifestPath", "files", "files[].path", "files[].content",
@@ -1084,15 +1094,11 @@ def _sanitize_server_diagnostics(raw: bytes) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         code = item.get("code")
-        if not isinstance(code, str) or code not in DIAGNOSTIC_CODES:
+        allowed_rules = DIAGNOSTIC_RULES.get(code) if isinstance(code, str) else None
+        rule_id = item.get("ruleId")
+        if allowed_rules is None or not isinstance(rule_id, str) or rule_id not in allowed_rules:
             continue
-        if code == "REQUEST_FIELD_INVALID":
-            expected_rule = "managed.request.schema"
-        else:
-            expected_rule = "managed.bundle." + DIAGNOSTIC_RULES.get(code, "")
-        if expected_rule.endswith(".") or item.get("ruleId") != expected_rule:
-            continue
-        result: dict[str, Any] = {"code": code, "ruleId": expected_rule}
+        result: dict[str, Any] = {"code": code, "ruleId": rule_id}
         safe_path = _safe_diagnostic_path(item.get("path"))
         safe_field = _safe_diagnostic_field(item.get("field"))
         if safe_path:

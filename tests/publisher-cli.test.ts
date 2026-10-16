@@ -218,6 +218,104 @@ test('--validate returns sanitized allowlisted server diagnostics as machine JSO
   await assert.rejects(access(stateDir), { code: 'ENOENT' });
 });
 
+test('--validate preserves exact backend diagnostic rules and rejects unknown or unsafe data', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-validate-backend-rules-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const serverMessage = 'PRIVATE_BACKEND_MESSAGE_SENTINEL';
+  const diagnostics = [
+    ['APP_KEY_INVALID', 'managed.bundle.app_key'],
+    ['FILE_COUNT_INVALID', 'managed.bundle.file_count'],
+    ['REVISION_INVALID', 'managed.bundle.expected_app_revision'],
+    ['FILE_ENTRY_INVALID', 'managed.bundle.file_entry'],
+    ['REPOSITORY_PATH_INVALID', 'managed.bundle.manifest_path'],
+    ['REPOSITORY_PATH_INVALID', 'managed.bundle.file_path'],
+    ['REPOSITORY_PATH_INVALID', 'managed.bundle.document_path'],
+    ['FILE_ENCODING_INVALID', 'managed.bundle.file_encoding'],
+    ['FILE_SIZE_EXCEEDED', 'managed.bundle.file_size'],
+    ['BUNDLE_SIZE_EXCEEDED', 'managed.bundle.bundle_size'],
+    ['FORBIDDEN_PATH', 'managed.bundle.forbidden_path'],
+    ['PATH_COLLISION', 'managed.bundle.path_collision'],
+    ['SECRET_MARKER_FOUND', 'managed.bundle.secret_marker'],
+    ['FILE_DIRECTORY_COLLISION', 'managed.bundle.file_directory_collision'],
+    ['MANIFEST_MISSING', 'managed.bundle.manifest_missing'],
+    ['MANIFEST_SIZE_EXCEEDED', 'managed.bundle.manifest_size'],
+    ['MANIFEST_UTF8_INVALID', 'managed.bundle.manifest_utf8'],
+    ['MANIFEST_JSON_INVALID', 'managed.bundle.manifest_json'],
+    ['MANIFEST_INVALID', 'managed.bundle.manifest'],
+    ['SCHEMA_VERSION_UNSUPPORTED', 'managed.bundle.schema_version'],
+    ['CAPABILITY_TAGS_INVALID', 'managed.bundle.capability_tags'],
+    ['PROJECT_VERSION_INVALID', 'managed.bundle.project_version'],
+    ['MAINTAINER_NAME_REQUIRED', 'managed.bundle.maintainer_name'],
+    ['MANIFEST_SCHEMA_INVALID', 'managed.bundle.manifest_schema'],
+    ['APP_KEY_MISMATCH', 'managed.bundle.app_key_mismatch'],
+    ['MANIFEST_TEXT_EMPTY', 'managed.bundle.manifest_text'],
+    ['ENTRY_ID_DUPLICATE', 'managed.bundle.entry_id_unique'],
+    ['ENTRY_INSTRUCTIONS_PATH_INVALID', 'managed.bundle.entry_instructions_path'],
+    ['PRIMARY_ENTRY_INVALID', 'managed.bundle.primary_entry'],
+    ['README_PATH_INVALID', 'managed.bundle.readme_path'],
+    ['USAGE_PATH_INVALID', 'managed.bundle.usage_path'],
+    ['ENTRY_URL_INVALID', 'managed.bundle.entry_url'],
+    ['DOCUMENT_MISSING', 'managed.bundle.document_missing'],
+    ['DOCUMENT_SIZE_EXCEEDED', 'managed.bundle.document_size'],
+    ['DOCUMENT_TOTAL_SIZE_EXCEEDED', 'managed.bundle.document_total_size'],
+    ['DOCUMENT_UTF8_INVALID', 'managed.bundle.document_utf8'],
+    ['LFS_POINTER_NOT_ALLOWED', 'managed.bundle.lfs_pointer'],
+    ['TAG_NAME_MISMATCH', 'managed.bundle.tags'],
+    ['REQUEST_FIELD_INVALID', 'managed.request.schema'],
+  ].map(([code, ruleId]) => ({
+    code, ruleId, path: 'src/main.py', field: 'files[0].path', line: 2, column: 3,
+    suggestion: serverMessage,
+  }));
+  diagnostics.push(
+    {
+      code: 'TAG_NAME_MISMATCH', ruleId: 'managed.bundle.tag_name_mismatch',
+      path: 'C:\\private\\TOKEN_SENTINEL', field: 'PRIVATE_FIELD_SENTINEL', line: 2, column: 3, suggestion: serverMessage,
+    },
+    {
+      code: 'UNKNOWN_BACKEND_ERROR', ruleId: 'managed.bundle.unknown',
+      path: 'https://private.example/TOKEN_SENTINEL', field: 'request', line: 2, column: 3, suggestion: serverMessage,
+    },
+    {
+      code: 'APP_KEY_INVALID', ruleId: 'managed.bundle.app_key',
+      path: 'C:\\private\\TOKEN_SENTINEL', field: 'appKey', line: 2, column: 3, suggestion: serverMessage,
+    },
+  );
+  let requests = 0;
+  const portal = await createPortal((request, response) => {
+    requests += 1;
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/api/managed-publications/validate');
+    assert.equal(request.headers['idempotency-key'], undefined);
+    assert.equal(request.headers['x-plaza-publish-key'], undefined);
+    response.writeHead(400, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { code: 'VALIDATION_FAILED', message: serverMessage, diagnostics } }));
+  });
+  t.after(portal.close);
+
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--validate']);
+  assert.equal(result.code, 2);
+  const output = JSON.parse(result.stdout) as Record<string, any>;
+  assert.equal(output.status, 'validation_failed');
+  assert.equal(output.published, false);
+  assert.equal(output.sourceUploaded, false);
+  assert.equal(output.diagnostics.length, 40);
+  assert.deepEqual(output.diagnostics.slice(0, 39), diagnostics.slice(0, 39).map(({ code, ruleId }) => ({
+    code, ruleId, path: 'src/main.py', field: 'files[0].path', line: 2, column: 3,
+    suggestion: '按对应字段提示修正资料后重新校验。',
+  })));
+  assert.deepEqual(output.diagnostics[39], {
+    code: 'APP_KEY_INVALID', ruleId: 'managed.bundle.app_key', field: 'appKey', line: 2, column: 3,
+    suggestion: '按对应字段提示修正资料后重新校验。',
+  });
+  assert.ok(!result.stdout.includes(serverMessage) && !result.stderr.includes(serverMessage));
+  assert.ok(!result.stdout.includes('TOKEN_SENTINEL') && !result.stderr.includes('TOKEN_SENTINEL'));
+  assert.ok(!result.stdout.includes('PRIVATE_FIELD_SENTINEL') && !result.stderr.includes('PRIVATE_FIELD_SENTINEL'));
+  assert.equal(requests, 1);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+});
+
 test('--validate local secret rejection is JSON and makes no request or receipt', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-validate-local-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
