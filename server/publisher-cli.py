@@ -88,10 +88,62 @@ ESSENTIAL_SOURCE_SUFFIXES = {
 }
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 PREVIEW_TICKET_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+DIAGNOSTIC_RULES: dict[str, frozenset[str]] = {
+    "APP_KEY_INVALID": frozenset({"managed.bundle.app_key"}),
+    "FILE_COUNT_INVALID": frozenset({"managed.bundle.file_count"}),
+    "REVISION_INVALID": frozenset({"managed.bundle.expected_app_revision"}),
+    "FILE_ENTRY_INVALID": frozenset({"managed.bundle.file_entry"}),
+    "REPOSITORY_PATH_INVALID": frozenset({
+        "managed.bundle.manifest_path",
+        "managed.bundle.file_path",
+        "managed.bundle.document_path",
+    }),
+    "FILE_ENCODING_INVALID": frozenset({"managed.bundle.file_encoding"}),
+    "FILE_SIZE_EXCEEDED": frozenset({"managed.bundle.file_size"}),
+    "BUNDLE_SIZE_EXCEEDED": frozenset({"managed.bundle.bundle_size"}),
+    "FORBIDDEN_PATH": frozenset({"managed.bundle.forbidden_path"}),
+    "PATH_COLLISION": frozenset({"managed.bundle.path_collision"}),
+    "SECRET_MARKER_FOUND": frozenset({"managed.bundle.secret_marker"}),
+    "FILE_DIRECTORY_COLLISION": frozenset({"managed.bundle.file_directory_collision"}),
+    "MANIFEST_MISSING": frozenset({"managed.bundle.manifest_missing"}),
+    "MANIFEST_SIZE_EXCEEDED": frozenset({"managed.bundle.manifest_size"}),
+    "MANIFEST_UTF8_INVALID": frozenset({"managed.bundle.manifest_utf8"}),
+    "MANIFEST_JSON_INVALID": frozenset({"managed.bundle.manifest_json"}),
+    "MANIFEST_INVALID": frozenset({"managed.bundle.manifest"}),
+    "SCHEMA_VERSION_UNSUPPORTED": frozenset({"managed.bundle.schema_version"}),
+    "CAPABILITY_TAGS_INVALID": frozenset({"managed.bundle.capability_tags"}),
+    "PROJECT_VERSION_INVALID": frozenset({"managed.bundle.project_version"}),
+    "MAINTAINER_NAME_REQUIRED": frozenset({"managed.bundle.maintainer_name"}),
+    "MANIFEST_SCHEMA_INVALID": frozenset({"managed.bundle.manifest_schema"}),
+    "APP_KEY_MISMATCH": frozenset({"managed.bundle.app_key_mismatch"}),
+    "MANIFEST_TEXT_EMPTY": frozenset({"managed.bundle.manifest_text"}),
+    "ENTRY_ID_DUPLICATE": frozenset({"managed.bundle.entry_id_unique"}),
+    "ENTRY_INSTRUCTIONS_PATH_INVALID": frozenset({"managed.bundle.entry_instructions_path"}),
+    "PRIMARY_ENTRY_INVALID": frozenset({"managed.bundle.primary_entry"}),
+    "README_PATH_INVALID": frozenset({"managed.bundle.readme_path"}),
+    "USAGE_PATH_INVALID": frozenset({"managed.bundle.usage_path"}),
+    "ENTRY_URL_INVALID": frozenset({"managed.bundle.entry_url"}),
+    "DOCUMENT_MISSING": frozenset({"managed.bundle.document_missing"}),
+    "DOCUMENT_SIZE_EXCEEDED": frozenset({"managed.bundle.document_size"}),
+    "DOCUMENT_TOTAL_SIZE_EXCEEDED": frozenset({"managed.bundle.document_total_size"}),
+    "DOCUMENT_UTF8_INVALID": frozenset({"managed.bundle.document_utf8"}),
+    "LFS_POINTER_NOT_ALLOWED": frozenset({"managed.bundle.lfs_pointer"}),
+    "TAG_NAME_MISMATCH": frozenset({"managed.bundle.tags"}),
+    "REQUEST_FIELD_INVALID": frozenset({"managed.request.schema"}),
+}
+SAFE_DIAGNOSTIC_FIELDS = {
+    "request", "appKey", "manifestPath", "files", "files[].path", "files[].content",
+    "managedAppId", "expectedAppRevision", "schemaVersion", "tags", "projectVersion",
+    "maintainers", "entries", "primaryEntry", "docs.readme", "docs.usage", "manifest",
+}
+SAFE_PUBLICATION_STATUSES = {"checking", "preview_ready", "registered", "failed", "cancelled"}
+SAFE_NEXT_ACTIONS = {"confirm", "complete", "retry", "retry_original", "submit_again", "none"}
 
 
 class CliError(Exception):
-    pass
+    def __init__(self, message: str, diagnostic: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -868,14 +920,25 @@ class ReceiptStore:
         self.directory = resolved
         self.path: Path | None = None
 
-    def open(self, origin: str, project_root: Path, app_key: str) -> dict[str, Any] | None:
+    def open(self, origin: str, project_root: Path, app_key: str, *, readonly: bool = False) -> dict[str, Any] | None:
         try:
-            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            info = self.directory.lstat()
+            if readonly:
+                info = self.directory.lstat()
+            else:
+                self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                info = self.directory.lstat()
             if _is_reparse_or_link(self.directory, info) or not stat.S_ISDIR(info.st_mode):
                 raise CliError("receipt 目录不能是符号链接或 junction。")
-            if os.name != "nt":
+            if not readonly and os.name != "nt":
                 os.chmod(self.directory, 0o700)
+        except FileNotFoundError:
+            if readonly:
+                self.path = self.directory / (hashlib.sha256(json.dumps(
+                    {"origin": origin, "projectRoot": str(project_root), "appKey": app_key},
+                    sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")).hexdigest() + ".receipt")
+                return None
+            raise CliError("无法建立项目外的私有 receipt 目录。") from None
         except CliError:
             raise
         except OSError:
@@ -892,7 +955,7 @@ class ReceiptStore:
         if _is_reparse_or_link(self.path, info) or not stat.S_ISREG(info.st_mode):
             raise CliError("receipt 必须是普通文件。")
         try:
-            if os.name != "nt":
+            if not readonly and os.name != "nt":
                 os.chmod(self.path, 0o600)
             raw = self.path.read_bytes()
             if os.name == "nt":
@@ -988,27 +1051,286 @@ def _response_error_code(raw: bytes) -> str | None:
     return code
 
 
+def _safe_diagnostic_path(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return None
+    if value.startswith(("/", "\\")) or "\\" in value or ":" in value:
+        return None
+    if re.search(r"[\x00-\x1f\x7f]", value) or re.search(r"(?:https?|ssh|file)://|[A-Za-z0-9_-]{32,}", value, re.IGNORECASE):
+        return None
+    if re.search(r"(?:password|token|secret|private[-_ ]?key)\s*[=:]", value, re.IGNORECASE):
+        return None
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return None
+    return value
+
+
+def _safe_diagnostic_field(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) > 128 or re.search(r"[\x00-\x1f\x7f]|[A-Za-z0-9_-]{32,}", value):
+        return None
+    if value in SAFE_DIAGNOSTIC_FIELDS:
+        return value
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:(?:\.[A-Za-z][A-Za-z0-9_]*)|(?:\[\d{1,3}\]))*", value):
+        return value
+    return None
+
+
+def _fallback_diagnostic(code: str = "VALIDATION_FAILED", rule_id: str = "managed.cli.validation_failed") -> dict[str, str]:
+    return {"code": code, "ruleId": rule_id, "suggestion": "按对应字段提示修正资料后重新校验。"}
+
+
+def _sanitize_server_diagnostics(raw: bytes) -> list[dict[str, Any]]:
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return [_fallback_diagnostic()]
+    error = body.get("error") if isinstance(body, dict) else None
+    values = error.get("diagnostics") if isinstance(error, dict) else None
+    if not isinstance(values, list):
+        return [_fallback_diagnostic()]
+    sanitized: list[dict[str, Any]] = []
+    for item in values[:50]:
+        if not isinstance(item, dict):
+            continue
+        code = item.get("code")
+        allowed_rules = DIAGNOSTIC_RULES.get(code) if isinstance(code, str) else None
+        rule_id = item.get("ruleId")
+        if allowed_rules is None or not isinstance(rule_id, str) or rule_id not in allowed_rules:
+            continue
+        result: dict[str, Any] = {"code": code, "ruleId": rule_id}
+        safe_path = _safe_diagnostic_path(item.get("path"))
+        safe_field = _safe_diagnostic_field(item.get("field"))
+        if safe_path:
+            result["path"] = safe_path
+        if safe_field:
+            result["field"] = safe_field
+        for key in ("line", "column"):
+            number = item.get(key)
+            if isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= 1_000_000:
+                result[key] = number
+        suggestion = item.get("suggestion")
+        if isinstance(suggestion, str) and suggestion in {
+            "检查字段类型、长度和格式后重新校验。",
+            "修正 ai-app.json 中的字段和值后重新校验。",
+            "使用仓库根目录下的安全相对路径。",
+            "将新发布资料升级到 schemaVersion 2。",
+            "每个应用最多使用 3 个非空且规范化后唯一的标签。",
+            "使用有效的 MAJOR.MINOR.PATCH 版本号。",
+            "修正 JSON 语法并移除重复键后重新校验。",
+        }:
+            result["suggestion"] = suggestion
+        else:
+            result["suggestion"] = "按对应字段提示修正资料后重新校验。"
+        sanitized.append(result)
+    return sanitized or [_fallback_diagnostic()]
+
+
+def _local_diagnostic(error: CliError) -> dict[str, Any]:
+    if error.diagnostic:
+        value = dict(error.diagnostic)
+        path_value = _safe_diagnostic_path(value.get("path"))
+        field_value = _safe_diagnostic_field(value.get("field"))
+        result = {"code": value.get("code", "LOCAL_VALIDATION_FAILED"),
+                  "ruleId": value.get("ruleId", "managed.cli.local_validation")}
+        if path_value:
+            result["path"] = path_value
+        if field_value:
+            result["field"] = field_value
+        for key in ("line", "column"):
+            number = value.get(key)
+            if isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= 1_000_000:
+                result[key] = number
+        result["suggestion"] = "修正本地资料后重新校验。"
+        return result
+
+    message = str(error)
+    code, rule_id, field_value = "LOCAL_VALIDATION_FAILED", "managed.cli.local_validation", None
+    if "疑似包含真实密钥或 token" in message:
+        code, rule_id = "SECRET_MARKER_FOUND", "managed.bundle.secret_marker"
+    elif "最多 3 个" in message or "标签规范化后不能重复" in message or "能力标签须" in message:
+        code, rule_id, field_value = "CAPABILITY_TAGS_INVALID", "managed.bundle.capability_tags", "tags"
+    elif "超过总计 20 MiB" in message:
+        code, rule_id = "BUNDLE_SIZE_EXCEEDED", "managed.bundle.bundle_size"
+    elif "超过单文件 5 MiB" in message:
+        code, rule_id = "FILE_SIZE_EXCEEDED", "managed.bundle.file_size"
+    elif "不是有效 UTF-8 JSON" in message:
+        code, rule_id, field_value = "MANIFEST_UTF8_INVALID", "managed.bundle.manifest_utf8", "manifest"
+    elif "重复字段" in message or "必须是有效 UTF-8 JSON" in message:
+        code, rule_id, field_value = "MANIFEST_JSON_INVALID", "managed.bundle.manifest_json", "manifest"
+    elif "schemaVersion 2" in message:
+        code, rule_id, field_value = "SCHEMA_VERSION_UNSUPPORTED", "managed.bundle.schema_version", "schemaVersion"
+    elif "projectVersion" in message:
+        code, rule_id, field_value = "PROJECT_VERSION_INVALID", "managed.bundle.project_version", "projectVersion"
+    elif "appKey" in message:
+        code, rule_id, field_value = "APP_KEY_INVALID", "managed.bundle.app_key", "appKey"
+
+    path_value = None
+    if code == "SECRET_MARKER_FOUND":
+        candidate = re.search(r"：([^；]+)", message)
+        path_value = _safe_diagnostic_path(candidate.group(1).strip()) if candidate else None
+    elif message.startswith(("必要源码无法安全读取：", "必要源码或资料疑似包含真实密钥或 token：", "必需资料未能安全收集：")):
+        candidate = re.search(r"：([^；]+)", message)
+        path_value = _safe_diagnostic_path(candidate.group(1).strip()) if candidate else None
+    if field_value:
+        field_value = _safe_diagnostic_field(field_value)
+    result: dict[str, Any] = {"code": code, "ruleId": rule_id}
+    if path_value:
+        result["path"] = path_value
+    if field_value:
+        result["field"] = field_value
+    result["suggestion"] = "修正本地资料后重新校验。"
+    return result
+
+
+def _print_json(value: dict[str, Any]) -> None:
+    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _read_app_key(project_root: Path) -> str:
+    raw = _read_file(project_root, MANIFEST_NAME, required=True)
+    assert raw is not None
+    try:
+        manifest = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_without_duplicates)
+    except (CliError, UnicodeDecodeError, json.JSONDecodeError):
+        raise CliError("ai-app.json 无法安全读取回执身份；不会采集源码或创建回执。") from None
+    app_key = manifest.get("appKey") if isinstance(manifest, dict) else None
+    if not isinstance(app_key, str) or len(app_key) > 64 or not APP_KEY_RE.fullmatch(app_key):
+        raise CliError("ai-app.json 的 appKey 无效，无法定位本机 receipt。")
+    return app_key
+
+
 def _is_author_preview_url(value: str, origin: str) -> bool:
+    return _author_preview_details(value, origin) is not None
+
+
+def _author_preview_details(value: str, origin: str) -> tuple[str, str] | None:
     try:
         parsed = urlparse(value)
         if (
             parsed.username or parsed.password or not parsed.scheme or not parsed.netloc
             or parsed.path not in ("", "/") or parsed.params or parsed.query or not parsed.fragment
         ):
-            return False
+            return None
         preview_origin, _, _, _ = _normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
         if preview_origin != origin:
-            return False
+            return None
         fragment = parse_qs(parsed.fragment, strict_parsing=True, keep_blank_values=True, max_num_fields=2)
         if set(fragment) != {"publish", "key"}:
-            return False
+            return None
         if len(fragment["publish"]) != 1 or len(fragment["key"]) != 1:
-            return False
+            return None
         publication_id = fragment["publish"][0]
         ticket = fragment["key"][0]
-        return bool(UUID_RE.fullmatch(publication_id) and PREVIEW_TICKET_RE.fullmatch(ticket))
+        if UUID_RE.fullmatch(publication_id) and PREVIEW_TICKET_RE.fullmatch(ticket):
+            return str(uuid.UUID(publication_id)), ticket
+        return None
     except (CliError, ValueError):
-        return False
+        return None
+
+
+def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[str, Any], bool]:
+    raw_status = response.get("status")
+    status_value = raw_status if isinstance(raw_status, str) and raw_status in SAFE_PUBLICATION_STATUSES else None
+    raw_id = response.get("id")
+    raw_publication_id = response.get("publicationId")
+    publication_id: str | None = None
+    try:
+        if raw_id is not None and raw_publication_id is not None:
+            if _valid_uuid(raw_id, "publication id") != _valid_uuid(raw_publication_id, "publicationId"):
+                raise CliError("门户返回的发布 ID 不一致。")
+        chosen_id = raw_publication_id if raw_publication_id is not None else raw_id
+        if chosen_id is not None:
+            publication_id = _valid_uuid(chosen_id, "publication id")
+    except CliError:
+        publication_id = None
+
+    managed_id: str | None = None
+    try:
+        managed_id = _valid_uuid(response.get("managedAppId"), "managedAppId")
+    except CliError:
+        pass
+
+    source_uploaded = response.get("sourceUploaded") is True
+    next_action = response.get("nextAction")
+    if not isinstance(next_action, str) or next_action not in SAFE_NEXT_ACTIONS:
+        next_action = None
+    revision = response.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        revision = None
+    expires_at = response.get("expiresAt")
+    if not isinstance(expires_at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z", expires_at):
+        expires_at = None
+
+    details: dict[str, Any] = {
+        "status": status_value or "unknown",
+        "sourceUploaded": source_uploaded,
+    }
+    if managed_id:
+        details["managedAppId"] = managed_id
+    if publication_id:
+        details["publicationId"] = publication_id
+    if next_action:
+        details["nextAction"] = next_action
+    if revision is not None:
+        details["revision"] = revision
+    if expires_at:
+        details["expiresAt"] = expires_at
+
+    preview_url = response.get("previewUrl")
+    url_details = _author_preview_details(preview_url, origin) if isinstance(preview_url, str) else None
+    raw_ticket = response.get("ticket")
+    ticket_matches = "ticket" not in response or (
+        isinstance(raw_ticket, str) and url_details is not None and raw_ticket == url_details[1]
+    )
+    valid_url = bool(
+        url_details and publication_id and url_details[0] == publication_id and ticket_matches
+    )
+    complete = bool(
+        status_value == "preview_ready" and source_uploaded and managed_id and publication_id and valid_url
+    )
+    if complete:
+        details["handoffState"] = "complete"
+    elif status_value == "registered" and source_uploaded and managed_id and publication_id:
+        details["handoffState"] = "registered"
+    elif status_value == "checking" and managed_id and publication_id:
+        details["handoffState"] = "pending"
+    else:
+        details["handoffState"] = "recovery_required"
+    if complete:
+        details["previewUrl"] = preview_url
+    return details, complete
+
+
+def _store_publication_result(store: ReceiptStore, receipt: dict[str, Any], details: dict[str, Any], complete: bool) -> None:
+    receipt["responseKnown"] = True
+    receipt["publicationId"] = details.get("publicationId")
+    receipt["publicationStatus"] = details.get("status", "unknown")
+    receipt["sourceUploaded"] = details.get("sourceUploaded") is True
+    receipt["managedAppId"] = details.get("managedAppId", receipt.get("managedAppId"))
+    for key in ("nextAction", "revision", "expiresAt"):
+        if key in details:
+            receipt[{"revision": "publicationRevision"}.get(key, key)] = details[key]
+        else:
+            receipt.pop({"revision": "publicationRevision"}.get(key, key), None)
+    if complete:
+        receipt["previewUrl"] = details["previewUrl"]
+        link = _author_preview_details(details["previewUrl"], receipt["identity"]["origin"])
+        assert link is not None
+        receipt["publicationTicket"] = link[1]
+        receipt["handoffState"] = "complete"
+        receipt["handoffComplete"] = True
+        receipt.pop("handoffRecoveryRequired", None)
+    else:
+        receipt.pop("previewUrl", None)
+        receipt.pop("publicationTicket", None)
+        receipt["handoffState"] = details.get("handoffState", "recovery_required")
+        receipt["handoffComplete"] = False
+        if receipt["handoffState"] == "recovery_required":
+            receipt["handoffRecoveryRequired"] = True
+        else:
+            receipt.pop("handoffRecoveryRequired", None)
+    store.save(receipt)
 
 
 def _get_revision(
@@ -1059,28 +1381,273 @@ def _decode_receipt_files(receipt: dict[str, Any]) -> list[dict[str, str]]:
     return checked
 
 
-def _run(args: argparse.Namespace) -> int:
+def _saved_preview_url(receipt: dict[str, Any], origin: str) -> str | None:
+    if (
+        receipt.get("handoffComplete") is not True
+        or receipt.get("handoffState") != "complete"
+        or receipt.get("publicationStatus") != "preview_ready"
+        or receipt.get("sourceUploaded") is not True
+    ):
+        return None
     try:
+        publication_id = _valid_uuid(receipt.get("publicationId"), "publicationId")
+        _valid_uuid(receipt.get("managedAppId"), "managedAppId")
+    except CliError:
+        return None
+    preview_url = receipt.get("previewUrl")
+    if not isinstance(preview_url, str):
+        return None
+    link = _author_preview_details(preview_url, origin)
+    if not link or link[0] != publication_id or link[1] != receipt.get("publicationTicket"):
+        return None
+    return preview_url
+
+
+def _receipt_status_output(receipt: dict[str, Any], origin: str) -> dict[str, Any]:
+    publication_status = receipt.get("publicationStatus")
+    if not isinstance(publication_status, str) or publication_status not in SAFE_PUBLICATION_STATUSES:
+        publication_status = "unknown"
+    if _saved_preview_url(receipt, origin):
+        handoff_state = "complete"
+    elif receipt.get("handoffState") == "registered" and publication_status == "registered" and receipt.get("sourceUploaded") is True:
+        handoff_state = "registered"
+    elif receipt.get("handoffState") == "pending" or publication_status in {"checking", "unknown"}:
+        handoff_state = "pending"
+    else:
+        handoff_state = "recovery_required"
+    result: dict[str, Any] = {
+        "status": "receipt_saved",
+        "handoffState": handoff_state,
+        "publicationStatus": publication_status,
+        "sourceUploaded": receipt.get("sourceUploaded") is True,
+    }
+    app_key = receipt.get("identity", {}).get("appKey") if isinstance(receipt.get("identity"), dict) else None
+    if isinstance(app_key, str) and APP_KEY_RE.fullmatch(app_key):
+        result["appKey"] = app_key
+    for key in ("managedAppId", "publicationId"):
+        try:
+            result[key] = _valid_uuid(receipt.get(key), key)
+        except CliError:
+            pass
+    preview_url = _saved_preview_url(receipt, origin)
+    if preview_url:
+        result["previewUrl"] = preview_url
+    next_action = receipt.get("nextAction")
+    if isinstance(next_action, str) and next_action in SAFE_NEXT_ACTIONS:
+        result["nextAction"] = next_action
+    return result
+
+
+def _safe_operation_status(value: Any) -> str | None:
+    allowed = {"prepared", "project_ready", "commit_ready", "tag_ready", "release_ready", "submitted"}
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _recovery_required_output(*, managed_id: str | None = None, operation_status: str | None = None,
+                              next_action: str | None = None, source_uploaded: bool | None = None,
+                              code: str | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"status": "HANDOFF_RECOVERY_REQUIRED", "handoffState": "recovery_required"}
+    if managed_id:
+        result["managedAppId"] = managed_id
+    if operation_status:
+        result["operationStatus"] = operation_status
+    if next_action in SAFE_NEXT_ACTIONS:
+        result["nextAction"] = next_action
+    if source_uploaded is not None:
+        result["sourceUploaded"] = source_uploaded
+        result["recoveryRequired"] = True
+    if code:
+        result["code"] = code
+    return result
+
+
+def _publish_output(details: dict[str, Any], complete: bool) -> dict[str, Any]:
+    if complete:
+        return {key: details[key] for key in (
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "previewUrl",
+            "nextAction", "revision", "expiresAt",
+        ) if key in details}
+    if details.get("handoffState") == "registered":
+        return {key: details[key] for key in (
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction", "revision",
+        ) if key in details}
+    if details.get("handoffState") == "pending":
+        return {key: details[key] for key in (
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction",
+        ) if key in details}
+    if details.get("status") in {"failed", "cancelled"}:
+        return {key: details[key] for key in (
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction",
+        ) if key in details}
+    return _recovery_required_output(managed_id=details.get("managedAppId"))
+
+
+def _run_validate(origin_parts: tuple[str, str, str, int | None], candidate: dict[str, Any]) -> int:
+    try:
+        status, raw = _request(
+            origin_parts, "POST", "/api/managed-publications/validate",
+            {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"},
+            json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        )
+    except CliError:
+        _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
+                     "diagnostics": [_fallback_diagnostic("PORTAL_UNAVAILABLE", "managed.cli.portal")]})
+        return 2
+    if status == 200:
+        try:
+            response = _json_response(raw)
+        except CliError:
+            response = {}
+        file_count = response.get("fileCount")
+        total_bytes = response.get("totalBytes")
+        if (
+            response.get("status") == "validated" and response.get("published") is False
+            and response.get("sourceUploaded") is False
+            and isinstance(file_count, int) and not isinstance(file_count, bool) and 0 <= file_count <= MAX_FILES
+            and isinstance(total_bytes, int) and not isinstance(total_bytes, bool) and 0 <= total_bytes <= MAX_TOTAL_BYTES
+        ):
+            _print_json({"status": "validated", "published": False, "sourceUploaded": False,
+                         "fileCount": file_count, "totalBytes": total_bytes})
+            return 0
+        _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
+                     "diagnostics": [_fallback_diagnostic()]})
+        return 2
+    if status == 400:
+        _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
+                     "diagnostics": _sanitize_server_diagnostics(raw)})
+        return 2
+    _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
+                 "diagnostics": [_fallback_diagnostic("PORTAL_REJECTED", "managed.cli.portal")]})
+    return 2
+
+
+def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
+                      origin_parts: tuple[str, str, str, int | None], *, recover: bool) -> int:
+    app_key = _read_app_key(project_root)
+    store = ReceiptStore(Path(args.state_dir) if args.state_dir else _default_state_dir(), project_root)
+    receipt = store.open(origin, project_root, app_key, readonly=True)
+    if receipt is None:
+        if recover:
+            _print_json(_recovery_required_output(code="LOCAL_RECEIPT_NOT_FOUND"))
+            return 1
+        _print_json({"status": "receipt_not_found", "handoffState": "not_started", "publicationStatus": "unknown",
+                     "sourceUploaded": False})
+        return 0
+    if not recover:
+        _print_json(_receipt_status_output(receipt, origin))
+        return 0
+
+    try:
+        publish_key = receipt.get("publishKey")
+        idempotency_key = _valid_uuid(receipt.get("idempotencyKey"), "receipt Idempotency-Key")
+        if not isinstance(publish_key, str) or len(publish_key) < 20:
+            raise CliError("本机 receipt 缺少恢复凭据。")
+    except CliError:
+        _print_json(_recovery_required_output())
+        return 1
+    try:
+        status, raw = _request(
+            origin_parts, "GET", "/api/managed-publications/receipt",
+            {"Accept": "application/json", "Idempotency-Key": idempotency_key,
+             "X-Plaza-Publish-Key": publish_key},
+        )
+    except CliError:
+        _print_json(_recovery_required_output(managed_id=receipt.get("managedAppId")
+                                              if isinstance(receipt.get("managedAppId"), str) else None))
+        return 1
+    if status == 404 and _response_error_code(raw) == "MANAGED_OPERATION_NOT_FOUND":
+        _print_json(_recovery_required_output(code="MANAGED_OPERATION_NOT_FOUND"))
+        return 1
+    if status < 200 or status >= 300:
+        _print_json(_recovery_required_output())
+        return 1
+    try:
+        response = _json_response(raw)
+    except CliError:
+        _print_json(_recovery_required_output())
+        return 1
+
+    if response.get("status") == "recovery_required":
+        managed_id = None
+        try:
+            managed_id = _valid_uuid(response.get("managedAppId"), "managedAppId")
+        except CliError:
+            pass
+        if managed_id and receipt.get("managedAppId") and managed_id != receipt.get("managedAppId"):
+            managed_id = None
+        operation_status = _safe_operation_status(response.get("operationStatus"))
+        next_action = "retry_original" if response.get("nextAction") == "retry_original" else None
+        source_uploaded = False if response.get("sourceUploaded") is False else None
+        receipt["managedAppId"] = managed_id or receipt.get("managedAppId")
+        receipt["handoffState"] = "recovery_required"
+        receipt["handoffComplete"] = False
+        receipt["handoffRecoveryRequired"] = True
+        if operation_status:
+            receipt["operationStatus"] = operation_status
+        if next_action:
+            receipt["nextAction"] = next_action
+        receipt["sourceUploaded"] = source_uploaded is True
+        receipt.pop("previewUrl", None)
+        receipt.pop("publicationTicket", None)
+        try:
+            store.save(receipt)
+        except CliError:
+            pass
+        _print_json(_recovery_required_output(managed_id=managed_id, operation_status=operation_status,
+                                             next_action=next_action, source_uploaded=source_uploaded))
+        return 1
+
+    details, complete = _publication_handoff(response, origin)
+    expected_managed = receipt.get("managedAppId")
+    if expected_managed and details.get("managedAppId") != expected_managed:
+        details.pop("previewUrl", None)
+        details["handoffState"] = "recovery_required"
+        complete = False
+    try:
+        _store_publication_result(store, receipt, details, complete)
+    except CliError:
+        _print_json(_recovery_required_output(managed_id=details.get("managedAppId")))
+        return 1
+    _print_json(_publish_output(details, complete))
+    if details.get("status") == "failed":
+        print("源文件已上传，广场收录失败；请按返回状态处理，不能视为发布成功。", file=sys.stderr)
+    return 0 if complete else 1
+
+
+def _run(args: argparse.Namespace) -> int:
+    validation_mode = bool(args.validate or args.dry_run)
+    try:
+        if args.managed_app_id and (args.validate or args.dry_run or args.status or args.recover):
+            raise CliError("--managed-app-id 仅用于正式发布模式。")
+        origin, scheme, host, port = _normalize_origin(args.origin)
+        origin_parts = (origin, scheme, host, port)
         project_input = Path(args.project).expanduser()
         if not project_input.is_absolute():
             raise CliError("--project 必须是绝对路径。")
         project_root = _resolve_project_root(project_input)
+
+        if args.status or args.recover:
+            return _run_receipt_mode(args, project_root, origin, origin_parts, recover=bool(args.recover))
+
         manifest, files, digest, file_count, total_bytes, skipped_paths = _collect(project_root)
         app_key = manifest["appKey"]
         if skipped_paths:
-            displayed = skipped_paths[:20]
-            extra = len(skipped_paths) - len(displayed)
-            summary = "、".join(displayed)
-            if extra:
-                summary += f" 等 {len(skipped_paths)} 个路径（另有 {extra} 个未显示）"
-            print(f"已排除非必要文件，请让 AI 检查发布范围后再决定是否发布：{summary}", file=sys.stderr)
+            if args.validate:
+                print("已跳过非必要文件，请检查发布范围。", file=sys.stderr)
+            elif not args.dry_run:
+                displayed = skipped_paths[:20]
+                extra = len(skipped_paths) - len(displayed)
+                summary = "、".join(displayed)
+                if extra:
+                    summary += f" 等 {len(skipped_paths)} 个路径（另有 {extra} 个未显示）"
+                print(f"已排除非必要文件，请让 AI 检查发布范围后再决定是否发布：{summary}", file=sys.stderr)
         if args.dry_run:
-            print(json.dumps({"dryRun": True, "appKey": app_key, "fileCount": file_count,
-                              "totalBytes": total_bytes, "digest": digest}, ensure_ascii=False))
+            _print_json({"dryRun": True, "appKey": app_key, "fileCount": file_count,
+                         "totalBytes": total_bytes, "digest": digest})
             return 0
+        if args.validate:
+            return _run_validate(origin_parts, {"appKey": app_key, "manifestPath": MANIFEST_NAME, "files": files})
 
-        origin, scheme, host, port = _normalize_origin(args.origin)
-        origin_parts = (origin, scheme, host, port)
         store = ReceiptStore(Path(args.state_dir) if args.state_dir else _default_state_dir(), project_root)
         receipt = store.open(origin, project_root, app_key)
         if args.managed_app_id:
@@ -1088,6 +1655,10 @@ def _run(args: argparse.Namespace) -> int:
             saved = receipt.get("managedAppId") if receipt else None
             if not isinstance(saved, str) or saved.lower() != supplied:
                 raise CliError("--managed-app-id 与本机项目 receipt 不匹配；不会创建或冒名更新应用。")
+        if receipt and receipt.get("handoffRecoveryRequired") is True:
+            _print_json(_recovery_required_output(managed_id=receipt.get("managedAppId")
+                                                  if isinstance(receipt.get("managedAppId"), str) else None))
+            return 1
 
         if receipt is None:
             receipt = {
@@ -1111,6 +1682,8 @@ def _run(args: argparse.Namespace) -> int:
             receipt["refreshRevisionAfterRejection"] = False
             receipt["requestManagedAppId"] = None
             receipt["requestExpectedAppRevision"] = None
+            receipt["handoffState"] = "pending"
+            receipt["handoffComplete"] = False
         elif refresh_revision or (old_digest != digest and response_known):
             receipt["idempotencyKey"] = str(uuid.uuid4())
             receipt["bundleDigest"] = digest
@@ -1119,6 +1692,11 @@ def _run(args: argparse.Namespace) -> int:
             receipt["refreshRevisionAfterRejection"] = False
             receipt["requestManagedAppId"] = receipt.get("managedAppId")
             receipt["requestExpectedAppRevision"] = None
+            receipt["handoffState"] = "pending"
+            receipt["handoffComplete"] = False
+            receipt.pop("handoffRecoveryRequired", None)
+            receipt.pop("previewUrl", None)
+            receipt.pop("publicationTicket", None)
         elif not receipt.get("idempotencyKey") or not isinstance(receipt.get("files"), list):
             raise CliError("本机 receipt 缺少重试标识或原始资料；不会重新创建发布请求。")
         elif old_digest == digest and receipt.get("files") != files:
@@ -1132,7 +1710,6 @@ def _run(args: argparse.Namespace) -> int:
         if request_managed_id is not None:
             request_managed_id = _valid_uuid(request_managed_id, "receipt request managedAppId")
         receipt["identity"] = {"origin": origin, "projectRoot": str(project_root), "appKey": app_key}
-        # Persist the key, idempotency ID, digest, and complete retry bundle before any request.
         store.save(receipt)
 
         expected_revision: int | None = None
@@ -1144,85 +1721,79 @@ def _run(args: argparse.Namespace) -> int:
             receipt["requestExpectedAppRevision"] = expected_revision
             store.save(receipt)
 
-        request_value: dict[str, Any] = {
-            "appKey": app_key,
-            "manifestPath": MANIFEST_NAME,
-            "files": retry_files,
-        }
+        request_value: dict[str, Any] = {"appKey": app_key, "manifestPath": MANIFEST_NAME, "files": retry_files}
         if request_managed_id:
             request_value["managedAppId"] = request_managed_id
             request_value["expectedAppRevision"] = expected_revision
         request_body = json.dumps(request_value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         status, raw = _request(
             origin_parts, "POST", "/api/managed-publications",
-            {
-                "Content-Type": "application/json; charset=utf-8",
-                "Accept": "application/json",
-                "Idempotency-Key": idempotency_key,
-                "X-Plaza-Publish-Key": receipt["publishKey"],
-            },
-            request_body,
+            {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json",
+             "Idempotency-Key": idempotency_key, "X-Plaza-Publish-Key": receipt["publishKey"]}, request_body,
         )
         if status < 200 or status >= 300:
             error_code = _response_error_code(raw)
             if status == 400 and error_code in {"VALIDATION_FAILED", "INVALID_REQUEST"}:
-                # These codes are returned before an operation can write to GitLab.
                 receipt["responseKnown"] = True
                 store.save(receipt)
-            elif status == 409 and error_code in {"REVISION_CONFLICT", "VERSION_NOT_NEWER"}:
-                # Managed revision checks happen before GitLab source writes. A revision
-                # conflict must get a fresh operation ID and owner-authenticated status.
+                _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
+                             "diagnostics": _sanitize_server_diagnostics(raw)})
+                return 2
+            if status == 409 and error_code in {"REVISION_CONFLICT", "VERSION_NOT_NEWER"}:
                 receipt["responseKnown"] = True
                 if error_code == "REVISION_CONFLICT":
                     receipt["refreshRevisionAfterRejection"] = True
                     receipt["requestExpectedAppRevision"] = None
                 store.save(receipt)
             raise CliError(f"门户拒绝发布请求（HTTP {status}）；receipt 已保留，可安全重试。")
-        response = _json_response(raw)
-        returned_managed = response.get("managedAppId")
-        if returned_managed is None:
-            returned_managed = managed_id
-        if not isinstance(returned_managed, str):
-            raise CliError("门户响应缺少 managedAppId；receipt 已保留，可使用相同项目内容重试。")
-        returned_managed = _valid_uuid(returned_managed, "门户 managedAppId")
-        if managed_id and returned_managed != managed_id:
-            raise CliError("门户返回的 managedAppId 与本机 receipt 不一致；receipt 已保留。")
-        revision = response.get("revision")
-        if isinstance(revision, int) and not isinstance(revision, bool) and revision >= 0:
-            receipt["publicationRevision"] = revision
-        receipt["managedAppId"] = returned_managed
-        receipt["responseKnown"] = True
-        store.save(receipt)
 
-        status_value = response.get("status")
-        if not isinstance(status_value, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", status_value):
-            status_value = "unknown"
-        result: dict[str, Any] = {
-            "status": status_value,
-            "sourceUploaded": response.get("sourceUploaded") is True,
-            "managedAppId": returned_managed,
-        }
-        preview_url = response.get("previewUrl")
-        if isinstance(preview_url, str) and preview_url and _is_author_preview_url(preview_url, origin):
-            result["previewUrl"] = preview_url
-        elif preview_url:
-            print("门户返回了无效预览链接，已隐藏；请从门户内查看作者预览。", file=sys.stderr)
-        print(json.dumps(result, ensure_ascii=False))
-        if status_value.casefold() == "failed":
-            print("源文件已上传，广场收录失败；请按返回状态处理，不能视为发布成功。", file=sys.stderr)
+        try:
+            response = _json_response(raw)
+        except CliError:
+            _print_json(_recovery_required_output(managed_id=managed_id))
             return 1
-        if result["sourceUploaded"] is not True:
-            print("门户未确认源码上传完成；receipt 已保留。", file=sys.stderr)
+        details, complete = _publication_handoff(response, origin)
+        if managed_id and details.get("managedAppId") != managed_id:
+            details.pop("previewUrl", None)
+            details["handoffState"] = "recovery_required"
+            complete = False
+        try:
+            _store_publication_result(store, receipt, details, complete)
+        except CliError:
+            _print_json(_recovery_required_output(managed_id=details.get("managedAppId") or managed_id))
+            return 1
+        _print_json(_publish_output(details, complete))
+        if details.get("status") == "failed":
+            print("源文件已上传，广场收录失败；请按返回状态处理，不能视为发布成功。", file=sys.stderr)
+        if not complete:
             return 1
         if deferred_update:
             print("已恢复上次未确认的同一资料包；当前项目内容有变化，尚未上传当前内容，请再次运行以提交更新。", file=sys.stderr)
             return 3
         return 0
     except CliError as error:
-        print(str(error), file=sys.stderr)
+        if validation_mode:
+            _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
+                         "diagnostics": [_local_diagnostic(error)]})
+        elif args.status:
+            _print_json({"status": "receipt_error", "handoffState": "recovery_required",
+                         "publicationStatus": "unknown", "sourceUploaded": False})
+        elif args.recover:
+            _print_json(_recovery_required_output())
+        else:
+            print(str(error), file=sys.stderr)
         return 2
     except OSError:
-        print("本地文件或私有 receipt 操作失败；未输出凭据。", file=sys.stderr)
+        if validation_mode:
+            _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
+                         "diagnostics": [_fallback_diagnostic("LOCAL_READ_FAILED", "managed.cli.local_read")]})
+        elif args.status:
+            _print_json({"status": "receipt_error", "handoffState": "recovery_required",
+                         "publicationStatus": "unknown", "sourceUploaded": False})
+        elif args.recover:
+            _print_json(_recovery_required_output())
+        else:
+            print("本地文件或私有 receipt 操作失败；未输出凭据。", file=sys.stderr)
         return 2
 
 
@@ -1241,7 +1812,11 @@ def main() -> int:
     parser.add_argument("--project", required=True, help="AI 应用项目的绝对路径")
     parser.add_argument("--managed-app-id", help="只允许更新与本机 receipt 匹配的应用 UUID")
     parser.add_argument("--state-dir", help=argparse.SUPPRESS)
-    parser.add_argument("--dry-run", action="store_true", help="只检查资料并输出数量摘要，不访问门户")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--dry-run", action="store_true", help="只检查资料并输出数量摘要，不访问门户")
+    modes.add_argument("--validate", action="store_true", help="本地检查并向门户预检，不创建或修改发布回执")
+    modes.add_argument("--status", action="store_true", help="只读查看本机发布回执，不访问门户或采集源码")
+    modes.add_argument("--recover", action="store_true", help="仅用原回执向门户读取发布结果，不重传源码")
     return _run(parser.parse_args())
 
 

@@ -30,6 +30,8 @@ npm start
 
 每个应用的专属发布凭证由辅助工具保存在用户私有目录，Windows 用 DPAPI 保护，POSIX 使用私有文件权限；它不能更新其他应用，也不是 GitLab 令牌。首次运行前保存恢复记录，网络不确定时沿用原操作和原内容；更新自动复用凭证并核对广场版本。姓名仍由负责人确认，是作者声明；GitLab 操作身份由统一托管服务提供，不宣称员工实名验证。
 
+上传前先用官方工具 `--validate` 做本地及服务端无写入校验；诊断只提供安全的相对路径、规则和行/字段定位。预检不会建立发布身份、修改 receipt 或创建任何发布对象，通过也不表示已上传。工具返回校验、鉴权或发布错误时，按诊断处理，不能改用正式 POST 做小包探测或换身份重发。`--status` 查看本机已保存回执，`--recover` 只读取回服务器原操作的回执；两者不重传源码。缺少有效预览链接或保存失败时属于交接待恢复，须保留原 receipt、凭据、幂等键和原包。操作与诊断说明见 [发布校验与恢复](docs/ops/publishing-validation-recovery.md)。
+
 统一托管要求服务器同时设置 `PLAZA_MANAGED_GROUP_ID`、`PLAZA_MANAGED_GROUP_PATH`、`PLAZA_MANAGED_GITLAB_TOKEN`。使用仅管理目标群组的授权，原始令牌不进入提示词、网页、作者客户端或日志。未启用时，以及更新原有直连 GitLab 的应用时，沿用下述直接 GitLab 发布流程；`GET /api/publish-contract?mode=gitlab` 可显式取得该规范。
 
 在页面点“分享我的AI应用”并复制提示词。项目 Agent 取得 `/api/publish-contract` 中的 schemaVersion 2 规范，生成 `ai-app.json` 和明确可共享的 Markdown。每位作者都需提供中文姓名和英文全名或完整拼音；缺任一姓名时 Agent 会先询问，不从 GitLab 用户名、邮箱或 Git 配置推测。作者不用填写资料表格。
@@ -52,7 +54,9 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 | --- | --- |
 | 规范与发布提示词 | `GET /api/publish-contract` |
 | 托管上传工具 | `GET /api/publisher-cli.py`，需开启统一托管，规范包含工具 SHA-256 |
+| 无写入托管资料校验 | `POST /api/managed-publications/validate`，与上传共享包规则，不创建发布身份或业务记录 |
 | 上传应用发布快照 | `POST /api/managed-publications`，仅应用专属发布凭证，不接收作者 GitLab 令牌 |
+| 读取原托管操作回执 | `GET /api/managed-publications/receipt`，原应用专属凭据和原 `Idempotency-Key`，不重传源码或推进发布 |
 | 作者读取托管更新状态 | `GET /api/managed-apps/:id/status`，使用应用专属发布凭证核对当前目录修订 |
 | 指定应用的更新提示词 | `GET /api/apps/:id/publish-contract`，包含当前版本与修订号 |
 | 提交固定来源 | `POST /api/publications`，须包含 GitLab 版本 `tag`，并提供 `X-GitLab-Token` + `Idempotency-Key` |

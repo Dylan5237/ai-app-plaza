@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -81,10 +81,26 @@ async function makeProject(parent: string) {
   return root;
 }
 
-function runCli(args: string[]) {
+function runCli(args: string[], injectPostResponseSaveFailure = false) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(python, ['-u', cliPath, ...args], {
-      env: { ...process.env, PYTHONUTF8: '1' },
+    const injection = `import importlib.util,os,sys
+target=os.environ['PLAZA_TEST_CLI_PATH']
+spec=importlib.util.spec_from_file_location('publisher_cli_test_target', target)
+module=importlib.util.module_from_spec(spec)
+sys.modules[spec.name]=module
+spec.loader.exec_module(module)
+original=module.ReceiptStore.save
+count=0
+def fail_second_save(self, receipt):
+ global count
+ count+=1
+ if count==2: raise module.CliError('injected receipt save failure')
+ return original(self, receipt)
+module.ReceiptStore.save=fail_second_save
+sys.argv=[target,*sys.argv[1:]]
+raise SystemExit(module.main())`;
+    const child = spawn(python, injectPostResponseSaveFailure ? ['-c', injection, ...args] : ['-u', cliPath, ...args], {
+      env: { ...process.env, PYTHONUTF8: '1', ...(injectPostResponseSaveFailure ? { PLAZA_TEST_CLI_PATH: cliPath } : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const stdout: Buffer[] = [];
@@ -116,15 +132,208 @@ test('CLI dry-run permits three tags and rejects four or normalized duplicates w
   await writeFile(file, JSON.stringify({ ...source, tags: ['MCP', '需求管理', 'AI协作', '第四项'] }));
   const four = await runCli(args);
   assert.equal(four.code, 2);
-  assert.match(four.stderr, /最多 3 个/);
+  assert.equal(JSON.parse(four.stdout).diagnostics[0].code, 'CAPABILITY_TAGS_INVALID');
   await writeFile(file, JSON.stringify({ ...source, tags: ['MCP', 'ｍｃｐ'] }));
-  assert.equal((await runCli(args)).code, 2);
+  const duplicate = await runCli(args);
+  assert.equal(duplicate.code, 2);
+  assert.equal(JSON.parse(duplicate.stdout).diagnostics[0].field, 'tags');
   await writeFile(file, JSON.stringify({ ...source, tags: ['😀'.repeat(32)] }));
   assert.equal((await runCli(args)).code, 0);
   await writeFile(file, JSON.stringify({ ...source, tags: ['😀'.repeat(33)] }));
   assert.equal((await runCli(args)).code, 2);
   assert.equal(requests, 0);
   await assert.rejects(access(state), { code: 'ENOENT' });
+});
+
+test('--validate sends one credential-free preflight per invocation and never creates receipt state', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-validate-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/api/managed-publications/validate');
+    assert.equal(request.headers['idempotency-key'], undefined);
+    assert.equal(request.headers['x-plaza-publish-key'], undefined);
+    const candidate = decodedBody(request);
+    assert.equal(candidate.appKey, 'demo-assistant');
+    assert.equal(candidate.manifestPath, 'ai-app.json');
+    assert.equal(candidate.files.length, 5);
+    respondJson(response, { status: 'validated', published: false, sourceUploaded: false, fileCount: 5, totalBytes: 321 });
+  });
+  t.after(portal.close);
+
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--validate'];
+  for (let index = 0; index < 2; index += 1) {
+    const result = await runCli(args);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      status: 'validated', published: false, sourceUploaded: false, fileCount: 5, totalBytes: 321,
+    });
+    await assert.rejects(access(stateDir), { code: 'ENOENT' });
+  }
+  assert.equal(requests.length, 2, 'each validate makes exactly one preflight request and no other request');
+});
+
+test('--validate returns sanitized allowlisted server diagnostics as machine JSON', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-validate-diagnostic-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const secrets = ['SERVER_DIAGNOSTIC_SECRET_SENTINEL', 'diagnostic-hidden-secret'];
+  let requests = 0;
+  const portal = await createPortal((request, response) => {
+    requests += 1;
+    assert.equal(request.url, '/api/managed-publications/validate');
+    assert.equal(request.headers['idempotency-key'], undefined);
+    assert.equal(request.headers['x-plaza-publish-key'], undefined);
+    response.writeHead(400, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: {
+      code: 'VALIDATION_FAILED', message: secrets[0], diagnostics: [{
+        code: 'SECRET_MARKER_FOUND', ruleId: 'managed.bundle.secret_marker', path: 'src/main.py',
+        field: 'files[0].content', line: 3, column: 5, suggestion: secrets[1],
+      }, {
+        code: 'UNTRUSTED_CODE', ruleId: 'evil.rule', path: 'C:\\private\\credential.txt',
+        field: secrets[0], suggestion: secrets[0],
+      }],
+    } }));
+  });
+  t.after(portal.close);
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--validate']);
+  assert.equal(result.code, 2);
+  const output = JSON.parse(result.stdout) as Record<string, any>;
+  assert.equal(output.status, 'validation_failed');
+  assert.equal(output.published, false);
+  assert.equal(output.sourceUploaded, false);
+  assert.equal(output.diagnostics.length, 1);
+  assert.deepEqual(output.diagnostics[0], {
+    code: 'SECRET_MARKER_FOUND', ruleId: 'managed.bundle.secret_marker', path: 'src/main.py',
+    field: 'files[0].content', line: 3, column: 5, suggestion: '按对应字段提示修正资料后重新校验。',
+  });
+  for (const secret of secrets) assert.ok(!result.stdout.includes(secret) && !result.stderr.includes(secret));
+  assert.equal(requests, 1);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+});
+
+test('--validate preserves exact backend diagnostic rules and rejects unknown or unsafe data', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-validate-backend-rules-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const serverMessage = 'PRIVATE_BACKEND_MESSAGE_SENTINEL';
+  const diagnostics = [
+    ['APP_KEY_INVALID', 'managed.bundle.app_key'],
+    ['FILE_COUNT_INVALID', 'managed.bundle.file_count'],
+    ['REVISION_INVALID', 'managed.bundle.expected_app_revision'],
+    ['FILE_ENTRY_INVALID', 'managed.bundle.file_entry'],
+    ['REPOSITORY_PATH_INVALID', 'managed.bundle.manifest_path'],
+    ['REPOSITORY_PATH_INVALID', 'managed.bundle.file_path'],
+    ['REPOSITORY_PATH_INVALID', 'managed.bundle.document_path'],
+    ['FILE_ENCODING_INVALID', 'managed.bundle.file_encoding'],
+    ['FILE_SIZE_EXCEEDED', 'managed.bundle.file_size'],
+    ['BUNDLE_SIZE_EXCEEDED', 'managed.bundle.bundle_size'],
+    ['FORBIDDEN_PATH', 'managed.bundle.forbidden_path'],
+    ['PATH_COLLISION', 'managed.bundle.path_collision'],
+    ['SECRET_MARKER_FOUND', 'managed.bundle.secret_marker'],
+    ['FILE_DIRECTORY_COLLISION', 'managed.bundle.file_directory_collision'],
+    ['MANIFEST_MISSING', 'managed.bundle.manifest_missing'],
+    ['MANIFEST_SIZE_EXCEEDED', 'managed.bundle.manifest_size'],
+    ['MANIFEST_UTF8_INVALID', 'managed.bundle.manifest_utf8'],
+    ['MANIFEST_JSON_INVALID', 'managed.bundle.manifest_json'],
+    ['MANIFEST_INVALID', 'managed.bundle.manifest'],
+    ['SCHEMA_VERSION_UNSUPPORTED', 'managed.bundle.schema_version'],
+    ['CAPABILITY_TAGS_INVALID', 'managed.bundle.capability_tags'],
+    ['PROJECT_VERSION_INVALID', 'managed.bundle.project_version'],
+    ['MAINTAINER_NAME_REQUIRED', 'managed.bundle.maintainer_name'],
+    ['MANIFEST_SCHEMA_INVALID', 'managed.bundle.manifest_schema'],
+    ['APP_KEY_MISMATCH', 'managed.bundle.app_key_mismatch'],
+    ['MANIFEST_TEXT_EMPTY', 'managed.bundle.manifest_text'],
+    ['ENTRY_ID_DUPLICATE', 'managed.bundle.entry_id_unique'],
+    ['ENTRY_INSTRUCTIONS_PATH_INVALID', 'managed.bundle.entry_instructions_path'],
+    ['PRIMARY_ENTRY_INVALID', 'managed.bundle.primary_entry'],
+    ['README_PATH_INVALID', 'managed.bundle.readme_path'],
+    ['USAGE_PATH_INVALID', 'managed.bundle.usage_path'],
+    ['ENTRY_URL_INVALID', 'managed.bundle.entry_url'],
+    ['DOCUMENT_MISSING', 'managed.bundle.document_missing'],
+    ['DOCUMENT_SIZE_EXCEEDED', 'managed.bundle.document_size'],
+    ['DOCUMENT_TOTAL_SIZE_EXCEEDED', 'managed.bundle.document_total_size'],
+    ['DOCUMENT_UTF8_INVALID', 'managed.bundle.document_utf8'],
+    ['LFS_POINTER_NOT_ALLOWED', 'managed.bundle.lfs_pointer'],
+    ['TAG_NAME_MISMATCH', 'managed.bundle.tags'],
+    ['REQUEST_FIELD_INVALID', 'managed.request.schema'],
+  ].map(([code, ruleId]) => ({
+    code, ruleId, path: 'src/main.py', field: 'files[0].path', line: 2, column: 3,
+    suggestion: serverMessage,
+  }));
+  diagnostics.push(
+    {
+      code: 'TAG_NAME_MISMATCH', ruleId: 'managed.bundle.tag_name_mismatch',
+      path: 'C:\\private\\TOKEN_SENTINEL', field: 'PRIVATE_FIELD_SENTINEL', line: 2, column: 3, suggestion: serverMessage,
+    },
+    {
+      code: 'UNKNOWN_BACKEND_ERROR', ruleId: 'managed.bundle.unknown',
+      path: 'https://private.example/TOKEN_SENTINEL', field: 'request', line: 2, column: 3, suggestion: serverMessage,
+    },
+    {
+      code: 'APP_KEY_INVALID', ruleId: 'managed.bundle.app_key',
+      path: 'C:\\private\\TOKEN_SENTINEL', field: 'appKey', line: 2, column: 3, suggestion: serverMessage,
+    },
+  );
+  let requests = 0;
+  const portal = await createPortal((request, response) => {
+    requests += 1;
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/api/managed-publications/validate');
+    assert.equal(request.headers['idempotency-key'], undefined);
+    assert.equal(request.headers['x-plaza-publish-key'], undefined);
+    response.writeHead(400, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { code: 'VALIDATION_FAILED', message: serverMessage, diagnostics } }));
+  });
+  t.after(portal.close);
+
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--validate']);
+  assert.equal(result.code, 2);
+  const output = JSON.parse(result.stdout) as Record<string, any>;
+  assert.equal(output.status, 'validation_failed');
+  assert.equal(output.published, false);
+  assert.equal(output.sourceUploaded, false);
+  assert.equal(output.diagnostics.length, 40);
+  assert.deepEqual(output.diagnostics.slice(0, 39), diagnostics.slice(0, 39).map(({ code, ruleId }) => ({
+    code, ruleId, path: 'src/main.py', field: 'files[0].path', line: 2, column: 3,
+    suggestion: '按对应字段提示修正资料后重新校验。',
+  })));
+  assert.deepEqual(output.diagnostics[39], {
+    code: 'APP_KEY_INVALID', ruleId: 'managed.bundle.app_key', field: 'appKey', line: 2, column: 3,
+    suggestion: '按对应字段提示修正资料后重新校验。',
+  });
+  assert.ok(!result.stdout.includes(serverMessage) && !result.stderr.includes(serverMessage));
+  assert.ok(!result.stdout.includes('TOKEN_SENTINEL') && !result.stderr.includes('TOKEN_SENTINEL'));
+  assert.ok(!result.stdout.includes('PRIVATE_FIELD_SENTINEL') && !result.stderr.includes('PRIVATE_FIELD_SENTINEL'));
+  assert.equal(requests, 1);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+});
+
+test('--validate local secret rejection is JSON and makes no request or receipt', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-validate-local-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const secret = 'LocalValidationSecretSentinelLong12345';
+  await writeFile(path.join(root, 'src', 'main.py'), `password = "${secret}"\n`);
+  let requests = 0;
+  const portal = await createPortal((_request, response) => { requests += 1; respondJson(response, {}); });
+  t.after(portal.close);
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--validate']);
+  assert.equal(result.code, 2);
+  const output = JSON.parse(result.stdout) as Record<string, any>;
+  assert.equal(output.diagnostics[0].code, 'SECRET_MARKER_FOUND');
+  assert.equal(output.diagnostics[0].path, 'src/main.py');
+  assert.ok(!result.stdout.includes(secret) && !result.stderr.includes(secret));
+  assert.equal(requests, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
 });
 
 function decodedBody(request: CapturedRequest) {
@@ -144,11 +353,14 @@ function respondJson(response: ServerResponse, value: unknown, status = 200) {
 
 function publicationResponse(origin: string, overrides: Record<string, unknown> = {}) {
   return {
+    id: PUBLICATION_ID,
     status: 'preview_ready',
     revision: 1,
+    nextAction: 'confirm',
+    expiresAt: '2026-10-17T00:00:00.000Z',
     appId: PUBLIC_ID,
     preview: { id: PUBLIC_ID },
-    ticket: 'fixture-ticket-must-not-be-printed-alone',
+    ticket: PREVIEW_TICKET,
     previewUrl: origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
     managedAppId: MANAGED_ID,
     sourceUploaded: true,
@@ -484,7 +696,7 @@ test('CLI dry-run permits JS/TS credential references but still blocks secret li
     await writeFile(filePath, item.content);
     const result = await runCli(args);
     assert.equal(result.code, 2, item.path + ': ' + result.stderr);
-    assert.ok(result.stderr.includes(item.path), 'reports the path for ' + item.path);
+    assert.ok(JSON.stringify(JSON.parse(result.stdout).diagnostics).includes(item.path), 'reports the safe relative path for ' + item.path);
     assert.ok(!result.stdout.includes(item.secret) && !result.stderr.includes(item.secret), 'does not echo secrets');
     assert.equal(requestCount, 0, 'dry-run performs no HTTP requests');
     await assert.rejects(access(stateDir), { code: 'ENOENT' });
@@ -530,12 +742,18 @@ test('external, credentialed, or malformed preview URLs are hidden', async (t) =
     origin.replace('http://', 'http://user:password@') + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
     origin + '/?unexpected=1#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
     origin + '/#publish=not-a-uuid&key=short',
+    origin + '/#publish=' + WRONG_MANAGED_ID + '&key=' + PREVIEW_TICKET,
+    origin + '/#publish=' + PUBLICATION_ID + '&key=' + 'B'.repeat(43),
+    origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET + '&key=' + PREVIEW_TICKET,
+    origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
   ];
   let responseIndex = 0;
   let portal: Awaited<ReturnType<typeof createPortal>>;
   portal = await createPortal((_request, response) => {
     const url = previewUrls(portal.origin)[responseIndex++];
-    respondJson(response, publicationResponse(portal.origin, { previewUrl: url }));
+    const missingId = responseIndex === 7 ? { id: undefined } : {};
+    const nullTicket = responseIndex === 8 ? { ticket: null } : {};
+    respondJson(response, publicationResponse(portal.origin, { previewUrl: url, ...missingId, ...nullTicket }));
   });
   t.after(portal.close);
 
@@ -546,10 +764,254 @@ test('external, credentialed, or malformed preview URLs are hidden', async (t) =
       '--project', root,
       '--state-dir', path.join(temporary, 'private-state-' + index),
     ]);
-    assert.equal(result.code, 0, result.stderr);
+    assert.notEqual(result.code, 0, 'unsafe preview response must not be reported as a completed handoff');
+    assert.ok(result.stdout, result.stderr);
     const output = JSON.parse(result.stdout) as Record<string, unknown>;
     assert.ok(!Object.hasOwn(output, 'previewUrl'), 'unsafe author preview link must be hidden');
   }
+});
+
+test('--status is local and read-only, reports the saved handoff state, and does not rescan source', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-status-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  let requests = 0;
+  const portal = await createPortal((_request, response) => {
+    requests += 1;
+    respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const published = await runCli(args);
+  assert.equal(published.code, 0, published.stderr);
+  assert.equal(requests, 1);
+
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const receiptPath = path.join(stateDir, receiptName);
+  const before = await readFile(receiptPath);
+  const secret = 'StatusMustNotScanThisSecretLong12345';
+  await writeFile(path.join(root, 'src', 'main.py'), `password = "${secret}"\n`);
+  const status = await runCli([...args, '--status']);
+  assert.equal(status.code, 0, status.stderr);
+  const output = JSON.parse(status.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'receipt_saved');
+  assert.equal(output.handoffState, 'complete');
+  assert.equal(output.publicationStatus, 'preview_ready');
+  assert.equal(output.publicationId, PUBLICATION_ID);
+  assert.equal(output.managedAppId, MANAGED_ID);
+  assert.equal(output.previewUrl, portal.origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET);
+  assert.ok(!status.stdout.includes(secret) && !status.stderr.includes(secret));
+  assert.equal(requests, 1, 'status makes no HTTP requests');
+  assert.deepEqual(await readFile(receiptPath), before, 'status does not rewrite the receipt');
+});
+
+test('--status never re-emits a receipt URL whose identity binding no longer verifies', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-status-tamper-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const portal = await createPortal((_request, response) => respondJson(response, publicationResponse(portal.origin)));
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  assert.equal((await runCli(args)).code, 0);
+  if (process.platform === 'win32') return;
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const receiptPath = path.join(stateDir, receiptName);
+  const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as Record<string, any>;
+  receipt.previewUrl = 'https://outside.invalid/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET;
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  const status = await runCli([...args, '--status']);
+  assert.equal(status.code, 0);
+  const output = JSON.parse(status.stdout) as Record<string, unknown>;
+  assert.equal(output.handoffState, 'recovery_required');
+  assert.ok(!Object.hasOwn(output, 'previewUrl'));
+});
+
+test('--recover GETs the original receipt only and recovers after the project source changes', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') {
+      response.destroy();
+      return;
+    }
+    respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const uncertain = await runCli(args);
+  assert.notEqual(uncertain.code, 0);
+  assert.equal(requests.length, 1);
+  const original = requests[0]!;
+  const secret = 'ChangedSourceMustNotBeUploadedLong12345';
+  await writeFile(path.join(root, 'src', 'main.py'), `password = "${secret}"\n`);
+  const recovered = await runCli([...args, '--recover']);
+  assert.equal(recovered.code, 0, recovered.stderr);
+  assert.equal(requests.length, 2);
+  const get = requests[1]!;
+  assert.equal(get.method, 'GET');
+  assert.equal(get.url, '/api/managed-publications/receipt');
+  assert.equal(get.body.length, 0);
+  assert.equal(get.headers['idempotency-key'], original.headers['idempotency-key']);
+  assert.equal(get.headers['x-plaza-publish-key'], original.headers['x-plaza-publish-key']);
+  assert.equal(requests.filter((item) => item.method === 'POST').length, 1);
+  const output = JSON.parse(recovered.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'preview_ready');
+  assert.equal(output.handoffState, 'complete');
+  assert.equal(output.publicationId, PUBLICATION_ID);
+  assert.ok(!recovered.stdout.includes(secret) && !recovered.stderr.includes(secret));
+});
+
+test('--recover preserves the original receipt when the server says the operation is unfinished', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-pending-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  const portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') {
+      response.destroy();
+      return;
+    }
+    respondJson(response, {
+      status: 'recovery_required', nextAction: 'retry_original', managedAppId: MANAGED_ID,
+      recoveryRequired: true, sourceUploaded: false, operationStatus: 'commit_ready',
+    });
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  assert.notEqual((await runCli(args)).code, 0);
+  const beforeKey = requests[0]!.headers['idempotency-key'];
+  const beforeOwner = requests[0]!.headers['x-plaza-publish-key'];
+  const recovered = await runCli([...args, '--recover']);
+  assert.equal(recovered.code, 1);
+  const output = JSON.parse(recovered.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.equal(output.handoffState, 'recovery_required');
+  assert.equal(output.managedAppId, MANAGED_ID);
+  assert.equal(output.operationStatus, 'commit_ready');
+  assert.equal(output.nextAction, 'retry_original');
+  assert.equal(output.sourceUploaded, false);
+  assert.ok(!Object.hasOwn(output, 'previewUrl'));
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1]!.method, 'GET');
+  assert.equal(requests[1]!.body.length, 0);
+  assert.equal(requests[1]!.headers['idempotency-key'], beforeKey);
+  assert.equal(requests[1]!.headers['x-plaza-publish-key'], beforeOwner);
+});
+
+test('registered publications are reported separately and do not claim preview handoff completion', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-registered-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  let requestCount = 0;
+  const portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    respondJson(response, publicationResponse(portal.origin, { status: 'registered', nextAction: 'complete' }));
+  });
+  t.after(portal.close);
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir]);
+  assert.equal(result.code, 1);
+  const output = JSON.parse(result.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'registered');
+  assert.equal(output.handoffState, 'registered');
+  assert.equal(output.sourceUploaded, true);
+  assert.ok(!Object.hasOwn(output, 'previewUrl'));
+  assert.equal(requestCount, 1, 'the CLI does not make a confirm or follow-up request');
+});
+
+test('--recover reports MANAGED_OPERATION_NOT_FOUND without changing owner or retrying the POST', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-missing-op-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  const portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') {
+      response.destroy();
+      return;
+    }
+    respondJson(response, { error: { code: 'MANAGED_OPERATION_NOT_FOUND', message: 'private server detail' } }, 404);
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  assert.notEqual((await runCli(args)).code, 0);
+  const post = requests[0]!;
+  const recovered = await runCli([...args, '--recover']);
+  assert.equal(recovered.code, 1);
+  const output = JSON.parse(recovered.stdout) as Record<string, unknown>;
+  assert.equal(output.code, 'MANAGED_OPERATION_NOT_FOUND');
+  assert.equal(output.status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.ok(!recovered.stdout.includes('private server detail'));
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1]!.method, 'GET');
+  assert.equal(requests[1]!.body.length, 0);
+  assert.equal(requests[1]!.headers['idempotency-key'], post.headers['idempotency-key']);
+  assert.equal(requests[1]!.headers['x-plaza-publish-key'], post.headers['x-plaza-publish-key']);
+});
+
+test('--recover with no receipt stops without creating state or making a request', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-empty-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  let requests = 0;
+  const portal = await createPortal((_request, response) => { requests += 1; respondJson(response, {}); });
+  t.after(portal.close);
+  const result = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--recover']);
+  assert.equal(result.code, 1);
+  assert.equal(JSON.parse(result.stdout).status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.equal(requests, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+});
+
+test('receipt save failure after POST requires GET recovery and never prints the unsaved URL', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-save-failure-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      respondJson(response, publicationResponse(portal.origin));
+      return;
+    }
+    respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const failedSave = await runCli(args, true);
+  assert.equal(failedSave.code, 1);
+  const recoveryOutput = JSON.parse(failedSave.stdout) as Record<string, unknown>;
+  assert.equal(recoveryOutput.status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.ok(!Object.hasOwn(recoveryOutput, 'previewUrl'));
+  assert.ok(!failedSave.stdout.includes(PREVIEW_TICKET));
+  assert.equal(requests.length, 1);
+  const post = requests[0]!;
+  assert.equal(post.method, 'POST');
+  const recovered = await runCli([...args, '--recover']);
+  assert.equal(recovered.code, 0, recovered.stderr);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1]!.method, 'GET');
+  assert.equal(requests[1]!.body.length, 0);
+  assert.equal(requests[1]!.headers['idempotency-key'], post.headers['idempotency-key']);
+  assert.equal(requests[1]!.headers['x-plaza-publish-key'], post.headers['x-plaza-publish-key']);
+  const recoveredOutput = JSON.parse(recovered.stdout) as Record<string, unknown>;
+  assert.equal(recoveredOutput.previewUrl, portal.origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET);
+  assert.ok(!Object.hasOwn(recoveredOutput, 'ticket'));
 });
 
 test('network failure retries the persisted exact bundle with the same owner and idempotency keys', async (t) => {
@@ -659,8 +1121,8 @@ for (const errorCode of ['VALIDATION_FAILED', 'INVALID_REQUEST']) {
     const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
     const rejected = await runCli(args);
     assert.equal(rejected.code, 2);
-    assert.match(rejected.stderr, /HTTP 400/);
-    assert.ok(!rejected.stderr.includes('response-message-secret-sentinel'));
+    assert.equal(JSON.parse(rejected.stdout).status, 'validation_failed');
+    assert.ok(!rejected.stdout.includes('response-message-secret-sentinel'));
     const rejectedOwner = requests[0]!.headers['x-plaza-publish-key'];
     const rejectedKey = requests[0]!.headers['idempotency-key'];
 
