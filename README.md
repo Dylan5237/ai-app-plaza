@@ -85,6 +85,8 @@ npm run test:prototype
 
 浏览器测试需要 Playwright Chromium，或设置 `PLAYWRIGHT_CHANNEL=chrome` / `PLAYWRIGHT_EXECUTABLE_PATH` 指向已安装浏览器。本地主流程测试使用受控 GitLab 协议服务与真实 PostgreSQL 引擎，不向公司仓库写入。测试代码区分这些替身与实际服务；结果和截图位于忽略的 `artifacts/`。
 
+`npm test` 最多并发运行 4 个测试文件，为测试中的 PGlite/WASM 实例和服务启动子进程保留资源。测试仍并发执行，启动就绪上限保持 15 秒；失败时记录子进程状态和最后一次健康探测。排查资源争用时可用 `node --import tsx --test tests/*.test.ts` 对照 Node 默认并发，或用 `node --import tsx --test --test-concurrency=1 tests/*.test.ts` 作串行对比。
+
 ## 代码与项目约定
 
 - `src/`：当前 Vue/Element Plus 门户；`server/`：API、GitLab 读取、SQL 数据与 MCP 适配器。

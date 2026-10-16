@@ -28,12 +28,29 @@ test('actual service process starts with an empty durable catalog and sanitizes 
   const runtime = start({ PLAZA_LOCAL: '1', NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', PUBLIC_ORIGIN: origin,
     GITLAB_URL: gitlab.url, DATABASE_URL: '', PLAZA_SECRET: 'test-only-cli-secret-long-enough-for-startup', PLAZA_DATA_DIR: await mkdtemp(join(tmpdir(), 'plaza-startup-')) });
   t.after(async () => { runtime.child.kill(); await runtime.closed; });
-  let health: any;
-  for (let attempt = 0; attempt < 150; attempt++) {
-    if (runtime.child.exitCode !== null) break;
-    try { health = await (await fetch(`${origin}/api/health`)).json(); break; } catch { await pause(100); }
+  const startedAt = performance.now(), deadline = startedAt + 15_000;
+  let health: any, lastProbe: unknown;
+  for (let attempt = 0; attempt < 150 && performance.now() < deadline; attempt++) {
+    if (runtime.child.exitCode !== null || runtime.child.signalCode !== null) break;
+    try {
+      const timeout = Math.max(1, Math.min(500, Math.ceil(deadline - performance.now())));
+      const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(timeout) });
+      const body = await response.json() as any;
+      lastProbe = { status: response.status, health: body?.status, mode: body?.mode, loginRequired: body?.loginRequired };
+      const ownStartup = runtime.output().stdout.includes(`AI应用广场已启动：${origin}（`);
+      if (ownStartup && runtime.child.exitCode === null && runtime.child.signalCode === null && performance.now() <= deadline &&
+          response.status === 200 && body?.status === 'ok' && body?.mode === 'local' && body?.loginRequired === false) {
+        health = body;
+        break;
+      }
+    } catch (error) {
+      const cause = error instanceof Error ? error.cause as NodeJS.ErrnoException | undefined : undefined;
+      lastProbe = { error: error instanceof Error ? error.name : 'unknown', code: cause?.code };
+    }
+    await pause(Math.max(0, Math.min(100, deadline - performance.now())));
   }
-  assert.equal(health?.loginRequired, false, runtime.output().stderr);
+  assert.equal(health?.loginRequired, false, JSON.stringify({ elapsedMs: performance.now() - startedAt,
+    exitCode: runtime.child.exitCode, signal: runtime.child.signalCode, lastProbe, ...runtime.output() }));
   assert.equal((await (await fetch(`${origin}/api/apps`)).json() as any).total, 0);
   assert.equal(gitlab.state.requests.length, 0, 'startup/list never read repositories without a publication');
   assert.equal(runtime.output().stderr, '');
