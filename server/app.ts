@@ -5,7 +5,7 @@ import { access } from 'node:fs/promises';
 import { z } from 'zod';
 import { createService } from './domain/service.js';
 import { normalizeProjectVersion } from './domain/manifest.js';
-import { DomainError } from './domain/errors.js';
+import { DomainError, type DomainDiagnostic } from './domain/errors.js';
 import type { Database } from './domain/database.js';
 import type { Config } from './config.js';
 import { publishContract } from './publish-contract.js';
@@ -25,6 +25,33 @@ const managedCandidate = z.object({
   managedAppId: z.string().uuid().optional(), expectedAppRevision: z.number().int().nonnegative().optional(),
 }).strict();
 const idValue = z.string().uuid();
+
+function managedRequestField(path: PropertyKey[]): string | undefined {
+  const allowed = new Set(['appKey', 'manifestPath', 'files', 'path', 'content', 'managedAppId', 'expectedAppRevision']);
+  if (!path.length) return undefined;
+  const parts: string[] = [];
+  for (const part of path.slice(0, 8)) {
+    if (typeof part === 'number' && Number.isInteger(part) && part >= 0 && part < 1000) parts.push(String(part));
+    else if (typeof part === 'string' && allowed.has(part)) parts.push(part);
+    else return undefined;
+  }
+  return parts.join('.');
+}
+
+function parseManagedCandidate(value: unknown) {
+  try {
+    return managedCandidate.parse(value);
+  } catch (error) {
+    if (!(error instanceof z.ZodError)) throw error;
+    const diagnostics: DomainDiagnostic[] = error.issues.slice(0, 50).map(issue => ({
+      code: 'REQUEST_FIELD_INVALID',
+      ruleId: 'managed.request.schema',
+      ...(managedRequestField(issue.path) ? { field: managedRequestField(issue.path) } : { field: 'request' }),
+      suggestion: '检查字段类型、长度和格式后重新校验。',
+    }));
+    throw new DomainError(400, 'INVALID_REQUEST', '请求字段不符合发布规范', diagnostics);
+  }
+}
 
 export async function createApp(config: Config, db: Database) {
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience });
@@ -62,7 +89,8 @@ export async function createApp(config: Config, db: Database) {
     if (request.headers.host !== new URL(config.publicOrigin).host) {
       return reply.code(403).send({ error: { code: 'HOST_DENIED', message: '访问地址与 PUBLIC_ORIGIN 不一致' } });
     }
-    if (managed && request.method === 'POST' && request.url.split('?')[0] === '/api/managed-publications') {
+    const managedPostPath = request.url.split('?')[0];
+    if (managed && request.method === 'POST' && ['/api/managed-publications', '/api/managed-publications/validate'].includes(managedPostPath)) {
       if (managedActive >= 2) return reply.code(429).send({ error: { code: 'UPLOAD_BUSY', message: '正在处理其他上传，请保留本次记录后稍后重试' } });
       managedActive += 1;
       (request as any).managedSlot = true;
@@ -72,7 +100,11 @@ export async function createApp(config: Config, db: Database) {
   app.addHook('onRequestAbort', async request => { if (!(request as any).managedRunning) releaseManagedSlot(request); });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: 'INVALID_REQUEST', message: '请求字段不符合发布规范' } });
-    if (error instanceof DomainError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
+    if (error instanceof DomainError) return reply.code(error.statusCode).send({ error: {
+      code: error.code,
+      message: error.message,
+      ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
+    } });
     const status = (error as any).statusCode;
     if (status === 413) return reply.code(413).send({ error: { code: 'BODY_TOO_LARGE', message: request.url.startsWith('/api/managed-publications') ? '应用文件过大，请精简上传范围；不要遗漏必要源码' : '请求过大，只应提交资料定位' } });
     if (status === 429) return reply.code(429).send({ error: { code: 'RATE_LIMITED', message: '操作较频繁，请稍后重试' } });
@@ -131,9 +163,23 @@ export async function createApp(config: Config, db: Database) {
     try {
       const publishKey = z.string().min(43).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['x-plaza-publish-key']);
       const key = z.string().uuid().parse(request.headers['idempotency-key']);
-      const result = await managed.submit(managedCandidate.parse(request.body), publishKey, key);
+      const result = await managed.submit(parseManagedCandidate(request.body), publishKey, key);
       return reply.code(201).send(result);
     } finally { releaseManagedSlot(request); }
+  });
+  app.post('/api/managed-publications/validate', { bodyLimit: 32 * 1024 * 1024 }, async (request, reply) => {
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');
+    (request as any).managedRunning = true;
+    try {
+      const result = await managed.validate(parseManagedCandidate(request.body));
+      return reply.code(200).send({ status: 'validated', published: false, sourceUploaded: false, ...result });
+    } finally { releaseManagedSlot(request); }
+  });
+  app.get('/api/managed-publications/receipt', async (request) => {
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');
+    const publishKey = z.string().min(43).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['x-plaza-publish-key']);
+    const key = idValue.parse(request.headers['idempotency-key']);
+    return managed.receipt(publishKey, key);
   });
   app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));

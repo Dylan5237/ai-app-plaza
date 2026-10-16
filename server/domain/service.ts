@@ -76,6 +76,7 @@ export interface PlazaService {
   cleanupExpiredTokens(): Promise<void>;
   tags(): Promise<string[]>;
   submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult>;
+  lookupManagedReceipt(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult | undefined>;
   publication(id: string, ticket: string): Promise<PublicationView>;
   managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
@@ -638,6 +639,27 @@ export function createService(config: ServiceConfig): PlazaService {
       const record = (await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id])).rows[0];
       if (!record || record.request_hash !== hashInput(input)) throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "原发布回执与本次固定来源不一致，已停止恢复。");
       if (new Date(record.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+      return submitView(record);
+    },
+
+    async lookupManagedReceipt(input, gitlabToken, idempotencyKey) {
+      validateSubmitInput(input, gitlabToken, idempotencyKey);
+      const { actorId } = await reader.currentUser(gitlabToken);
+      const idempotencyDigest = createHmac("sha256", secret)
+        .update(`idempotency-v1:${actorId}:${idempotencyKey}`)
+        .digest("hex");
+      const requestHash = hashInput(input);
+      const record = (await config.db.query<PublicationRecord>(
+        "SELECT * FROM publications WHERE actor_id = $1 AND idempotency_digest = $2",
+        [actorId, idempotencyDigest],
+      )).rows[0];
+      if (!record) return undefined;
+      if (record.request_hash !== requestHash) {
+        throw new DomainError(409, "IDEMPOTENCY_CONFLICT", "相同幂等键已用于不同的候选内容。");
+      }
+      if (new Date(record.expires_at).getTime() <= Date.now()) {
+        throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，无法通过该回执恢复。");
+      }
       return submitView(record);
     },
 

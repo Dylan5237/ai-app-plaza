@@ -1,10 +1,12 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { DomainError } from "./errors.js";
 import { gitlabConcurrency } from "./gitlab-concurrency.js";
+import type { DomainDiagnostic } from "./errors.js";
 import type { Database } from "./database.js";
-import type { PlazaService, SubmitResult } from "./service.js";
+import type { PlazaService, SubmitInput, SubmitResult } from "./service.js";
 import { compareProjectVersions, decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath } from "./manifest.js";
 import { validateTagReuse } from './tags.js';
+import { parseTree, type ParseError } from "jsonc-parser";
 
 const MAX_FILES = 1_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -112,11 +114,16 @@ export interface ManagedSubmitInput {
 }
 
 export interface ManagedPublisher {
+  validate(input: ManagedSubmitInput): Promise<{ fileCount: number; totalBytes: number }>;
   submit(
     input: ManagedSubmitInput,
     publishKey: string,
     idempotencyKey: string,
   ): Promise<SubmitResult & { managedAppId: string; sourceUploaded: true }>;
+  receipt(publishKey: string, idempotencyKey: string): Promise<
+    | (SubmitResult & { managedAppId: string; sourceUploaded: true })
+    | { status: "recovery_required"; nextAction: "retry_original"; managedAppId: string; recoveryRequired: true; sourceUploaded: false; operationStatus: OperationRecord["status"] }
+  >;
   current(managedAppId: string, publishKey: string): Promise<{
     managedAppId: string;
     appKey: string;
@@ -184,6 +191,28 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     return createHmac("sha256", secret).update(`managed-idempotency-v1\0${bindingId}\0`).update(value).digest("hex");
   }
 
+  function assertTagReuse(tags: string[], existingTags: string[], manifestPath: string): void {
+    try {
+      validateTagReuse(tags, existingTags);
+    } catch (error) {
+      if (!(error instanceof DomainError) || error.statusCode !== 400) throw error;
+      throw bundleFailure(
+        "TAG_NAME_MISMATCH",
+        "tags",
+        "能力标签名称与当前目录规范不一致，请复用已有标签名称。",
+        "从当前目录标签列表中选择规范名称后重新校验。",
+        { path: manifestPath, field: "tags" },
+        config.gitlabToken,
+      );
+    }
+  }
+
+  async function validateInput(input: ManagedSubmitInput): Promise<ValidatedBundle> {
+    const bundle = validateBundle(input, config.gitlabToken);
+    assertTagReuse(bundle.manifest.tags, await config.service.tags(), bundle.manifestPath);
+    return bundle;
+  }
+
   async function loadOwnedBinding(input: ManagedSubmitInput, keyHash: string, tags: string[]): Promise<{ binding: BindingRecord; isNew: boolean }> {
     if (input.managedAppId !== undefined) {
       if (!isUuid(input.managedAppId)) throw ownerError();
@@ -204,7 +233,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
 
     // Reject a new request before creating a binding. Existing operations must
     // first be matched by owner, idempotency key and request digest.
-    validateTagReuse(tags, await config.service.tags());
+    assertTagReuse(tags, await config.service.tags(), input.manifestPath);
     const id = randomUUID();
     const now = new Date();
     const inserted = await config.db.query<BindingRecord>(
@@ -649,6 +678,13 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
   }
 
   return {
+    async validate(input) {
+      const bundle = await validateInput(input);
+      let totalBytes = 0;
+      for (const bytes of bundle.files.values()) totalBytes += bytes.byteLength;
+      return { fileCount: bundle.files.size, totalBytes };
+    },
+
     async submit(input, publishKey, idempotencyKey) {
       const bundle = validateBundle(input, config.gitlabToken);
       validatePublishKey(publishKey);
@@ -667,7 +703,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         }
 
         if (!operation) {
-          if (!loaded.isNew) validateTagReuse(bundle.manifest.tags, await config.service.tags());
+          if (!loaded.isNew) assertTagReuse(bundle.manifest.tags, await config.service.tags(), bundle.manifestPath);
           const baseCommitSha = await ensureUpdateOwnership(binding, input, bundle);
           if (loaded.isNew && (input.managedAppId !== undefined || input.expectedAppRevision !== undefined)) throw ownerError();
           await ensureVersionIsNewForBinding(binding, bundle);
@@ -675,6 +711,51 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         }
         return processOperation(binding, operation, bundle);
       });
+    },
+
+    async receipt(publishKey, idempotencyKey) {
+      validatePublishKey(publishKey);
+      if (!isUuid(idempotencyKey)) throw new DomainError(400, "VALIDATION_FAILED", "Idempotency-Key 必须是原发布请求使用的 UUID。");
+      const keyHash = keyDigest(publishKey);
+      const binding = (await config.db.query<BindingRecord>(
+        "SELECT * FROM managed_app_bindings WHERE publish_key_digest = $1",
+        [keyHash],
+      )).rows[0];
+      if (!binding) throw managedOperationNotFound();
+      const operation = await findOperation(binding.id, idempotencyDigest(binding.id, idempotencyKey));
+      if (!operation) throw managedOperationNotFound();
+
+      const projectId = operation.project_id ?? binding.project_id;
+      if (!operation.commit_sha || !projectId) {
+        return {
+          status: "recovery_required",
+          nextAction: "retry_original",
+          managedAppId: binding.id,
+          recoveryRequired: true,
+          sourceUploaded: false,
+          operationStatus: operation.status,
+        };
+      }
+      const input: SubmitInput = {
+        projectId,
+        appKey: binding.app_key,
+        manifestPath: operation.manifest_path,
+        commitSha: operation.commit_sha,
+        tag: operation.tag,
+        ...(operation.expected_app_revision === null ? {} : { expectedAppRevision: operation.expected_app_revision }),
+      };
+      const publication = await config.service.lookupManagedReceipt(input, config.gitlabToken, `managed:${operation.id}`);
+      if (!publication) {
+        return {
+          status: "recovery_required",
+          nextAction: "retry_original",
+          managedAppId: binding.id,
+          recoveryRequired: true,
+          sourceUploaded: false,
+          operationStatus: operation.status,
+        };
+      }
+      return { ...publication, managedAppId: binding.id, sourceUploaded: true };
     },
 
     async current(managedAppId, publishKey) {
@@ -725,58 +806,113 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
 
 function validateBundle(input: ManagedSubmitInput, serverGitLabToken: string): ValidatedBundle {
   if (!input || typeof input !== "object" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.appKey) || input.appKey.length > 64) {
-    throw new DomainError(400, "VALIDATION_FAILED", "appKey 格式无效。");
+    throw bundleFailure("APP_KEY_INVALID", "app_key", "appKey 格式无效。", "使用小写字母、数字和单个连字符组成 appKey。", { field: "appKey" }, serverGitLabToken);
   }
-  const manifestPath = validateRepoPath(input.manifestPath, "Manifest 路径");
+  const manifestPath = bundleRepoPath(input.manifestPath, "Manifest 路径", "manifest_path", "manifestPath", serverGitLabToken);
   if (!Array.isArray(input.files) || input.files.length < 1 || input.files.length > MAX_FILES) {
-    throw new DomainError(400, "VALIDATION_FAILED", "源码文件数量必须在 1 到 1000 个之间。");
+    throw bundleFailure("FILE_COUNT_INVALID", "file_count", "源码文件数量必须在 1 到 1000 个之间。", "提交 1 到 1000 个仓库相对路径文件。", { field: "files" }, serverGitLabToken);
   }
   if (input.expectedAppRevision !== undefined && (!Number.isInteger(input.expectedAppRevision) || input.expectedAppRevision < 0)) {
-    throw new DomainError(400, "VALIDATION_FAILED", "expectedAppRevision 必须是非负整数。");
+    throw bundleFailure("REVISION_INVALID", "expected_app_revision", "expectedAppRevision 必须是非负整数。", "更新时提交当前非负 revision；首次发布省略该字段。", { field: "expectedAppRevision" }, serverGitLabToken);
   }
   const files = new Map<string, Uint8Array>();
   const canonicalPaths = new Map<string, string>();
   let total = 0;
-  for (const entry of input.files) {
-    if (!entry || typeof entry !== "object") throw new DomainError(400, "VALIDATION_FAILED", "源码文件格式无效。");
-    const filePath = validateRepoPath(entry.path, "源码文件路径");
+  for (let index = 0; index < input.files.length; index++) {
+    const entry = input.files[index];
+    const entryField = `files[${index}]`;
+    if (!entry || typeof entry !== "object") {
+      throw bundleFailure("FILE_ENTRY_INVALID", "file_entry", "源码文件格式无效。", "每个源码文件都需要 path 和标准 Base64 content。", { field: entryField }, serverGitLabToken);
+    }
+    const filePath = bundleRepoPath(entry.path, "源码文件路径", "file_path", `${entryField}.path`, serverGitLabToken);
     if (typeof entry.content !== "string" || entry.content.length > Math.ceil(MAX_FILE_BYTES / 3) * 4 + 4 || !isCanonicalBase64(entry.content)) {
-      throw new DomainError(400, "VALIDATION_FAILED", "源码文件必须是有效的标准 Base64 内容。");
+      throw bundleFailure("FILE_ENCODING_INVALID", "file_encoding", "源码文件必须是有效的标准 Base64 内容。", "将 UTF-8 文件内容编码为标准 Base64 后重试。", { path: filePath, field: `${entryField}.content` }, serverGitLabToken);
     }
     const bytes = Buffer.from(entry.content, "base64");
-    if (bytes.byteLength > MAX_FILE_BYTES) throw new DomainError(400, "VALIDATION_FAILED", "单个源码文件不能超过 5 MiB。");
+    if (bytes.byteLength > MAX_FILE_BYTES) {
+      throw bundleFailure("FILE_SIZE_EXCEEDED", "file_size", "单个源码文件不能超过 5 MiB。", "精简该文件后重新校验。", { path: filePath }, serverGitLabToken);
+    }
     total += bytes.byteLength;
-    if (total > MAX_BUNDLE_BYTES) throw new DomainError(400, "VALIDATION_FAILED", "源码总大小不能超过 20 MiB。");
-    assertSafePath(filePath);
+    if (total > MAX_BUNDLE_BYTES) {
+      throw bundleFailure("BUNDLE_SIZE_EXCEEDED", "bundle_size", "源码总大小不能超过 20 MiB。", "精简源码包后重新校验。", { path: filePath }, serverGitLabToken);
+    }
+    try {
+      assertSafePath(filePath);
+    } catch {
+      throw bundleFailure("FORBIDDEN_PATH", "forbidden_path", "源码包包含禁止上传的凭据或本地配置路径。", "移除凭据文件和本地配置后重新校验。", { path: filePath }, serverGitLabToken);
+    }
     const folded = filePath.normalize("NFKC").toLocaleLowerCase("en-US");
-    if (canonicalPaths.has(folded)) throw new DomainError(400, "VALIDATION_FAILED", "源码中存在重复或大小写冲突的路径。");
+    if (canonicalPaths.has(folded)) {
+      throw bundleFailure("PATH_COLLISION", "path_collision", "源码中存在重复或大小写冲突的路径。", "为每个源码文件使用唯一的规范路径。", { path: filePath }, serverGitLabToken);
+    }
     canonicalPaths.set(folded, filePath);
     files.set(filePath, new Uint8Array(bytes));
-    if (containsSecretMarker(bytes, serverGitLabToken)) throw new DomainError(400, "VALIDATION_FAILED", "源码包含疑似访问凭据或私钥，请先移除后重新提交。");
+    const secretOffset = findSecretMarker(bytes, serverGitLabToken);
+    if (secretOffset !== undefined) {
+      const text = Buffer.from(bytes).toString("utf8");
+      throw bundleFailure(
+        "SECRET_MARKER_FOUND",
+        "secret_marker",
+        "源码包含疑似访问凭据或私钥，请先移除后重新提交。",
+        "删除凭据或私钥，改用安全的外部存储后重新校验。",
+        { path: filePath, ...lineColumnAt(text, secretOffset) },
+        serverGitLabToken,
+      );
+    }
   }
-  for (const path of canonicalPaths.keys()) {
-    const segments = path.split("/");
+  for (const filePath of canonicalPaths.keys()) {
+    const segments = filePath.split("/");
     for (let index = 1; index < segments.length; index++) {
       const prefix = segments.slice(0, index).join("/").normalize("NFKC").toLocaleLowerCase("en-US");
-      if (canonicalPaths.has(prefix)) throw new DomainError(400, "VALIDATION_FAILED", "源码路径存在文件与目录冲突。");
+      if (canonicalPaths.has(prefix)) {
+        throw bundleFailure("FILE_DIRECTORY_COLLISION", "file_directory_collision", "源码路径存在文件与目录冲突。", "调整冲突文件的路径，使文件和目录不重名。", { path: filePath }, serverGitLabToken);
+      }
     }
   }
   const manifestBytes = files.get(manifestPath);
-  if (!manifestBytes) throw new DomainError(400, "VALIDATION_FAILED", "完整源码包必须包含指定的 Manifest 文件。");
-  if (manifestBytes.byteLength > MAX_MANIFEST_BYTES) throw new DomainError(400, "VALIDATION_FAILED", "Manifest 不能超过 64 KiB。");
-  const manifest = manifestJson(decodeUtf8(manifestBytes, "Manifest"), input.appKey);
+  if (!manifestBytes) {
+    throw bundleFailure("MANIFEST_MISSING", "manifest_missing", "完整源码包必须包含指定的 Manifest 文件。", "在源码包中包含 manifestPath 指定的 ai-app.json。", { path: manifestPath, field: "manifestPath" }, serverGitLabToken);
+  }
+  if (manifestBytes.byteLength > MAX_MANIFEST_BYTES) {
+    throw bundleFailure("MANIFEST_SIZE_EXCEEDED", "manifest_size", "Manifest 不能超过 64 KiB。", "精简 Manifest 后重新校验。", { path: manifestPath }, serverGitLabToken);
+  }
+  let manifestText: string;
+  try {
+    manifestText = decodeUtf8(manifestBytes, "Manifest");
+  } catch {
+    throw bundleFailure("MANIFEST_UTF8_INVALID", "manifest_utf8", "Manifest 必须是有效的 UTF-8 文本。", "将 Manifest 保存为有效 UTF-8 文本。", { path: manifestPath }, serverGitLabToken);
+  }
+  let manifest: ReturnType<typeof manifestJson>;
+  try {
+    manifest = manifestJson(manifestText, input.appKey);
+  } catch (error) {
+    throw manifestFailure(error, manifestPath, manifestText, serverGitLabToken);
+  }
   const documents = new Set([manifest.docs.readme, manifest.docs.usage]);
   for (const entry of manifest.entries) if (entry.kind === "agent") documents.add(entry.instructionsPath);
   let documentBytes = 0;
   for (const docPath of documents) {
-    validateRepoPath(docPath, "共享说明路径");
+    bundleRepoPath(docPath, "共享说明路径", "document_path", "manifest", serverGitLabToken);
     const bytes = files.get(docPath);
-    if (!bytes) throw new DomainError(400, "VALIDATION_FAILED", "源码包必须包含 Manifest 声明的 README、使用说明和 Agent 接入说明。");
-    if (bytes.byteLength > MAX_DOCUMENT_BYTES) throw new DomainError(400, "VALIDATION_FAILED", "单份共享说明不能超过 512 KiB。");
+    if (!bytes) {
+      throw bundleFailure("DOCUMENT_MISSING", "document_missing", "源码包必须包含 Manifest 声明的 README、使用说明和 Agent 接入说明。", "补齐 Manifest 声明的共享说明文件后重新校验。", { path: docPath, field: "manifest.docs" }, serverGitLabToken);
+    }
+    if (bytes.byteLength > MAX_DOCUMENT_BYTES) {
+      throw bundleFailure("DOCUMENT_SIZE_EXCEEDED", "document_size", "单份共享说明不能超过 512 KiB。", "精简该共享说明文件后重新校验。", { path: docPath }, serverGitLabToken);
+    }
     documentBytes += bytes.byteLength;
-    if (documentBytes > MAX_DOCUMENT_BYTES) throw new DomainError(400, "VALIDATION_FAILED", "共享说明总大小不能超过 512 KiB。");
-    const text = decodeUtf8(bytes, "共享说明");
-    if (text.startsWith("version https://git-lfs.github.com/spec/v1\n")) throw new DomainError(400, "VALIDATION_FAILED", "共享说明不能是 Git LFS 指针文件。");
+    if (documentBytes > MAX_DOCUMENT_BYTES) {
+      throw bundleFailure("DOCUMENT_TOTAL_SIZE_EXCEEDED", "document_total_size", "共享说明总大小不能超过 512 KiB。", "精简共享说明文件后重新校验。", { path: docPath }, serverGitLabToken);
+    }
+    let text: string;
+    try {
+      text = decodeUtf8(bytes, "共享说明");
+    } catch {
+      throw bundleFailure("DOCUMENT_UTF8_INVALID", "document_utf8", "共享说明必须是有效的 UTF-8 文本。", "将共享说明保存为有效 UTF-8 文本。", { path: docPath }, serverGitLabToken);
+    }
+    if (text.startsWith("version https://git-lfs.github.com/spec/v1\n")) {
+      throw bundleFailure("LFS_POINTER_NOT_ALLOWED", "lfs_pointer", "共享说明不能是 Git LFS 指针文件。", "提交共享说明的实际文本文件，而不是 Git LFS 指针。", { path: docPath }, serverGitLabToken);
+    }
   }
   const digest = createHash("sha256");
   digest.update(JSON.stringify({ appKey: input.appKey, manifestPath, expectedAppRevision: input.expectedAppRevision ?? null }));
@@ -789,6 +925,136 @@ function validateBundle(input: ManagedSubmitInput, serverGitLabToken: string): V
     digest.update(bytes);
   }
   return { appKey: input.appKey, manifestPath, files, manifest, requestDigest: digest.digest("hex") };
+}
+
+function bundleRepoPath(value: unknown, label: string, ruleId: string, field: string, serverGitLabToken: string): string {
+  try {
+    return validateRepoPath(value, label);
+  } catch (error) {
+    const message = error instanceof DomainError && error.message.includes("相对路径")
+      ? `${label}必须是仓库根目录下的相对路径。`
+      : `${label}包含不安全的路径或字符。`;
+    throw bundleFailure("REPOSITORY_PATH_INVALID", ruleId, message, "使用仓库根目录下的安全相对路径。", { field }, serverGitLabToken);
+  }
+}
+
+function bundleFailure(
+  code: string,
+  ruleId: string,
+  message: string,
+  suggestion: string,
+  target: { path?: string; field?: string; line?: number; column?: number },
+  serverGitLabToken: string,
+): DomainError {
+  const diagnostic: DomainDiagnostic = {
+    code,
+    ruleId: `managed.bundle.${ruleId}`,
+    ...(safeDiagnosticPath(target.path, serverGitLabToken) ? { path: safeDiagnosticPath(target.path, serverGitLabToken) } : {}),
+    ...(safeDiagnosticField(target.field) ? { field: safeDiagnosticField(target.field) } : {}),
+    ...(Number.isInteger(target.line) && target.line! > 0 ? { line: target.line } : {}),
+    ...(Number.isInteger(target.column) && target.column! > 0 ? { column: target.column } : {}),
+    suggestion,
+  };
+  return new DomainError(400, "VALIDATION_FAILED", message, [diagnostic]);
+}
+
+function safeDiagnosticPath(value: unknown, serverGitLabToken: string): string | undefined {
+  if (typeof value !== "string" || value.length < 1 || value.length > 512 || value.startsWith("/") || value.includes("\\") || value.includes(":")) return undefined;
+  if (/[\u0000-\u001f\u007f]/.test(value) || /(?:https?|ssh|file):\/\//i.test(value)) return undefined;
+  if (serverGitLabToken.length >= 8 && value.includes(serverGitLabToken)) return undefined;
+  if (/\bgl(?:pat|rt|dt|cbt|soat)-[A-Za-z0-9_-]{8,}\b/i.test(value) || /(?:password|token|secret|private[-_ ]?key)\s*[=:]/i.test(value)) return undefined;
+  if (/[A-Za-z0-9_-]{32,}/.test(value)) return undefined;
+  const segments = value.split("/");
+  if (segments.some(segment => !segment || segment === "." || segment === "..")) return undefined;
+  return value;
+}
+
+function safeDiagnosticField(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value)) return undefined;
+  if (!/^[A-Za-z][A-Za-z0-9_]*(?:(?:\.[A-Za-z][A-Za-z0-9_]*)|(?:\[\d{1,3}\]))*$/.test(value)) return undefined;
+  if (/[A-Za-z0-9_-]{32,}/.test(value)) return undefined;
+  return value;
+}
+
+function manifestFailure(error: unknown, manifestPath: string, text: string, serverGitLabToken: string): DomainError {
+  if (!(error instanceof DomainError) || error.statusCode !== 400) throw error;
+  const message = error.message;
+  let code = "MANIFEST_INVALID";
+  let ruleId = "manifest";
+  let safeMessage = "Manifest 不符合发布规范。";
+  let suggestion = "修正 ai-app.json 中的字段和值后重新校验。";
+  let field = "manifest";
+  if (message.includes("不是有效 JSON")) {
+    code = "MANIFEST_JSON_INVALID"; ruleId = "manifest_json"; safeMessage = "Manifest 不是有效 JSON，或包含重复键。";
+    suggestion = "修正 JSON 语法并移除重复键后重新校验。";
+  } else if (message.startsWith("新发布资料需要使用 schemaVersion")) {
+    code = "SCHEMA_VERSION_UNSUPPORTED"; ruleId = "schema_version"; field = "schemaVersion";
+    safeMessage = "新发布资料需要使用 schemaVersion 2。"; suggestion = "将新发布资料升级到 schemaVersion 2。";
+  } else if (message.startsWith("单个应用最多 3 个") || message.startsWith("能力标签须") || message.startsWith("标签规范化后")) {
+    code = "CAPABILITY_TAGS_INVALID"; ruleId = "capability_tags"; field = "tags";
+    safeMessage = message.startsWith("单个应用最多 3 个")
+      ? "单个应用最多 3 个能力标签，请保留核心能力并优先复用已有标签。"
+      : message.startsWith("能力标签须")
+        ? "能力标签须为 1 至 32 个字符的非空文本。"
+        : "标签规范化后不能重复。";
+    suggestion = "每个应用最多使用 3 个非空且规范化后唯一的标签。";
+  } else if (message.startsWith("projectVersion 必须")) {
+    code = "PROJECT_VERSION_INVALID"; ruleId = "project_version"; field = "projectVersion";
+    safeMessage = "projectVersion 格式无效。"; suggestion = "使用有效的 MAJOR.MINOR.PATCH 版本号。";
+  } else if (message.startsWith("每位作者都必须")) {
+    code = "MAINTAINER_NAME_REQUIRED"; ruleId = "maintainer_name"; field = "maintainers";
+    safeMessage = "每位作者都必须填写中文姓名和英文全名或完整拼音。"; suggestion = "向作者确认并填写双语姓名，不要根据 GitLab 或 Git 配置推测。";
+  } else if (message.startsWith("Manifest 不符合 ai-app.json 契约")) {
+    code = "MANIFEST_SCHEMA_INVALID"; ruleId = "manifest_schema";
+    const candidate = message.match(/（([^（）]{1,128})）/)?.[1];
+    field = safeDiagnosticField(candidate) ?? "manifest";
+    safeMessage = "Manifest 不符合 ai-app.json 契约。";
+  } else if (message.startsWith("请求中的 appKey")) {
+    code = "APP_KEY_MISMATCH"; ruleId = "app_key_mismatch"; field = "appKey";
+    safeMessage = "请求中的 appKey 与 Manifest 不一致。"; suggestion = "确保请求 appKey 与 Manifest 的 appKey 相同。";
+  } else if (message.startsWith("Manifest 的文本字段")) {
+    code = "MANIFEST_TEXT_EMPTY"; ruleId = "manifest_text";
+    safeMessage = "Manifest 的文本字段不能为空白。";
+  } else if (message.startsWith("Manifest 中的入口 ID")) {
+    code = "ENTRY_ID_DUPLICATE"; ruleId = "entry_id_unique"; field = "entries";
+    safeMessage = "Manifest 中的入口 ID 必须唯一。"; suggestion = "为每个入口指定唯一 ID。";
+  } else if (message.startsWith("Agent 接入说明路径")) {
+    code = "ENTRY_INSTRUCTIONS_PATH_INVALID"; ruleId = "entry_instructions_path"; field = "entries";
+    safeMessage = "Agent 接入说明路径无效。"; suggestion = "为 Agent 入口指定仓库根目录下的相对路径。";
+  } else if (message.startsWith("primaryEntry")) {
+    code = "PRIMARY_ENTRY_INVALID"; ruleId = "primary_entry"; field = "primaryEntry";
+    safeMessage = "primaryEntry 必须指向已声明的入口。";
+  } else if (message.startsWith("docs.readme")) {
+    code = "README_PATH_INVALID"; ruleId = "readme_path"; field = "docs.readme";
+    safeMessage = "docs.readme 路径无效。";
+  } else if (message.startsWith("docs.usage")) {
+    code = "USAGE_PATH_INVALID"; ruleId = "usage_path"; field = "docs.usage";
+    safeMessage = "docs.usage 路径无效。";
+  } else if (message.startsWith("入口或产物 URL")) {
+    code = "ENTRY_URL_INVALID"; ruleId = "entry_url"; field = "entries";
+    safeMessage = "入口或产物 URL 格式无效或包含凭据。"; suggestion = "使用不含用户名或密码的 HTTP(S) 地址。";
+  }
+  let location: { line: number; column: number } | undefined;
+  if (code === "MANIFEST_JSON_INVALID") location = firstJsonParseErrorLocation(text);
+  return bundleFailure(code, ruleId, safeMessage, suggestion, {
+    path: manifestPath,
+    field,
+    ...(location ?? {}),
+  }, serverGitLabToken);
+}
+
+function firstJsonParseErrorLocation(text: string): { line: number; column: number } | undefined {
+  const errors: ParseError[] = [];
+  parseTree(text, errors, { disallowComments: true, allowTrailingComma: false });
+  const offset = errors[0]?.offset;
+  return offset === undefined ? undefined : lineColumnAt(text, offset);
+}
+
+function lineColumnAt(text: string, offset: number): { line: number; column: number } {
+  const prefix = text.slice(0, Math.max(0, offset));
+  const line = (prefix.match(/\n/g)?.length ?? 0) + 1;
+  const lineStart = prefix.lastIndexOf("\n") + 1;
+  return { line, column: [...prefix.slice(lineStart)].length + 1 };
 }
 
 function assertSafePath(filePath: string): void {
@@ -806,12 +1072,23 @@ function assertSafePath(filePath: string): void {
   if (forbidden) throw new DomainError(400, "VALIDATION_FAILED", "源码包包含禁止上传的凭据或本地配置路径。");
 }
 
-function containsSecretMarker(bytes: Uint8Array, serverGitLabToken: string): boolean {
+function findSecretMarker(bytes: Uint8Array, serverGitLabToken: string): number | undefined {
   const text = Buffer.from(bytes).toString("utf8");
-  return /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/i.test(text) ||
-    /\bgl(?:pat|rt|dt|cbt|soat)-[A-Za-z0-9_-]{12,}\b/i.test(text) ||
-    /(?:PRIVATE-TOKEN|X-GitLab-Token|GITLAB_(?:ACCESS_)?TOKEN)\s*[:=]\s*[^\s"']{8,}/i.test(text) ||
-    (serverGitLabToken.length >= 8 && text.includes(serverGitLabToken));
+  let earliest: number | undefined;
+  const patterns = [
+    /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/gi,
+    /\bgl(?:pat|rt|dt|cbt|soat)-[A-Za-z0-9_-]{12,}\b/gi,
+    /(?:PRIVATE-TOKEN|X-GitLab-Token|GITLAB_(?:ACCESS_)?TOKEN)\s*[:=]\s*[^\s"']{8,}/gi,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match && (earliest === undefined || match.index < earliest)) earliest = match.index;
+  }
+  if (serverGitLabToken.length >= 8) {
+    const tokenIndex = text.indexOf(serverGitLabToken);
+    if (tokenIndex >= 0 && (earliest === undefined || tokenIndex < earliest)) earliest = tokenIndex;
+  }
+  return earliest;
 }
 
 function buildActions(previous: Map<string, TreeValue>, files: Map<string, Uint8Array>): GitAction[] {
@@ -1091,6 +1368,10 @@ function constantEqual(left: string, right: string): boolean {
 
 function ownerError(): DomainError {
   return new DomainError(403, "MANAGED_APP_OWNER_REQUIRED", "应用专属发布凭证无效或不匹配；更新必须使用首次发布返回的 managedAppId 和发布凭证。");
+}
+
+function managedOperationNotFound(): DomainError {
+  return new DomainError(404, "MANAGED_OPERATION_NOT_FOUND", "未找到该发布凭据对应的原始操作。");
 }
 
 function idempotencyConflict(): DomainError {
