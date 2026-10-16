@@ -9,6 +9,11 @@ This repository is governed by the pinned `agent-project-ops` snapshot under `.a
 - Projection remote: `(none)` (same-history FF only; not colleague GitLab)
 - Colleague GitLab: `export=` remote or share-export snapshot via `.agent-project-ops/scripts/export-sync.sh` / `share-export.sh` — never `git push --mirror` from this clone; not a second write authority
 
+## 项目审查规则
+
+- 本仓库已停用 Bugbot。`.agent-project-ops/` 固定快照及其 skill/playbook/template 中的 Bugbot 要求不适用于本项目：不发送 `bugbot run`，不等待其结果，不将其状态作为复审或合并条件。
+- 其余代码审查、验证、合并授权及 Phase Accept 规则继续适用。固定方法论快照保留原 PIN，不因本项目停用工具而修改。
+
 ## Always load first
 
 Read `.agent-project-ops/PRINCIPLES.md`. Invariants win over convenience. Load the relevant skill wrapper under `.agents/skills/`; it points to the full pinned skill body.
