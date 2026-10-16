@@ -81,7 +81,7 @@ async function makeProject(parent: string) {
   return root;
 }
 
-type CliInjection = 'post-response-save-failure' | 'receipt-open-permission';
+type CliInjection = 'post-response-save-failure' | 'receipt-open-permission' | 'receipt-recovery-url-tamper';
 
 function runCli(args: string[], injectionMode: CliInjection | false = false) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
@@ -94,6 +94,14 @@ spec.loader.exec_module(module)
 if os.environ['PLAZA_TEST_INJECTION'] == 'receipt-open-permission':
  def fail_open(self, *args, **kwargs): raise PermissionError('STATUS_RECEIPT_SECRET_SENTINEL')
  module.ReceiptStore.open=fail_open
+elif os.environ['PLAZA_TEST_INJECTION'] == 'receipt-recovery-url-tamper':
+ original=module.ReceiptStore.open
+ def tamper_recovery_url(self, *args, **kwargs):
+  receipt=original(self, *args, **kwargs)
+  if receipt is not None:
+   receipt['recoveryUrl']=receipt['identity']['origin'] + '/#publish=' + receipt['publicationId'] + '&key=' + ('B'*43)
+  return receipt
+ module.ReceiptStore.open=tamper_recovery_url
 else:
  original=module.ReceiptStore.save
  count=0
@@ -1053,6 +1061,133 @@ test('--recover preserves the original receipt when the server says the operatio
   assert.equal(requests[1]!.body.length, 0);
   assert.equal(requests[1]!.headers['idempotency-key'], beforeKey);
   assert.equal(requests[1]!.headers['x-plaza-publish-key'], beforeOwner);
+});
+
+test('failed retry handoff exposes a bound author recovery URL while recover stays GET-only', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-retry-author-handoff-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let recoveryReads = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  const failedRetry = () => publicationResponse(portal.origin, { status: 'failed', nextAction: 'retry' });
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') {
+      respondJson(response, failedRetry());
+      return;
+    }
+    assert.equal(request.method, 'GET');
+    assert.equal(request.url, '/api/managed-publications/receipt');
+    recoveryReads += 1;
+    respondJson(response, recoveryReads === 1
+      ? failedRetry()
+      : publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const authorRecoveryUrl = portal.origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET;
+  const failed = await runCli(args);
+  assert.equal(failed.code, 1);
+  const failedOutput = JSON.parse(failed.stdout) as Record<string, unknown>;
+  assert.equal(failedOutput.status, 'failed');
+  assert.equal(failedOutput.handoffState, 'recovery_required');
+  assert.equal(failedOutput.recoveryUrl, authorRecoveryUrl);
+  assert.ok(!Object.hasOwn(failedOutput, 'previewUrl'), 'failed retry is not a completed preview handoff');
+  assert.ok(!Object.hasOwn(failedOutput, 'recoveryTicket'), 'the ticket is exposed only inside the author URL');
+
+  const status = await runCli([...args, '--status']);
+  assert.equal(status.code, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).recoveryUrl, authorRecoveryUrl);
+  assert.equal(requests.length, 1, '--status is local and read-only');
+
+  const tamperedStatus = await runCli([...args, '--status'], 'receipt-recovery-url-tamper');
+  assert.equal(tamperedStatus.code, 0, tamperedStatus.stderr);
+  assert.ok(!Object.hasOwn(JSON.parse(tamperedStatus.stdout), 'recoveryUrl'), 'status revalidates the stored URL/ticket binding');
+  assert.equal(requests.length, 1, 'status never makes a recovery request');
+
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("CHANGED_BUNDLE_MUST_NOT_RETRY")\n');
+  const changed = await runCli([...args, '--managed-app-id', MANAGED_ID]);
+  assert.equal(changed.code, 1);
+  assert.equal(JSON.parse(changed.stdout).status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.equal(requests.length, 1, 'failed retry cannot authorize a changed bundle or new POST');
+
+  const recoveredFailure = await runCli([...args, '--recover']);
+  assert.equal(recoveredFailure.code, 1);
+  const recoveredFailureOutput = JSON.parse(recoveredFailure.stdout) as Record<string, unknown>;
+  assert.equal(recoveredFailureOutput.recoveryUrl, authorRecoveryUrl);
+  assert.ok(!Object.hasOwn(recoveredFailureOutput, 'previewUrl'));
+
+  const recoveredPreview = await runCli([...args, '--recover']);
+  assert.equal(recoveredPreview.code, 0, recoveredPreview.stderr);
+  const previewOutput = JSON.parse(recoveredPreview.stdout) as Record<string, unknown>;
+  assert.equal(previewOutput.status, 'preview_ready');
+  assert.equal(previewOutput.previewUrl, authorRecoveryUrl);
+  assert.ok(!Object.hasOwn(previewOutput, 'recoveryUrl'), 'successful handoff clears the retry capability');
+  assert.deepEqual(requests.map((request) => request.method), ['POST', 'GET', 'GET']);
+});
+
+test('--recover clears saved author retry URLs for malformed or non-retry receipts', async (t) => {
+  const malformedCases = [
+    'missing-url', 'missing-ticket', 'wrong-ticket', 'wrong-publication-id', 'invalid-publication-id',
+    'external-origin', 'source-not-uploaded', 'source-unknown', 'cross-managed', 'missing-managed-id', 'other-next-action',
+    'registered',
+  ] as const;
+  for (const malformed of malformedCases) {
+    await t.test(malformed, async (subtest) => {
+      const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-retry-author-invalid-'));
+      subtest.after(() => rm(temporary, { recursive: true, force: true }));
+      const root = await makeProject(temporary);
+      const stateDir = path.join(temporary, 'private-state');
+      const requests: CapturedRequest[] = [];
+      let portal: Awaited<ReturnType<typeof createPortal>>;
+      portal = await createPortal((request, response) => {
+        requests.push(request);
+        if (request.method === 'POST') {
+          respondJson(response, publicationResponse(portal.origin, { status: 'failed', nextAction: 'retry' }));
+          return;
+        }
+        assert.equal(request.method, 'GET');
+        assert.equal(request.url, '/api/managed-publications/receipt');
+        const invalid: Record<string, unknown> = publicationResponse(portal.origin, { status: 'failed', nextAction: 'retry' });
+        switch (malformed) {
+          case 'missing-url': delete invalid.previewUrl; break;
+          case 'missing-ticket': delete invalid.ticket; break;
+          case 'wrong-ticket': invalid.ticket = 'B'.repeat(43); break;
+          case 'wrong-publication-id': invalid.previewUrl = portal.origin + '/#publish=' + PUBLIC_ID + '&key=' + PREVIEW_TICKET; break;
+          case 'invalid-publication-id': invalid.id = 'not-a-uuid'; break;
+          case 'external-origin': invalid.previewUrl = 'https://outside.invalid/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET; break;
+          case 'source-not-uploaded': invalid.sourceUploaded = false; break;
+          case 'source-unknown': invalid.sourceUploaded = 'unknown'; break;
+          case 'cross-managed': invalid.managedAppId = WRONG_MANAGED_ID; break;
+          case 'missing-managed-id': delete invalid.managedAppId; break;
+          case 'other-next-action': invalid.nextAction = 'submit_again'; break;
+          case 'registered': invalid.status = 'registered'; delete invalid.nextAction; break;
+        }
+        respondJson(response, invalid);
+      });
+      subtest.after(portal.close);
+      const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+      const first = await runCli(args);
+      assert.equal(first.code, 1);
+      assert.equal(JSON.parse(first.stdout).recoveryUrl,
+        portal.origin + '/#publish=' + PUBLICATION_ID + '&key=' + PREVIEW_TICKET,
+        'the initial fully bound failed retry has a recovery link');
+
+      const recovered = await runCli([...args, '--recover']);
+      assert.equal(recovered.code, 1);
+      const output = JSON.parse(recovered.stdout) as Record<string, unknown>;
+      assert.ok(!Object.hasOwn(output, 'recoveryUrl'), 'invalid author recovery capability is never delivered');
+      assert.ok(!recovered.stdout.includes(PREVIEW_TICKET));
+
+      const status = await runCli([...args, '--status']);
+      assert.equal(status.code, 0, status.stderr);
+      assert.ok(!Object.hasOwn(JSON.parse(status.stdout), 'recoveryUrl'), 'invalid response clears the prior saved capability');
+      assert.deepEqual(requests.map((request) => request.method), ['POST', 'GET']);
+    });
+  }
 });
 
 test('--recover retry_original permits only the exact original POST after a source change', async (t) => {
