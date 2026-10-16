@@ -406,10 +406,15 @@ test("managed HTTP flow uploads a local project, confirms and updates one app wi
   const contractText = await contractResponse.text();
   const contract = JSON.parse(contractText) as {
     mode: string;
+    prompt: string;
     schema: object;
     managed: { publisherUrl: string; publisherSha256: string };
   };
   assert.equal(contract.mode, "managed");
+  assert.ok(contract.prompt.includes("唯一允许的带票据交付是工具已安全保存并校验的 previewUrl 或 recoveryUrl，仅交给我本人"));
+  assert.ok(contract.prompt.includes("由我在现有作者页面查看原因并手动重试"));
+  assert.ok(contract.prompt.includes("--recover 只读取得结果"));
+  assert.ok(contract.prompt.includes("不调用确认接口或代我点击确认"));
   const helperResponse = await fetch(contract.managed.publisherUrl);
   assert.equal(helperResponse.status, 200);
   const helperText = await helperResponse.text();
