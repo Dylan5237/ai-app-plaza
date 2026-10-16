@@ -520,6 +520,73 @@ test('a suspected secret in necessary source stops the upload and reports only i
   await assert.rejects(readFile(stateDir));
 });
 
+test('secret assignment scanning consumes complete quoted values and fails closed across CLI modes', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-boundaries-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const cases = [
+    {
+      path: 'src/main.py',
+      content: 'password = "correct horse battery staple"\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/punctuated.ts',
+      content: "const password = 'CorrectHorse@Battery:Staple/More!Secret';\n",
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/escaped-double.ts',
+      content: 'const password = "correct horse \\\"battery staple @:/";\n',
+      secret: 'correct horse \\\"battery staple @:/',
+    },
+    {
+      path: 'src/escaped-single.ts',
+      content: "const password = 'correct horse \\\'battery staple @:/';\n",
+      secret: "correct horse \\\'battery staple @:/",
+    },
+    {
+      path: 'src/unquoted-passphrase.py',
+      content: 'password=correct horse battery staple @:/\n',
+      secret: 'correct horse battery staple @:/',
+    },
+    {
+      path: 'src/unclosed.ts',
+      content: 'const password = "correct horse battery staple @:/;\n',
+      secret: 'correct horse battery staple @:/',
+    },
+  ];
+  let requestCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    respondJson(response, {});
+  });
+  t.after(portal.close);
+
+  const modes = [
+    { name: 'dry-run', flags: ['--dry-run'] },
+    { name: 'validate', flags: ['--validate'] },
+    { name: 'publish', flags: [] },
+  ];
+  const baseArgs = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  for (const item of cases) {
+    const filePath = path.join(root, ...item.path.split('/'));
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, item.content);
+    for (const mode of modes) {
+      const result = await runCli([...baseArgs, ...mode.flags]);
+      assert.equal(result.code, 2, item.path + ' (' + mode.name + '): ' + result.stderr);
+      assert.ok(result.stdout.includes(item.path) || result.stderr.includes(item.path), 'reports only the safe path');
+      assert.ok(!result.stdout.includes(item.secret) && !result.stderr.includes(item.secret), 'does not echo the credential');
+      assert.equal(requestCount, 0, mode.name + ' must reject before any HTTP request');
+      await assert.rejects(access(stateDir), { code: 'ENOENT' }, mode.name + ' must not create a receipt');
+    }
+    await rm(filePath, { force: true });
+  }
+});
+
 test('CLI dry-run permits JS/TS credential references but still blocks secret literals and config credentials', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-scan-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));

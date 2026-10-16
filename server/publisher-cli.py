@@ -54,9 +54,9 @@ SECRET_PATTERNS = [
     re.compile(rb"\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\b"),
 ]
 SECRET_ASSIGNMENT_PATTERN = re.compile(
-    rb"(?i)(?<![A-Za-z0-9_])(?P<key_quote>[\"']?)"
+    rb"(?i)(?<![A-Za-z0-9_])[\"']?"
     rb"(?:x-plaza-publish-key|publish[-_]?key|access[-_]?token|api[-_]?key|secret[-_]?key|client[-_]?secret|password)"
-    rb"(?P=key_quote)?\s*[:=]\s*(?P<quote>[\"'`]?)\s*(?P<value>[A-Za-z0-9_./+=-]{20,})(?P=quote)?"
+    rb"[\"']?\s*[:=]\s*"
 )
 JS_SOURCE_SUFFIXES = {".cjs", ".cts", ".js", ".mjs", ".mts", ".ts", ".vue"}
 JS_MEMBER_REFERENCE_RE = re.compile(
@@ -735,6 +735,43 @@ def _js_reference_ends_expression(raw: bytes, offset: int) -> bool:
     return False
 
 
+def _secret_assignment_value(raw: bytes, start: int) -> tuple[bytes, int, bool, bool]:
+    index = start
+    while index < len(raw) and raw[index] in b" \t\r\n\v\f":
+        index += 1
+    if index >= len(raw):
+        return b"", index, False, True
+
+    quote = raw[index]
+    if quote in (0x22, 0x27, 0x60):
+        content_start = index + 1
+        index = content_start
+        while index < len(raw):
+            current = raw[index]
+            if current == 0x5C:
+                if index + 1 >= len(raw):
+                    return raw[content_start:index], content_start, True, False
+                if raw[index + 1:index + 3] == b"\r\n":
+                    index += 3
+                else:
+                    index += 2
+                continue
+            if quote == 0x60 and raw.startswith(b"${", index):
+                return raw[content_start:index], content_start, True, False
+            if current == quote:
+                return raw[content_start:index], content_start, True, True
+            if quote != 0x60 and current in (0x0A, 0x0D):
+                return raw[content_start:index], content_start, True, False
+            index += 1
+        return raw[content_start:index], content_start, True, False
+
+    line_end = len(raw)
+    for newline in (raw.find(b"\n", index), raw.find(b"\r", index)):
+        if newline >= 0:
+            line_end = min(line_end, newline)
+    return raw[index:line_end].strip(), index, False, True
+
+
 def _looks_secret(raw: bytes, path: str) -> bool:
     if any(pattern.search(raw) for pattern in SECRET_PATTERNS):
         return True
@@ -742,13 +779,14 @@ def _looks_secret(raw: bytes, path: str) -> bool:
     is_js_source = suffix in JS_SOURCE_SUFFIXES
     code_mask = None
     for match in SECRET_ASSIGNMENT_PATTERN.finditer(raw):
-        value = match.group("value")
-        is_reference_candidate = (
-            is_js_source
-            and not match.group("quote")
-            and JS_MEMBER_REFERENCE_RE.fullmatch(value)
-        )
-        if not is_reference_candidate:
+        value, value_start, quoted, reliable = _secret_assignment_value(raw, match.end())
+        if quoted:
+            if not reliable or len(value) >= 20:
+                return True
+            continue
+        if not reliable or len(value) < 20:
+            continue
+        if not is_js_source:
             return True
         if code_mask is None:
             code_mask = bytearray(len(raw))
@@ -757,9 +795,10 @@ def _looks_secret(raw: bytes, path: str) -> bool:
                     code_mask[start:end] = _js_code_mask(raw[start:end])
             else:
                 code_mask = _js_code_mask(raw)
+        reference = JS_MEMBER_REFERENCE_RE.match(raw, value_start)
         if (
-            not code_mask[match.start("value")]
-            or not _js_reference_ends_expression(raw, match.end("value"))
+            not reference or not code_mask[value_start]
+            or not _js_reference_ends_expression(raw, reference.end())
         ):
             return True
     return False
