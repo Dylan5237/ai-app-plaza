@@ -181,6 +181,13 @@ function clearFilters() {
   loadCatalog()
 }
 
+function openCard(event, id) {
+  if (event.target instanceof Element && event.target.closest('button, a')) return
+  const selection = window.getSelection()
+  if (selection?.toString() && (event.currentTarget.contains(selection.anchorNode) || event.currentTarget.contains(selection.focusNode))) return
+  openApp(id)
+}
+
 async function openApp(id) {
   if (!id) return
   const requestSequence = ++detailRequestSequence
@@ -636,7 +643,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
         <div v-else class="catalog-results" :aria-busy="catalogLoading">
           <div v-if="catalogNotice" class="catalog-notice" role="status">{{ catalogNotice }}</div>
           <div class="app-grid">
-            <article v-for="app in apps" :key="app.id" class="app-card" data-testid="app-card">
+            <article v-for="app in apps" :key="app.id" class="app-card" data-testid="app-card" @click="openCard($event, app.id)">
               <div class="app-card-top">
                 <button class="app-title" :aria-label="`查看 ${appName(app)} 详情`" @click="openApp(app.id)">{{ appName(app) }}</button>
                 <span v-if="app.version" class="app-version">{{ formatVersion(app.version) }}</span>
@@ -897,6 +904,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .clear-filters:hover { text-decoration: underline; }
 .app-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .app-card { display: flex; height: 164px; min-width: 0; flex-direction: column; padding: 12px 13px 10px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(25 43 67 / 2%); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.app-card { cursor: pointer; }
 .app-card:hover { transform: translateY(-1px); border-color: #ccd6e4; box-shadow: 0 5px 15px rgb(25 43 67 / 5%); }
 .app-card-top { display: flex; height: 25px; min-height: 25px; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .app-title { min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: #25364e; font: inherit; font-size: 15px; font-weight: 650; line-height: 1.5; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
