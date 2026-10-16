@@ -47,5 +47,3 @@ Merging this PR does not close the Phase. Disposer still records `PHASE ACCEPT` 
 - [ ] No push to `main`
 - [ ] Secrets not committed
 - [ ] **CC §1 updated** (or GitHub `BLOCKED:` if Command Center could not be edited)
-- [ ] Commented `bugbot run` on this PR (body exactly that text) before asking merge
-- [ ] Prompted disposer to wait for Bugbot review results before merge judgment

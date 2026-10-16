@@ -36,5 +36,3 @@ Replayable **proofs** for frozen acceptance tests. **No feature/fix/docs product
 - [ ] Diff is evidence-only
 - [ ] Does not mix with `feat/`/`fix/` changes
 - [ ] Merge of this PR still ≠ Phase PASS
-- [ ] Commented `bugbot run` on this PR (body exactly that text) before asking merge
-- [ ] Prompted disposer to wait for Bugbot review results before merge judgment
