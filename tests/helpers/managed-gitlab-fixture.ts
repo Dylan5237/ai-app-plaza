@@ -38,7 +38,11 @@ export interface ManagedGitLabFixture {
     dropCommitResponseOnNumber: number | null;
     commitCreateCount: number;
     rejectNextCommitStatus: number | null;
+    rejectCommitStatusOnNumber: number | null;
     failCommitReadback: boolean;
+    rejectNextProjectStatus: number | null;
+    rejectNextProjectReadbackStatus: number | null;
+    dropNextProjectCreateResponse: boolean;
     nextProjectId: number;
     preseedTag(projectId: number, tag: string, sha: string): void;
   };
@@ -57,7 +61,11 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     dropCommitResponseOnNumber: null,
     commitCreateCount: 0,
     rejectNextCommitStatus: null as number | null,
+    rejectCommitStatusOnNumber: null as number | null,
     failCommitReadback: false,
+    rejectNextProjectStatus: null as number | null,
+    rejectNextProjectReadbackStatus: null as number | null,
+    dropNextProjectCreateResponse: false,
     nextProjectId: 100,
     preseedTag(projectId: number, tag: string, sha: string) {
       const project = projects.get(projectId);
@@ -67,6 +75,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
   };
 
   let failNextBranchRead = false;
+  let failNextProjectReadbackStatus: number | null = null;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url!, "http://127.0.0.1");
     const method = request.method ?? "GET";
@@ -90,17 +99,42 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     if (url.pathname === "/api/v4/user" && method === "GET") return send(200, { id: 35, username: "fixture-owner", name: "测试发布账号" });
 
     if (url.pathname === "/api/v4/projects" && method === "POST") {
+      if (state.rejectNextProjectStatus) {
+        const status = state.rejectNextProjectStatus;
+        state.rejectNextProjectStatus = null;
+        failNextProjectReadbackStatus = state.rejectNextProjectReadbackStatus;
+        state.rejectNextProjectReadbackStatus = null;
+        response.writeHead(status, {
+          "Content-Type": "application/json",
+          "X-GitLab-Debug": "fixture-private-header-sentinel",
+        });
+        response.end(JSON.stringify({
+          message: `fixture rejection containing ${MANAGED_GITLAB_TOKEN}`,
+          private_url: "https://private-preview.invalid/fixture-secret-path",
+        }));
+        return;
+      }
       if ([...projects.values()].some(project => project.namespace.id === Number(body.namespace_id)
         && (project.name === String(body.name) || project.path === String(body.path)))) {
         return fail(400, "project name or path has already been taken in this namespace");
       }
       const project = newProject(state.nextProjectId++, body, request.headers.host ?? "127.0.0.1", initialDefaultBranch);
       projects.set(project.id, project);
+      if (state.dropNextProjectCreateResponse) {
+        state.dropNextProjectCreateResponse = false;
+        response.destroy();
+        return;
+      }
       return send(201, projectJson(project));
     }
 
     const groupMatch = url.pathname.match(/^\/api\/v4\/groups\/(\d+)\/projects$/);
     if (groupMatch && method === "GET") {
+      if (failNextProjectReadbackStatus) {
+        const status = failNextProjectReadbackStatus;
+        failNextProjectReadbackStatus = null;
+        return fail(status, `fixture readback containing ${MANAGED_GITLAB_TOKEN}`);
+      }
       const groupId = Number(groupMatch[1]);
       const search = url.searchParams.get("search") ?? "";
       return send(200, [...projects.values()]
@@ -117,9 +151,12 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
 
     if (suffix === "/repository/commits" && method === "POST") {
       state.commitCreateCount++;
-      if (state.rejectNextCommitStatus) {
-        const status = state.rejectNextCommitStatus;
+      const rejectedStatus = state.rejectNextCommitStatus ??
+        (state.rejectCommitStatusOnNumber === state.commitCreateCount ? 503 : null);
+      if (rejectedStatus) {
+        const status = rejectedStatus;
         state.rejectNextCommitStatus = null;
+        if (state.rejectCommitStatusOnNumber === state.commitCreateCount) state.rejectCommitStatusOnNumber = null;
         failNextBranchRead = state.failCommitReadback;
         state.failCommitReadback = false;
         return fail(status, "fixture rejection with a secret that must never be exposed");
