@@ -130,9 +130,6 @@ export class GitLabSourceReader {
   async withAuthor<T>(input: SourceInput, token: string,
     work: (actorId: string, load: () => Promise<LoadedSource>) => Promise<T>): Promise<T> {
     const authorizationBudget = this.context();
-    const project = this.getProject(validateProjectId(input.projectId), token, authorizationBudget);
-    // A reused receipt may not need source content; settle its speculative read too.
-    void project.catch(() => undefined);
     let sourceBudget: RequestBudget | undefined;
     try {
       const { actorId } = await this.currentUser(token, authorizationBudget);
@@ -146,7 +143,7 @@ export class GitLabSourceReader {
           // Keep the per-submission request cap inclusive of authorization calls.
           sourceBudget.requests = authorizationBudget.requests;
         }
-        return this.loadSource(input, token, sourceBudget, project);
+        return this.loadSource(input, token, sourceBudget);
       });
     } finally {
       if (sourceBudget) await this.finish(sourceBudget);
@@ -154,8 +151,7 @@ export class GitLabSourceReader {
     }
   }
 
-  private async loadSource(input: SourceInput, token: string, budget: RequestBudget,
-    projectTask?: Promise<GitLabProject>): Promise<LoadedSource> {
+  private async loadSource(input: SourceInput, token: string, budget: RequestBudget): Promise<LoadedSource> {
     const projectId = validateProjectId(input.projectId);
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.appKey) || input.appKey.length > 64) {
       throw new DomainError(400, "VALIDATION_FAILED", "appKey 格式无效。");
@@ -169,7 +165,9 @@ export class GitLabSourceReader {
     }
     const commitSha = input.commitSha.toLowerCase();
 
-    const project = await (projectTask ?? this.getProject(projectId, token, budget));
+    // Check project permissions when source loading starts, after any preceding
+    // asynchronous database work has completed.
+    const project = await this.getProject(projectId, token, budget);
     if (String(project.id) !== projectId) {
       throw new DomainError(502, "SOURCE_UNAVAILABLE", "GitLab 返回的项目标识与请求不一致。");
     }

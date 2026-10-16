@@ -89,8 +89,8 @@ test('publication insert wait does not consume the later source-read deadline', 
   }
   for (let attempt = 0; attempt < 100 && h.fixture.state.active > 0; attempt++) await pause(5);
   assert.equal(h.fixture.state.active, 0, 'authorization HTTP requests finish while the real DB transaction is held at its statement boundary');
-  const authPaths = h.fixture.state.requests.slice(-2).map(request => request.path).sort();
-  assert.deepEqual(authPaths, ['/api/v4/projects/100', '/api/v4/user']);
+  const authPaths = h.fixture.state.requests.slice(-1).map(request => request.path);
+  assert.deepEqual(authPaths, ['/api/v4/user'], 'current user is checked before the DB wait; project access is checked when source loading starts');
   const requestCountBeforeContentLoad = h.fixture.state.requests.length;
 
   // Hold an actual PGlite transaction at the publication insert and advance only
@@ -101,8 +101,11 @@ test('publication insert wait does not consume the later source-read deadline', 
   const first = await submitted;
   assert.equal(first.response.status, 201);
   assert.equal(first.result.status, 'preview_ready');
-  assert.ok(h.fixture.state.requests.slice(requestCountBeforeContentLoad).length > 0, 'source HTTP reads start after the DB wait');
-  assert.ok(h.fixture.state.requests.slice(requestCountBeforeContentLoad).some(request => {
+  const sourceRequestsAfterWait = h.fixture.state.requests.slice(requestCountBeforeContentLoad);
+  assert.ok(sourceRequestsAfterWait.length > 0, 'source HTTP reads start after the DB wait');
+  assert.ok(sourceRequestsAfterWait.some(request => request.path === '/api/v4/projects/100'),
+    'current project permissions are re-read when source loading starts after the DB wait');
+  assert.ok(sourceRequestsAfterWait.some(request => {
     const requestUrl = new URL(request.path, h.fixture.url);
     return requestUrl.pathname.endsWith('/repository/tree') && requestUrl.searchParams.has('ref');
   }));
@@ -116,6 +119,106 @@ test('publication insert wait does not consume the later source-read deadline', 
   assert.equal(retry.result.status, 'preview_ready');
   assert.equal(h.fixture.state.writes.length, writesBeforeRetry);
   assert.equal(h.fixture.state.requests.length, requestsBeforeRetry, 'same-key receipt retry does not repeat GitLab reads');
+});
+
+test('source load checks current project permission after a real publication-insert wait and retries the same receipt after access returns', async t => {
+  let gateNextPublicationInsert = false;
+  let enterGate!: () => void;
+  let releaseGate!: () => void;
+  const entered = new Promise<void>(resolve => { enterGate = resolve; });
+  const gate = new Promise<void>(resolve => { releaseGate = resolve; });
+  const factories = {
+    createApp,
+    async openDatabase(options: Parameters<typeof openDatabase>[0]) {
+      const db = await openDatabase(options);
+      const gated = Object.create(db) as Database;
+      gated.transaction = <T>(work: (tx: Queryable) => Promise<T>) => db.transaction(async tx => {
+        const gatedTx = Object.create(tx) as Queryable;
+        gatedTx.query = async <Row extends QueryResultRow = QueryResultRow>(sql: string, params: readonly unknown[] = []) => {
+          if (gateNextPublicationInsert && /^\s*INSERT INTO publications\b/i.test(sql)) {
+            gateNextPublicationInsert = false;
+            enterGate();
+            await gate;
+          }
+          return tx.query<Row>(sql, params);
+        };
+        return work(gatedTx);
+      });
+      return gated;
+    },
+  };
+  const h = await performanceHarness(0, factories);
+  t.after(async () => { releaseGate(); await h.close(); });
+
+  gateNextPublicationInsert = true;
+  const submitted = h.submit(bundle());
+  let gateTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      entered,
+      new Promise<never>((_resolve, reject) => {
+        gateTimeout = setTimeout(() => reject(new Error('managed submit did not reach the gated publication insert')), 20_000);
+      }),
+    ]);
+  } finally {
+    if (gateTimeout) clearTimeout(gateTimeout);
+  }
+
+  for (let attempt = 0; attempt < 100 && h.fixture.state.active > 0; attempt++) await pause(5);
+  assert.equal(h.fixture.state.active, 0, 'initial user authorization read finishes while the PGlite transaction is held');
+  assert.equal(h.fixture.state.role, 40, 'author still has Maintainer access before source loading starts');
+  const requestsBeforeSourceLoad = h.fixture.state.requests.length;
+  const writesBeforeSourceLoad = h.fixture.state.writes.length;
+
+  // Revoke Maintainer while the real publication INSERT is blocked. Source
+  // loading must evaluate permissions after this database wait.
+  h.fixture.state.role = 10;
+  releaseGate();
+
+  const first = await submitted;
+  assert.equal(first.response.status, 201);
+  assert.equal(first.result.status, 'failed');
+  assert.equal(first.result.error.code, 'PERMISSION_DENIED');
+  assert.equal(first.result.nextAction, 'retry');
+  assert.equal(first.result.preview, undefined, 'revoked access produces no successful preview');
+  assert.equal(first.result.digest, undefined);
+  const sourceReadRequests = h.fixture.state.requests.slice(requestsBeforeSourceLoad);
+  assert.ok(sourceReadRequests.some(request => request.path === '/api/v4/projects/100'),
+    'source loading performs a fresh project request after the DB wait');
+  assert.ok(!sourceReadRequests.some(request => {
+    const url = new URL(request.path, h.fixture.url);
+    return url.pathname.includes('/repository/');
+  }), 'permission denial happens before any commit, tree or source-content reads');
+
+  const operation = (await h.db.query<{ status: string; publication_id: string | null }>(
+    'SELECT status, publication_id FROM managed_publish_operations'));
+  assert.equal(operation.rows.length, 1);
+  assert.equal(operation.rows[0]!.status, 'submitted');
+  assert.equal(operation.rows[0]!.publication_id, first.result.id);
+  assert.equal((await h.service.list()).total, 0, 'permission denial does not register a catalog app');
+  assert.equal(((await (await fetch(`${h.origin}/api/apps`)).json()) as { total: number }).total, 0);
+  assert.equal(h.fixture.state.writes.length, writesBeforeSourceLoad, 'denial adds no GitLab source writes');
+
+  h.fixture.state.role = 40;
+  const sameOperation = await h.submit(bundle(), first.key, first.idempotency);
+  assert.equal(sameOperation.result.id, first.result.id);
+  assert.equal(sameOperation.result.status, 'failed', 'managed idempotency receipt remains the original failed publication');
+  assert.equal(h.fixture.state.writes.length, writesBeforeSourceLoad, 'reading the original receipt does not rewrite GitLab source');
+
+  const retryResponse = await fetch(`${h.origin}/api/publications/${first.result.id}/retry`, {
+    method: 'POST', headers: { Authorization: `Bearer ${first.result.ticket}` },
+  });
+  assert.equal(retryResponse.status, 200);
+  const recovered = await retryResponse.json() as { id: string; status: string; preview?: unknown };
+  assert.equal(recovered.id, first.result.id, 'author retry recovers the same publication receipt');
+  assert.equal(recovered.status, 'preview_ready');
+  assert.ok(recovered.preview);
+  assert.equal((await h.service.list()).total, 0, 'recovery restores a preview without registering it');
+  assert.equal(h.fixture.state.writes.length, writesBeforeSourceLoad, 'restored permission requires source reads, not source writes');
+  const operationAfterRetry = await h.db.query<{ status: string; publication_id: string | null }>(
+    'SELECT status, publication_id FROM managed_publish_operations');
+  assert.equal(operationAfterRetry.rows[0]!.status, 'submitted');
+  assert.equal(operationAfterRetry.rows[0]!.publication_id, first.result.id);
 });
 
 test('confirmation refreshes actor, permissions and original-byte content independently of preview caches', async t => {
