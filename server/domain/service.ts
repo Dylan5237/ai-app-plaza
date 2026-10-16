@@ -76,6 +76,7 @@ export interface PlazaService {
   cleanupExpiredTokens(): Promise<void>;
   tags(): Promise<string[]>;
   submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult>;
+  lookupManagedReceipt(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult | undefined>;
   publication(id: string, ticket: string): Promise<PublicationView>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   retry(id: string, ticket: string): Promise<PublicationView>;
@@ -624,6 +625,27 @@ export function createService(config: ServiceConfig): PlazaService {
       } catch (error) {
         return submitView(await markFailed(created.record.id, error));
       }
+    },
+
+    async lookupManagedReceipt(input, gitlabToken, idempotencyKey) {
+      validateSubmitInput(input, gitlabToken, idempotencyKey);
+      const { actorId } = await reader.currentUser(gitlabToken);
+      const idempotencyDigest = createHmac("sha256", secret)
+        .update(`idempotency-v1:${actorId}:${idempotencyKey}`)
+        .digest("hex");
+      const requestHash = hashInput(input);
+      const record = (await config.db.query<PublicationRecord>(
+        "SELECT * FROM publications WHERE actor_id = $1 AND idempotency_digest = $2",
+        [actorId, idempotencyDigest],
+      )).rows[0];
+      if (!record) return undefined;
+      if (record.request_hash !== requestHash) {
+        throw new DomainError(409, "IDEMPOTENCY_CONFLICT", "相同幂等键已用于不同的候选内容。");
+      }
+      if (new Date(record.expires_at).getTime() <= Date.now()) {
+        throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，无法通过该回执恢复。");
+      }
+      return submitView(record);
     },
 
     async publication(id, ticket) {
