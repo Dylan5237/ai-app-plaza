@@ -39,6 +39,11 @@ interface OperationRecord {
   status: "prepared" | "project_ready" | "commit_ready" | "tag_ready" | "release_ready" | "submitted";
 }
 
+function operationHasUploadedSource(operation: OperationRecord): boolean {
+  return operation.commit_sha !== null || operation.status === "commit_ready" || operation.status === "tag_ready" ||
+    operation.status === "release_ready" || operation.status === "submitted";
+}
+
 interface GitLabProject {
   id?: string | number;
   name?: string;
@@ -119,7 +124,7 @@ export interface ManagedPublisher {
   ): Promise<SubmitResult & { managedAppId: string; sourceUploaded: true }>;
   receipt(publishKey: string, idempotencyKey: string): Promise<
     | (SubmitResult & { managedAppId: string; sourceUploaded: true })
-    | { status: "recovery_required"; nextAction: "retry_original"; managedAppId: string; recoveryRequired: true; sourceUploaded: false; operationStatus: OperationRecord["status"] }
+    | { status: "recovery_required"; nextAction: "retry_original"; managedAppId: string; recoveryRequired: true; sourceUploaded: boolean; operationStatus: OperationRecord["status"] }
   >;
   current(managedAppId: string, publishKey: string): Promise<{
     managedAppId: string;
@@ -686,6 +691,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       if (!binding) throw managedOperationNotFound();
       const operation = await findOperation(binding.id, idempotencyDigest(binding.id, idempotencyKey));
       if (!operation) throw managedOperationNotFound();
+      const sourceUploaded = operationHasUploadedSource(operation);
 
       const projectId = operation.project_id ?? binding.project_id;
       if (!operation.commit_sha || !projectId) {
@@ -694,7 +700,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
           nextAction: "retry_original",
           managedAppId: binding.id,
           recoveryRequired: true,
-          sourceUploaded: false,
+          sourceUploaded,
           operationStatus: operation.status,
         };
       }
@@ -713,7 +719,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
           nextAction: "retry_original",
           managedAppId: binding.id,
           recoveryRequired: true,
-          sourceUploaded: false,
+          sourceUploaded,
           operationStatus: operation.status,
         };
       }

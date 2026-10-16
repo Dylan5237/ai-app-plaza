@@ -56,13 +56,18 @@ interface Portal {
   db: Database;
   gitlab: Awaited<ReturnType<typeof startManagedGitLabFixture>>;
   dbWrites: string[];
+  failNextPublicationInsert(): void;
   close(): Promise<void>;
 }
 
-function trackedDatabase(db: Database, writes: string[]): Database {
+function trackedDatabase(db: Database, writes: string[], fault: { failNextPublicationInsert: boolean }): Database {
   const track = (queryable: Queryable): Queryable => ({
     query: async <Row extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<QueryResult<Row>> => {
       if (/^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE)\b/i.test(sql)) writes.push(sql.trim().replace(/\s+/g, " ").slice(0, 180));
+      if (fault.failNextPublicationInsert && /^\s*INSERT\s+INTO\s+publications\b/i.test(sql)) {
+        fault.failNextPublicationInsert = false;
+        throw new Error("fixture publication insert interruption");
+      }
       return queryable.query<Row>(sql, params);
     },
   });
@@ -90,7 +95,8 @@ async function startPortal(): Promise<Portal> {
   const origin = `http://127.0.0.1:${port}`;
   const db = await openDatabase({ path: "memory://" });
   const dbWrites: string[] = [];
-  const observedDb = trackedDatabase(db, dbWrites);
+  const fault = { failNextPublicationInsert: false };
+  const observedDb = trackedDatabase(db, dbWrites, fault);
   const gitlab = await startManagedGitLabFixture();
   const config: Config = {
     host: "127.0.0.1",
@@ -114,6 +120,7 @@ async function startPortal(): Promise<Portal> {
     db,
     gitlab,
     dbWrites,
+    failNextPublicationInsert: () => { fault.failNextPublicationInsert = true; },
     close: async () => { await app.close(); await db.close(); await gitlab.close(); },
   };
 }
@@ -320,4 +327,87 @@ test("receipt reports partial operations and rejects expired publications withou
   assert.equal(portal.dbWrites.length, expiredWrites);
   assert.equal(tokenBefore, (await portal.db.query<{ token_ciphertext: string | null }>("SELECT token_ciphertext FROM publications WHERE id = $1", [publicationId])).rows[0]?.token_ciphertext);
   assert.deepEqual(await tableSnapshot(portal.db), expiredBefore);
+});
+
+test("receipt marks source uploaded when its publication insert was interrupted after release_ready", async t => {
+  const portal = await startPortal();
+  t.after(() => portal.close());
+  const owner = randomBytes(32).toString("base64url");
+  const idempotencyKey = randomUUID();
+  portal.failNextPublicationInsert();
+  const failed = await request(portal, "POST", "/api/managed-publications", makeCandidate("sample-no-publication"), {
+    "x-plaza-publish-key": owner,
+    "idempotency-key": idempotencyKey,
+  });
+  assert.equal(failed.status, 503, failed.text);
+  assert.equal(failed.json.error?.code, "PUBLICATION_FAILED");
+
+  const binding = (await portal.db.query<{ id: string; publish_key_digest: string }>(
+    "SELECT id, publish_key_digest FROM managed_app_bindings LIMIT 1",
+  )).rows[0]!;
+  const operation = (await portal.db.query<{
+    id: string; idempotency_digest: string; request_digest: string; status: string;
+    project_id: string | null; commit_sha: string | null; tag: string;
+  }>("SELECT id, idempotency_digest, request_digest, status, project_id, commit_sha, tag FROM managed_publish_operations LIMIT 1")).rows[0]!;
+  assert.equal(operation.status, "release_ready");
+  assert.ok(operation.project_id);
+  assert.ok(operation.commit_sha);
+  assert.equal((await portal.db.query("SELECT id FROM publications")).rows.length, 0);
+  const project = portal.gitlab.state.projects.get(Number(operation.project_id))!;
+  assert.ok(project.commits.has(operation.commit_sha));
+  assert.equal(project.tags.get(operation.tag), operation.commit_sha);
+  assert.equal(project.releases.get(operation.tag), operation.commit_sha);
+
+  const beforeReceipt = await tableSnapshot(portal.db);
+  const identityBefore = {
+    bindingId: binding.id,
+    publishKeyDigest: binding.publish_key_digest,
+    operationId: operation.id,
+    idempotencyDigest: operation.idempotency_digest,
+    requestDigest: operation.request_digest,
+  };
+  const writesBefore = portal.dbWrites.length;
+  const gitlabRequestsBefore = portal.gitlab.state.requests.length;
+  const gitlabWritesBefore = gitlabWriteCount(portal);
+  const receipt = await request(portal, "GET", "/api/managed-publications/receipt", undefined, {
+    "x-plaza-publish-key": owner,
+    "idempotency-key": idempotencyKey,
+  });
+  assert.equal(receipt.status, 200, receipt.text);
+  assert.equal(receipt.json.status, "recovery_required");
+  assert.equal(receipt.json.nextAction, "retry_original");
+  assert.equal(receipt.json.recoveryRequired, true);
+  assert.equal(receipt.json.managedAppId, binding.id);
+  assert.equal(receipt.json.sourceUploaded, true);
+  assert.equal(receipt.json.operationStatus, "release_ready");
+  assert.equal(Object.hasOwn(receipt.json, "previewUrl"), false);
+  assert.equal(Object.hasOwn(receipt.json, "ticket"), false);
+  assert.deepEqual(await tableSnapshot(portal.db), beforeReceipt);
+  assert.equal(portal.dbWrites.length, writesBefore, "receipt lookup performs no SQL writes");
+  assert.equal(gitlabWriteCount(portal), gitlabWritesBefore, "receipt lookup performs no GitLab writes");
+  assert.deepEqual(portal.gitlab.state.requests.slice(gitlabRequestsBefore).map(item => item.path), ["/api/v4/user"]);
+  const unchangedOperation = (await portal.db.query<{
+    id: string; idempotency_digest: string; request_digest: string;
+    status: string; project_id: string | null; commit_sha: string | null;
+  }>(
+    "SELECT id, idempotency_digest, request_digest, status, project_id, commit_sha FROM managed_publish_operations LIMIT 1",
+  )).rows[0]!;
+  assert.deepEqual(unchangedOperation, {
+    id: operation.id,
+    idempotency_digest: operation.idempotency_digest,
+    request_digest: operation.request_digest,
+    status: "release_ready",
+    project_id: operation.project_id,
+    commit_sha: operation.commit_sha,
+  });
+  const unchangedBinding = (await portal.db.query<{ id: string; publish_key_digest: string }>(
+    "SELECT id, publish_key_digest FROM managed_app_bindings LIMIT 1",
+  )).rows[0]!;
+  assert.deepEqual({
+    bindingId: unchangedBinding.id,
+    publishKeyDigest: unchangedBinding.publish_key_digest,
+    operationId: unchangedOperation.id,
+    idempotencyDigest: unchangedOperation.idempotency_digest,
+    requestDigest: unchangedOperation.request_digest,
+  }, identityBefore, "receipt keeps the original owner/idempotency identity");
 });
