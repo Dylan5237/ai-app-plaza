@@ -361,7 +361,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     if (!project) {
       try {
         project = await api.createProject({
-          name: `${binding.app_key} · AI 应用广场`,
+          name: `${path} · AI 应用广场`,
           path,
           namespace_id: groupIdNumber,
           visibility: "private",
