@@ -54,9 +54,9 @@ SECRET_PATTERNS = [
     re.compile(rb"\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\b"),
 ]
 SECRET_ASSIGNMENT_PATTERN = re.compile(
-    rb"(?i)(?<![A-Za-z0-9_])(?P<key_quote>[\"']?)"
+    rb"(?i)(?<![A-Za-z0-9_])[\"']?"
     rb"(?:x-plaza-publish-key|publish[-_]?key|access[-_]?token|api[-_]?key|secret[-_]?key|client[-_]?secret|password)"
-    rb"(?P=key_quote)?\s*[:=]\s*(?P<quote>[\"'`]?)\s*(?P<value>[A-Za-z0-9_./+=-]{20,})(?P=quote)?"
+    rb"[\"']?\s*[:=]\s*"
 )
 JS_SOURCE_SUFFIXES = {".cjs", ".cts", ".js", ".mjs", ".mts", ".ts", ".vue"}
 JS_MEMBER_REFERENCE_RE = re.compile(
@@ -138,6 +138,7 @@ SAFE_DIAGNOSTIC_FIELDS = {
 }
 SAFE_PUBLICATION_STATUSES = {"checking", "preview_ready", "registered", "failed", "cancelled"}
 SAFE_NEXT_ACTIONS = {"confirm", "complete", "retry", "retry_original", "submit_again", "none"}
+SAFE_OPERATION_STATUSES = {"prepared", "project_ready", "commit_ready", "tag_ready", "release_ready", "submitted"}
 
 
 class CliError(Exception):
@@ -734,6 +735,43 @@ def _js_reference_ends_expression(raw: bytes, offset: int) -> bool:
     return False
 
 
+def _secret_assignment_value(raw: bytes, start: int) -> tuple[bytes, int, bool, bool]:
+    index = start
+    while index < len(raw) and raw[index] in b" \t\r\n\v\f":
+        index += 1
+    if index >= len(raw):
+        return b"", index, False, True
+
+    quote = raw[index]
+    if quote in (0x22, 0x27, 0x60):
+        content_start = index + 1
+        index = content_start
+        while index < len(raw):
+            current = raw[index]
+            if current == 0x5C:
+                if index + 1 >= len(raw):
+                    return raw[content_start:index], content_start, True, False
+                if raw[index + 1:index + 3] == b"\r\n":
+                    index += 3
+                else:
+                    index += 2
+                continue
+            if quote == 0x60 and raw.startswith(b"${", index):
+                return raw[content_start:index], content_start, True, False
+            if current == quote:
+                return raw[content_start:index], content_start, True, True
+            if quote != 0x60 and current in (0x0A, 0x0D):
+                return raw[content_start:index], content_start, True, False
+            index += 1
+        return raw[content_start:index], content_start, True, False
+
+    line_end = len(raw)
+    for newline in (raw.find(b"\n", index), raw.find(b"\r", index)):
+        if newline >= 0:
+            line_end = min(line_end, newline)
+    return raw[index:line_end].strip(), index, False, True
+
+
 def _looks_secret(raw: bytes, path: str) -> bool:
     if any(pattern.search(raw) for pattern in SECRET_PATTERNS):
         return True
@@ -741,13 +779,14 @@ def _looks_secret(raw: bytes, path: str) -> bool:
     is_js_source = suffix in JS_SOURCE_SUFFIXES
     code_mask = None
     for match in SECRET_ASSIGNMENT_PATTERN.finditer(raw):
-        value = match.group("value")
-        is_reference_candidate = (
-            is_js_source
-            and not match.group("quote")
-            and JS_MEMBER_REFERENCE_RE.fullmatch(value)
-        )
-        if not is_reference_candidate:
+        value, value_start, quoted, reliable = _secret_assignment_value(raw, match.end())
+        if quoted:
+            if not reliable or len(value) >= 20:
+                return True
+            continue
+        if not reliable or len(value) < 20:
+            continue
+        if not is_js_source:
             return True
         if code_mask is None:
             code_mask = bytearray(len(raw))
@@ -756,9 +795,10 @@ def _looks_secret(raw: bytes, path: str) -> bool:
                     code_mask[start:end] = _js_code_mask(raw[start:end])
             else:
                 code_mask = _js_code_mask(raw)
+        reference = JS_MEMBER_REFERENCE_RE.match(raw, value_start)
         if (
-            not code_mask[match.start("value")]
-            or not _js_reference_ends_expression(raw, match.end("value"))
+            not reference or not code_mask[value_start]
+            or not _js_reference_ends_expression(raw, reference.end())
         ):
             return True
     return False
@@ -1251,7 +1291,9 @@ def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[st
     except CliError:
         pass
 
-    source_uploaded = response.get("sourceUploaded") is True
+    source_uploaded = response.get("sourceUploaded")
+    if not isinstance(source_uploaded, bool):
+        source_uploaded = None
     next_action = response.get("nextAction")
     if not isinstance(next_action, str) or next_action not in SAFE_NEXT_ACTIONS:
         next_action = None
@@ -1264,8 +1306,9 @@ def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[st
 
     details: dict[str, Any] = {
         "status": status_value or "unknown",
-        "sourceUploaded": source_uploaded,
     }
+    if source_uploaded is not None:
+        details["sourceUploaded"] = source_uploaded
     if managed_id:
         details["managedAppId"] = managed_id
     if publication_id:
@@ -1287,7 +1330,7 @@ def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[st
         url_details and publication_id and url_details[0] == publication_id and ticket_matches
     )
     complete = bool(
-        status_value == "preview_ready" and source_uploaded and managed_id and publication_id and valid_url
+        status_value == "preview_ready" and source_uploaded is True and managed_id and publication_id and valid_url
     )
     if complete:
         details["handoffState"] = "complete"
@@ -1299,15 +1342,45 @@ def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[st
         details["handoffState"] = "recovery_required"
     if complete:
         details["previewUrl"] = preview_url
+    failed_retry_recovery = bool(
+        status_value == "failed" and next_action == "retry" and source_uploaded is True
+        and managed_id and publication_id and url_details and url_details[0] == publication_id
+        and isinstance(raw_ticket, str) and raw_ticket == url_details[1]
+    )
+    if failed_retry_recovery:
+        details["recoveryUrl"] = preview_url
+        details["recoveryTicket"] = raw_ticket
     return details, complete
 
 
+def _clear_saved_recovery_capability(receipt: dict[str, Any]) -> bool:
+    changed = False
+    for key in ("recoveryUrl", "recoveryTicket"):
+        if key in receipt:
+            receipt.pop(key, None)
+            changed = True
+    return changed
+
+
+def _discard_saved_recovery_capability(store: ReceiptStore, receipt: dict[str, Any]) -> None:
+    if _clear_saved_recovery_capability(receipt):
+        store.save(receipt)
+
+
 def _store_publication_result(store: ReceiptStore, receipt: dict[str, Any], details: dict[str, Any], complete: bool) -> None:
+    _clear_saved_recovery_capability(receipt)
+    receipt.pop("verifiedRecoveryAction", None)
+    receipt.pop("recoveryResponseStatus", None)
+    receipt.pop("operationStatus", None)
     receipt["responseKnown"] = True
     receipt.pop("knownRequestRejection", None)
     receipt["publicationId"] = details.get("publicationId")
     receipt["publicationStatus"] = details.get("status", "unknown")
-    receipt["sourceUploaded"] = details.get("sourceUploaded") is True
+    source_uploaded = details.get("sourceUploaded")
+    if isinstance(source_uploaded, bool):
+        receipt["sourceUploaded"] = source_uploaded
+    else:
+        receipt.pop("sourceUploaded", None)
     receipt["managedAppId"] = details.get("managedAppId", receipt.get("managedAppId"))
     for key in ("nextAction", "revision", "expiresAt"):
         if key in details:
@@ -1331,6 +1404,28 @@ def _store_publication_result(store: ReceiptStore, receipt: dict[str, Any], deta
             receipt["handoffRecoveryRequired"] = True
         else:
             receipt.pop("handoffRecoveryRequired", None)
+        if (
+            details.get("status") == "failed" and details.get("nextAction") == "retry"
+            and details.get("sourceUploaded") is True and details.get("handoffState") == "recovery_required"
+            and isinstance(details.get("recoveryUrl"), str) and isinstance(details.get("recoveryTicket"), str)
+        ):
+            identity = receipt.get("identity")
+            origin = identity.get("origin") if isinstance(identity, dict) else None
+            url = details["recoveryUrl"]
+            link = _author_preview_details(url, origin) if isinstance(origin, str) else None
+            publication_id = None
+            managed_id = None
+            try:
+                publication_id = _valid_uuid(details.get("publicationId"), "publicationId")
+                managed_id = _valid_uuid(details.get("managedAppId"), "managedAppId")
+            except CliError:
+                link = None
+            if (
+                link and link[0] == publication_id and link[1] == details["recoveryTicket"]
+                and managed_id == details.get("managedAppId")
+            ):
+                receipt["recoveryUrl"] = url
+                receipt["recoveryTicket"] = link[1]
     store.save(receipt)
 
 
@@ -1404,6 +1499,35 @@ def _saved_preview_url(receipt: dict[str, Any], origin: str) -> str | None:
     return preview_url
 
 
+def _saved_recovery_url(receipt: dict[str, Any], origin: str) -> str | None:
+    if (
+        receipt.get("responseKnown") is not True
+        or receipt.get("handoffComplete") is not False
+        or receipt.get("handoffState") != "recovery_required"
+        or receipt.get("handoffRecoveryRequired") is not True
+        or receipt.get("publicationStatus") != "failed"
+        or receipt.get("nextAction") != "retry"
+        or receipt.get("sourceUploaded") is not True
+    ):
+        return None
+    identity = receipt.get("identity")
+    if not isinstance(identity, dict) or identity.get("origin") != origin:
+        return None
+    try:
+        publication_id = _valid_uuid(receipt.get("publicationId"), "publicationId")
+        _valid_uuid(receipt.get("managedAppId"), "managedAppId")
+    except CliError:
+        return None
+    recovery_url = receipt.get("recoveryUrl")
+    recovery_ticket = receipt.get("recoveryTicket")
+    if not isinstance(recovery_url, str) or not isinstance(recovery_ticket, str):
+        return None
+    link = _author_preview_details(recovery_url, origin)
+    if not link or link[0] != publication_id or link[1] != recovery_ticket:
+        return None
+    return recovery_url
+
+
 def _receipt_status_output(receipt: dict[str, Any], origin: str) -> dict[str, Any]:
     publication_status = receipt.get("publicationStatus")
     if not isinstance(publication_status, str) or publication_status not in SAFE_PUBLICATION_STATUSES:
@@ -1422,8 +1546,10 @@ def _receipt_status_output(receipt: dict[str, Any], origin: str) -> dict[str, An
         "status": "receipt_saved",
         "handoffState": handoff_state,
         "publicationStatus": publication_status,
-        "sourceUploaded": receipt.get("sourceUploaded") is True,
     }
+    source_uploaded = receipt.get("sourceUploaded")
+    if isinstance(source_uploaded, bool):
+        result["sourceUploaded"] = source_uploaded
     app_key = receipt.get("identity", {}).get("appKey") if isinstance(receipt.get("identity"), dict) else None
     if isinstance(app_key, str) and APP_KEY_RE.fullmatch(app_key):
         result["appKey"] = app_key
@@ -1435,6 +1561,9 @@ def _receipt_status_output(receipt: dict[str, Any], origin: str) -> dict[str, An
     preview_url = _saved_preview_url(receipt, origin)
     if preview_url:
         result["previewUrl"] = preview_url
+    recovery_url = _saved_recovery_url(receipt, origin)
+    if recovery_url:
+        result["recoveryUrl"] = recovery_url
     next_action = receipt.get("nextAction")
     if isinstance(next_action, str) and next_action in SAFE_NEXT_ACTIONS:
         result["nextAction"] = next_action
@@ -1442,8 +1571,65 @@ def _receipt_status_output(receipt: dict[str, Any], origin: str) -> dict[str, An
 
 
 def _safe_operation_status(value: Any) -> str | None:
-    allowed = {"prepared", "project_ready", "commit_ready", "tag_ready", "release_ready", "submitted"}
-    return value if isinstance(value, str) and value in allowed else None
+    return value if isinstance(value, str) and value in SAFE_OPERATION_STATUSES else None
+
+
+def _can_retry_original(receipt: dict[str, Any]) -> bool:
+    if (
+        receipt.get("handoffRecoveryRequired") is not True
+        or receipt.get("recoveryResponseStatus") != "recovery_required"
+        or receipt.get("verifiedRecoveryAction") != "retry_original"
+        or receipt.get("nextAction") != "retry_original"
+        or _safe_operation_status(receipt.get("operationStatus")) is None
+    ):
+        return False
+    try:
+        managed_id = _valid_uuid(receipt.get("managedAppId"), "receipt managedAppId")
+        _valid_uuid(receipt.get("idempotencyKey"), "receipt Idempotency-Key")
+    except CliError:
+        return False
+    if "requestManagedAppId" not in receipt:
+        return False
+    request_managed_id = receipt.get("requestManagedAppId")
+    if request_managed_id is not None:
+        try:
+            if _valid_uuid(request_managed_id, "receipt request managedAppId") != managed_id:
+                return False
+        except CliError:
+            return False
+        request_revision = receipt.get("requestExpectedAppRevision")
+        if not isinstance(request_revision, int) or isinstance(request_revision, bool) or request_revision < 0:
+            return False
+    elif receipt.get("requestExpectedAppRevision") is not None:
+        return False
+    publish_key = receipt.get("publishKey")
+    if not isinstance(publish_key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{43,128}", publish_key):
+        return False
+    digest = receipt.get("bundleDigest")
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        return False
+    try:
+        _decode_receipt_files(receipt)
+    except CliError:
+        return False
+    return True
+
+
+def _can_submit_again(receipt: dict[str, Any], *, changed_bundle: bool) -> bool:
+    if (
+        not changed_bundle
+        or receipt.get("handoffRecoveryRequired") is not True
+        or receipt.get("responseKnown") is not True
+        or receipt.get("publicationStatus") != "failed"
+        or receipt.get("nextAction") != "submit_again"
+    ):
+        return False
+    try:
+        _valid_uuid(receipt.get("managedAppId"), "receipt managedAppId")
+        _valid_uuid(receipt.get("publicationId"), "receipt publicationId")
+    except CliError:
+        return False
+    return receipt.get("sourceUploaded") is True
 
 
 def _recovery_required_output(*, managed_id: str | None = None, operation_status: str | None = None,
@@ -1480,7 +1666,7 @@ def _publish_output(details: dict[str, Any], complete: bool) -> dict[str, Any]:
         ) if key in details}
     if details.get("status") in {"failed", "cancelled"}:
         return {key: details[key] for key in (
-            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction",
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction", "recoveryUrl",
         ) if key in details}
     return _recovery_required_output(managed_id=details.get("managedAppId"))
 
@@ -1551,6 +1737,7 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
     except CliError:
         _print_json(_recovery_required_output())
         return 1
+    _discard_saved_recovery_capability(store, receipt)
     try:
         status, raw = _request(
             origin_parts, "GET", "/api/managed-publications/receipt",
@@ -1592,24 +1779,44 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
         if managed_id and receipt.get("managedAppId") and managed_id != receipt.get("managedAppId"):
             managed_id = None
         operation_status = _safe_operation_status(response.get("operationStatus"))
-        next_action = "retry_original" if response.get("nextAction") == "retry_original" else None
-        source_uploaded = False if response.get("sourceUploaded") is False else None
+        source_uploaded = response.get("sourceUploaded")
+        if not isinstance(source_uploaded, bool):
+            source_uploaded = None
+        retry_original = bool(
+            response.get("recoveryRequired") is True
+            and response.get("nextAction") == "retry_original"
+            and managed_id
+            and operation_status
+        )
+        next_action = "retry_original" if retry_original else None
         receipt["managedAppId"] = managed_id or receipt.get("managedAppId")
         receipt["handoffState"] = "recovery_required"
         receipt["handoffComplete"] = False
         receipt["handoffRecoveryRequired"] = True
+        receipt["publicationStatus"] = "unknown"
+        receipt.pop("nextAction", None)
+        receipt.pop("operationStatus", None)
+        receipt.pop("verifiedRecoveryAction", None)
+        receipt.pop("recoveryResponseStatus", None)
         if operation_status:
             receipt["operationStatus"] = operation_status
         if next_action:
             receipt["nextAction"] = next_action
-        receipt["sourceUploaded"] = source_uploaded is True
+            receipt["verifiedRecoveryAction"] = next_action
+            receipt["recoveryResponseStatus"] = "recovery_required"
+        if source_uploaded is not None:
+            receipt["sourceUploaded"] = source_uploaded
+        else:
+            receipt.pop("sourceUploaded", None)
         receipt.pop("previewUrl", None)
         receipt.pop("publicationTicket", None)
+        _clear_saved_recovery_capability(receipt)
         try:
             store.save(receipt)
         except CliError:
             pass
-        _print_json(_recovery_required_output(managed_id=managed_id, operation_status=operation_status,
+        _print_json(_recovery_required_output(managed_id=managed_id or receipt.get("managedAppId"),
+                                             operation_status=operation_status if retry_original else None,
                                              next_action=next_action, source_uploaded=source_uploaded))
         return 1
 
@@ -1670,11 +1877,6 @@ def _run(args: argparse.Namespace) -> int:
             saved = receipt.get("managedAppId") if receipt else None
             if not isinstance(saved, str) or saved.lower() != supplied:
                 raise CliError("--managed-app-id 与本机项目 receipt 不匹配；不会创建或冒名更新应用。")
-        if receipt and receipt.get("handoffRecoveryRequired") is True:
-            _print_json(_recovery_required_output(managed_id=receipt.get("managedAppId")
-                                                  if isinstance(receipt.get("managedAppId"), str) else None))
-            return 1
-
         if receipt is None:
             receipt = {
                 "identity": {"origin": origin, "projectRoot": str(project_root), "appKey": app_key},
@@ -1690,11 +1892,23 @@ def _run(args: argparse.Namespace) -> int:
         refresh_revision = receipt.get("refreshRevisionAfterRejection") is True
         known_request_rejection = receipt.get("knownRequestRejection") is True
         changed_bundle = bool(old_digest and old_digest != digest)
-        deferred_update = bool(old_digest and old_digest != digest and not response_known)
+        retry_original_authorized = bool(receipt and _can_retry_original(receipt))
+        submit_again_authorized = bool(receipt and _can_submit_again(receipt, changed_bundle=changed_bundle))
+        deferred_update = bool(
+            old_digest and old_digest != digest and (not response_known or retry_original_authorized)
+        )
         known_completed_handoff = receipt.get("handoffState") in {"complete", "registered"}
         if (
+            receipt.get("handoffRecoveryRequired") is True
+            and not retry_original_authorized
+            and not submit_again_authorized
+        ):
+            _print_json(_recovery_required_output(managed_id=receipt.get("managedAppId")
+                                                  if isinstance(receipt.get("managedAppId"), str) else None))
+            return 1
+        if (
             changed_bundle and response_known and not refresh_revision and not known_request_rejection
-            and not known_completed_handoff
+            and not known_completed_handoff and not retry_original_authorized and not submit_again_authorized
         ):
             _print_json(_recovery_required_output(managed_id=receipt.get("managedAppId")
                                                   if isinstance(receipt.get("managedAppId"), str) else None))
@@ -1710,7 +1924,11 @@ def _run(args: argparse.Namespace) -> int:
             receipt["requestExpectedAppRevision"] = None
             receipt["handoffState"] = "pending"
             receipt["handoffComplete"] = False
-        elif refresh_revision or (changed_bundle and (known_request_rejection or known_completed_handoff)):
+        elif retry_original_authorized:
+            # Replay the saved body, owner, idempotency key, managed ID, and revision.
+            # The current source tree is deliberately ignored until this request resolves.
+            pass
+        elif refresh_revision or (changed_bundle and (known_request_rejection or known_completed_handoff or submit_again_authorized)):
             receipt["idempotencyKey"] = str(uuid.uuid4())
             receipt["bundleDigest"] = digest
             receipt["files"] = files
@@ -1742,6 +1960,18 @@ def _run(args: argparse.Namespace) -> int:
         # if this retry loses its response.
         receipt["responseKnown"] = False
         receipt.pop("knownRequestRejection", None)
+        receipt.pop("verifiedRecoveryAction", None)
+        receipt.pop("recoveryResponseStatus", None)
+        receipt.pop("nextAction", None)
+        receipt.pop("operationStatus", None)
+        receipt.pop("handoffRecoveryRequired", None)
+        receipt["handoffState"] = "pending"
+        receipt["handoffComplete"] = False
+        receipt["publicationStatus"] = "unknown"
+        receipt.pop("sourceUploaded", None)
+        receipt.pop("previewUrl", None)
+        receipt.pop("publicationTicket", None)
+        _clear_saved_recovery_capability(receipt)
         store.save(receipt)
 
         expected_revision: int | None = None
@@ -1810,7 +2040,7 @@ def _run(args: argparse.Namespace) -> int:
                          "diagnostics": [_local_diagnostic(error)]})
         elif args.status:
             _print_json({"status": "receipt_error", "handoffState": "recovery_required",
-                         "publicationStatus": "unknown", "sourceUploaded": False})
+                         "publicationStatus": "unknown"})
         elif args.recover:
             _print_json(_recovery_required_output())
         else:
@@ -1822,7 +2052,7 @@ def _run(args: argparse.Namespace) -> int:
                          "diagnostics": [_fallback_diagnostic("LOCAL_READ_FAILED", "managed.cli.local_read")]})
         elif args.status:
             _print_json({"status": "receipt_error", "handoffState": "recovery_required",
-                         "publicationStatus": "unknown", "sourceUploaded": False})
+                         "publicationStatus": "unknown"})
         elif args.recover:
             _print_json(_recovery_required_output())
         else:

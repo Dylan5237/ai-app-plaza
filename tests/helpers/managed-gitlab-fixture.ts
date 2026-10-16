@@ -40,6 +40,7 @@ export interface ManagedGitLabFixture {
     dropCommitResponseOnNumber: number | null;
     commitCreateCount: number;
     rejectNextCommitStatus: number | null;
+    rejectCommitStatusOnNumber: number | null;
     failCommitReadback: boolean;
     rejectNextProjectStatus: number | null;
     rejectNextProjectReadbackStatus: number | null;
@@ -71,6 +72,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     dropCommitResponseOnNumber: null,
     commitCreateCount: 0,
     rejectNextCommitStatus: null as number | null,
+    rejectCommitStatusOnNumber: null as number | null,
     failCommitReadback: false,
     rejectNextProjectStatus: null as number | null,
     rejectNextProjectReadbackStatus: null as number | null,
@@ -170,9 +172,12 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
 
     if (suffix === "/repository/commits" && method === "POST") {
       state.commitCreateCount++;
-      if (state.rejectNextCommitStatus) {
-        const status = state.rejectNextCommitStatus;
+      const rejectedStatus = state.rejectNextCommitStatus ??
+        (state.rejectCommitStatusOnNumber === state.commitCreateCount ? 503 : null);
+      if (rejectedStatus) {
+        const status = rejectedStatus;
         state.rejectNextCommitStatus = null;
+        if (state.rejectCommitStatusOnNumber === state.commitCreateCount) state.rejectCommitStatusOnNumber = null;
         failNextBranchRead = state.failCommitReadback;
         state.failCommitReadback = false;
         return fail(status, "fixture rejection with a secret that must never be exposed");
