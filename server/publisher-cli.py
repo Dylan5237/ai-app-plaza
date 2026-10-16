@@ -1921,7 +1921,7 @@ def _run(args: argparse.Namespace) -> int:
                          "diagnostics": [_local_diagnostic(error)]})
         elif args.status:
             _print_json({"status": "receipt_error", "handoffState": "recovery_required",
-                         "publicationStatus": "unknown", "sourceUploaded": False})
+                         "publicationStatus": "unknown"})
         elif args.recover:
             _print_json(_recovery_required_output())
         else:
@@ -1933,7 +1933,7 @@ def _run(args: argparse.Namespace) -> int:
                          "diagnostics": [_fallback_diagnostic("LOCAL_READ_FAILED", "managed.cli.local_read")]})
         elif args.status:
             _print_json({"status": "receipt_error", "handoffState": "recovery_required",
-                         "publicationStatus": "unknown", "sourceUploaded": False})
+                         "publicationStatus": "unknown"})
         elif args.recover:
             _print_json(_recovery_required_output())
         else:
