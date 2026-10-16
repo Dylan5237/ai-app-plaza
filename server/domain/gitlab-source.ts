@@ -129,14 +129,29 @@ export class GitLabSourceReader {
   /** One authorization scope per submission/confirmation. No cross-request cache. */
   async withAuthor<T>(input: SourceInput, token: string,
     work: (actorId: string, load: () => Promise<LoadedSource>) => Promise<T>): Promise<T> {
-    const budget = this.context();
-    const project = this.getProject(validateProjectId(input.projectId), token, budget);
+    const authorizationBudget = this.context();
+    const project = this.getProject(validateProjectId(input.projectId), token, authorizationBudget);
     // A reused receipt may not need source content; settle its speculative read too.
     void project.catch(() => undefined);
+    let sourceBudget: RequestBudget | undefined;
     try {
-      const { actorId } = await this.currentUser(token, budget);
-      return await work(actorId, () => this.loadSource(input, token, budget, project));
-    } finally { await this.finish(budget); }
+      const { actorId } = await this.currentUser(token, authorizationBudget);
+      return await work(actorId, () => {
+        // Start the source deadline only when the caller is ready to read source
+        // content; DB work between authorization and load must not spend it.
+        if (!sourceBudget) {
+          sourceBudget = this.context();
+          // Keep the per-operation parallel limit shared with authorization.
+          sourceBudget.parallel = authorizationBudget.parallel;
+          // Keep the per-submission request cap inclusive of authorization calls.
+          sourceBudget.requests = authorizationBudget.requests;
+        }
+        return this.loadSource(input, token, sourceBudget, project);
+      });
+    } finally {
+      if (sourceBudget) await this.finish(sourceBudget);
+      await this.finish(authorizationBudget);
+    }
   }
 
   private async loadSource(input: SourceInput, token: string, budget: RequestBudget,

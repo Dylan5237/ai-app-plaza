@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as pause } from 'node:timers/promises';
+import type { QueryResultRow } from 'pg';
+import { createApp } from '../server/app.js';
+import { openDatabase, type Database, type Queryable } from '../server/domain/database.js';
 import { GitLabSourceReader } from '../server/domain/gitlab-source.js';
 import { DEFAULT_TAG, SHA, TOKEN, startGitLabFixture } from './helpers/gitlab-fixture.js';
 import { bundle, performanceHarness } from './helpers/managed-performance.js';
@@ -36,6 +39,83 @@ test('source checks share an instance capacity bound and settle cancelled siblin
   await reader.load(input, TOKEN);
   await pause(20);
   assert.equal(fixture.state.active, 0, 'all sockets and capacity are recovered');
+});
+
+test('publication insert wait does not consume the later source-read deadline', async t => {
+  let gateNextPublicationInsert = false;
+  let enterGate!: () => void;
+  let releaseGate!: () => void;
+  const entered = new Promise<void>(resolve => { enterGate = resolve; });
+  const gate = new Promise<void>(resolve => { releaseGate = resolve; });
+  const factories = {
+    createApp,
+    async openDatabase(options: Parameters<typeof openDatabase>[0]) {
+      const db = await openDatabase(options);
+      const gated = Object.create(db) as Database;
+      gated.transaction = <T>(work: (tx: Queryable) => Promise<T>) => db.transaction(async tx => {
+        const gatedTx = Object.create(tx) as Queryable;
+        gatedTx.query = async <Row extends QueryResultRow = QueryResultRow>(sql: string, params: readonly unknown[] = []) => {
+          if (gateNextPublicationInsert && /^\s*INSERT INTO publications\b/i.test(sql)) {
+            gateNextPublicationInsert = false;
+            enterGate();
+            await gate;
+          }
+          return tx.query<Row>(sql, params);
+        };
+        return work(gatedTx);
+      });
+      return gated;
+    },
+  };
+  const h = await performanceHarness(0, factories);
+  t.after(async () => { releaseGate(); await h.close(); });
+
+  const realNow = performance.now;
+  let controlledNow = realNow.call(performance);
+  t.mock.method(performance, 'now', () => controlledNow);
+
+  gateNextPublicationInsert = true;
+  const submitted = h.submit(bundle());
+  let gateTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      entered,
+      new Promise<never>((_resolve, reject) => {
+        gateTimeout = setTimeout(() => reject(new Error('managed submit did not reach the gated publication insert')), 20_000);
+      }),
+    ]);
+  } finally {
+    if (gateTimeout) clearTimeout(gateTimeout);
+  }
+  for (let attempt = 0; attempt < 100 && h.fixture.state.active > 0; attempt++) await pause(5);
+  assert.equal(h.fixture.state.active, 0, 'authorization HTTP requests finish while the real DB transaction is held at its statement boundary');
+  const authPaths = h.fixture.state.requests.slice(-2).map(request => request.path).sort();
+  assert.deepEqual(authPaths, ['/api/v4/projects/100', '/api/v4/user']);
+  const requestCountBeforeContentLoad = h.fixture.state.requests.length;
+
+  // Hold an actual PGlite transaction at the publication insert and advance only
+  // the monotonic deadline clock; no 30-second wall-clock sleep or product hook.
+  controlledNow += 30_001;
+  releaseGate();
+
+  const first = await submitted;
+  assert.equal(first.response.status, 201);
+  assert.equal(first.result.status, 'preview_ready');
+  assert.ok(h.fixture.state.requests.slice(requestCountBeforeContentLoad).length > 0, 'source HTTP reads start after the DB wait');
+  assert.ok(h.fixture.state.requests.slice(requestCountBeforeContentLoad).some(request => {
+    const requestUrl = new URL(request.path, h.fixture.url);
+    return requestUrl.pathname.endsWith('/repository/tree') && requestUrl.searchParams.has('ref');
+  }));
+  const operation = (await h.db.query('SELECT status FROM managed_publish_operations')).rows[0]!;
+  assert.equal(operation.status, 'submitted');
+
+  const writesBeforeRetry = h.fixture.state.writes.length;
+  const requestsBeforeRetry = h.fixture.state.requests.length;
+  const retry = await h.submit(bundle(), first.key, first.idempotency);
+  assert.equal(retry.result.id, first.result.id);
+  assert.equal(retry.result.status, 'preview_ready');
+  assert.equal(h.fixture.state.writes.length, writesBeforeRetry);
+  assert.equal(h.fixture.state.requests.length, requestsBeforeRetry, 'same-key receipt retry does not repeat GitLab reads');
 });
 
 test('confirmation refreshes actor, permissions and original-byte content independently of preview caches', async t => {
