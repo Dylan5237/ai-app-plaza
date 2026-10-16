@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
+import { resolve } from "node:path";
 import test from "node:test";
 import { createApp } from "../server/app.js";
 import type { Config } from "../server/config.js";
@@ -100,7 +101,7 @@ async function startPortal(): Promise<Portal> {
     dataDir: "",
     local: true,
     audience: "所有能访问本门户的人",
-    staticDir: "dist",
+    staticDir: resolve("dist"),
     rateLimit: false,
     managedPublishing: { groupId: "63", groupPath: "sky-efficiency-skills/ai-apps", token: MANAGED_GITLAB_TOKEN },
   };
