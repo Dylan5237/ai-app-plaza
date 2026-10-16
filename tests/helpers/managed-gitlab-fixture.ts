@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as pause } from "node:timers/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -8,6 +9,7 @@ interface Commit {
   id: string;
   message: string;
   files: Map<string, Uint8Array>;
+  parent_ids: string[];
 }
 
 interface Project {
@@ -44,6 +46,15 @@ export interface ManagedGitLabFixture {
     rejectNextProjectReadbackStatus: number | null;
     dropNextProjectCreateResponse: boolean;
     nextProjectId: number;
+    delayMs: number;
+    active: number;
+    peak: number;
+    role: number;
+    userId: number;
+    omitNextCommitParents: boolean;
+    dropNextTagResponse: boolean;
+    dropNextReleaseResponse: boolean;
+    corruptNextCommitContent: boolean;
     preseedTag(projectId: number, tag: string, sha: string): void;
   };
   close(): Promise<void>;
@@ -67,6 +78,9 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     rejectNextProjectReadbackStatus: null as number | null,
     dropNextProjectCreateResponse: false,
     nextProjectId: 100,
+    delayMs: 0, active: 0, peak: 0, role: 40, userId: 35,
+    omitNextCommitParents: false, dropNextTagResponse: false, dropNextReleaseResponse: false,
+    corruptNextCommitContent: false,
     preseedTag(projectId: number, tag: string, sha: string) {
       const project = projects.get(projectId);
       if (!project) throw new Error("Fixture project does not exist.");
@@ -80,6 +94,13 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     const url = new URL(request.url!, "http://127.0.0.1");
     const method = request.method ?? "GET";
     requests.push({ method, path: `${url.pathname}${url.search}` });
+    state.active++; state.peak = Math.max(state.peak, state.active);
+    let ended = false;
+    const controller = new AbortController();
+    const done = () => { if (!ended) { ended = true; state.active--; } };
+    response.once("finish", done);
+    response.once("close", () => { controller.abort(); done(); });
+    if (state.delayMs) try { await pause(state.delayMs, undefined, { signal: controller.signal }); } catch { return; }
     if (method !== "GET") writes.push({ method, path: url.pathname });
     const send = (status: number, value: unknown) => {
       response.writeHead(status, { "Content-Type": "application/json" });
@@ -96,7 +117,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
       catch { return fail(400, "invalid JSON"); }
     }
 
-    if (url.pathname === "/api/v4/user" && method === "GET") return send(200, { id: 35, username: "fixture-owner", name: "测试发布账号" });
+    if (url.pathname === "/api/v4/user" && method === "GET") return send(200, { id: state.userId, username: "fixture-owner", name: "测试发布账号" });
 
     if (url.pathname === "/api/v4/projects" && method === "POST") {
       if (state.rejectNextProjectStatus) {
@@ -125,7 +146,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
         response.destroy();
         return;
       }
-      return send(201, projectJson(project));
+      return send(201, projectJson(project, state.role));
     }
 
     const groupMatch = url.pathname.match(/^\/api\/v4\/groups\/(\d+)\/projects$/);
@@ -139,7 +160,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
       const search = url.searchParams.get("search") ?? "";
       return send(200, [...projects.values()]
         .filter(project => project.namespace.id === groupId && project.path.includes(search))
-        .map(projectJson));
+        .map(project => projectJson(project, state.role)));
     }
 
     const match = url.pathname.match(/^\/api\/v4\/projects\/(\d+)(.*)$/);
@@ -147,7 +168,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     const project = projects.get(Number(match[1]));
     if (!project) return fail(404, "project not found");
     const suffix = match[2] ?? "";
-    if (!suffix && method === "GET") return send(200, projectJson(project));
+    if (!suffix && method === "GET") return send(200, projectJson(project, state.role));
 
     if (suffix === "/repository/commits" && method === "POST") {
       state.commitCreateCount++;
@@ -187,7 +208,9 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
         } else return fail(400, "invalid action");
       }
       const id = createHash("sha1").update(`${project.id}\0${branch}\0${message}\0${JSON.stringify(actions)}\0${project.commits.size}`).digest("hex");
-      project.commits.set(id, { id, message, files });
+      const parent_ids = currentSha ? [currentSha] : [];
+      if (state.corruptNextCommitContent) { files.set("unexpected.txt", new Uint8Array([1])); state.corruptNextCommitContent = false; }
+      project.commits.set(id, { id, message, files, parent_ids });
       project.branches.set(branch, id);
       if (!project.default_branch) project.default_branch = branch;
       if (state.failCommitReadback) {
@@ -200,7 +223,8 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
         response.destroy();
         return;
       }
-      return send(201, { id, message });
+      if (state.omitNextCommitParents) { state.omitNextCommitParents = false; return send(201, { id, message }); }
+      return send(201, { id, message, parent_ids });
     }
 
     const branchMatch = suffix.match(/^\/repository\/branches\/(.+)$/);
@@ -218,7 +242,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
     if (commitMatch && method === "GET") {
       const sha = decodeURIComponent(commitMatch[1]!);
       const commit = project.commits.get(sha);
-      return commit ? send(200, { id: commit.id, message: commit.message, created_at: "2026-10-13T00:00:00Z" }) : fail(404, "commit not found");
+      return commit ? send(200, { id: commit.id, message: commit.message, parent_ids: commit.parent_ids, created_at: "2026-10-13T00:00:00Z" }) : fail(404, "commit not found");
     }
 
     if (suffix === "/repository/tree" && method === "GET") {
@@ -271,6 +295,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
       if (!tag || !project.commits.has(sha)) return fail(400, "invalid tag ref");
       if (project.tags.has(tag)) return fail(409, "tag exists");
       project.tags.set(tag, sha);
+      if (state.dropNextTagResponse) { state.dropNextTagResponse = false; response.destroy(); return; }
       return send(201, { name: tag, commit: { id: sha } });
     }
 
@@ -287,6 +312,7 @@ export async function startManagedGitLabFixture(initialDefaultBranch: string | n
       if (!sha) return fail(400, "tag missing");
       if (project.releases.has(tag)) return fail(409, "release exists");
       project.releases.set(tag, sha);
+      if (state.dropNextReleaseResponse) { state.dropNextReleaseResponse = false; response.destroy(); return; }
       return send(201, releaseJson(tag, sha));
     }
 
@@ -325,7 +351,7 @@ function newProject(id: number, body: Record<string, unknown>, host: string, ini
   };
 }
 
-function projectJson(project: Project): Record<string, unknown> {
+function projectJson(project: Project, role = 40): Record<string, unknown> {
   return {
     id: project.id,
     name: project.name,
@@ -339,7 +365,7 @@ function projectJson(project: Project): Record<string, unknown> {
     web_url: project.web_url,
     default_branch: project.default_branch,
     empty_repo: project.commits.size === 0,
-    permissions: { project_access: { access_level: 50 }, group_access: null },
+    permissions: { project_access: { access_level: role }, group_access: null },
   };
 }
 

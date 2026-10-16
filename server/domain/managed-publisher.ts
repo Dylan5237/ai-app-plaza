@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { DomainError } from "./errors.js";
+import { gitlabConcurrency } from "./gitlab-concurrency.js";
 import type { DomainDiagnostic } from "./errors.js";
 import type { Database } from "./database.js";
 import type { PlazaService, SubmitInput, SubmitResult } from "./service.js";
@@ -35,6 +36,7 @@ interface OperationRecord {
   project_id: string | null;
   branch: string;
   commit_sha: string | null;
+  publication_id: string | null;
   tag: string;
   status: "prepared" | "project_ready" | "commit_ready" | "tag_ready" | "release_ready" | "submitted";
 }
@@ -73,6 +75,7 @@ interface TreeEntry {
 interface GitLabCommit {
   id?: string;
   message?: string;
+  parent_ids?: string[];
 }
 
 interface GitLabTag {
@@ -259,7 +262,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     )).rows[0];
   }
 
-  async function updateOperation(operation: OperationRecord, fields: Partial<Pick<OperationRecord, "project_id" | "base_commit_sha" | "commit_sha" | "status">>): Promise<OperationRecord> {
+  async function updateOperation(operation: OperationRecord, fields: Partial<Pick<OperationRecord, "project_id" | "base_commit_sha" | "commit_sha" | "publication_id" | "status">>): Promise<OperationRecord> {
     const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
     if (!entries.length) return operation;
     const assignments = entries.map(([column], index) => `${column} = $${index + 2}`).join(", ");
@@ -432,23 +435,43 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
   ): Promise<SubmitResult & { managedAppId: string; sourceUploaded: true }> {
     let binding = bindingInput;
     let operation = operationInput;
-    let project: GitLabProject;
-    try {
-      project = await ensureProject(binding);
-    } catch (error) {
-      if (error instanceof DomainError) throw error;
-      throw gitlabUnavailable();
+    const inputFor = (sha: string) => ({ projectId: operation.project_id!, appKey: bundle.appKey,
+      manifestPath: bundle.manifestPath, commitSha: sha, tag: operation.tag,
+      ...(operation.expected_app_revision === null ? {} : { expectedAppRevision: operation.expected_app_revision }) });
+    if (operation.status === "submitted" && operation.publication_id && operation.commit_sha && operation.project_id) {
+      const result = await config.service.managedReceipt(operation.publication_id, inputFor(operation.commit_sha));
+      return { ...result, managedAppId: binding.id, sourceUploaded: true };
     }
+    let project: GitLabProject;
+    try { project = await ensureProject(binding); }
+    catch (error) { if (error instanceof DomainError) throw error; throw gitlabUnavailable(); }
     const projectId = requireProjectId(project.id);
     binding = await updateBindingProject(binding, projectId);
-    operation = await updateOperation(operation, { project_id: projectId, status: "project_ready" });
+    if (operation.status === "prepared") operation = await updateOperation(operation, { project_id: projectId, status: "project_ready" });
+    if (operation.project_id !== projectId) throw stateConflict();
 
-    const commitSha = await ensureCommits(projectId, operation, bundle, project);
-    operation = await updateOperation(operation, { commit_sha: commitSha, status: "commit_ready" });
-    await ensureTag(projectId, operation.tag, commitSha);
-    operation = await updateOperation(operation, { status: "tag_ready" });
-    await ensureRelease(projectId, operation.tag, commitSha, operation.id, operation.request_digest);
-    operation = await updateOperation(operation, { status: "release_ready" });
+    const sourcePending = operation.status === "project_ready";
+    let commitSha: string;
+    if (sourcePending) {
+      commitSha = await ensureCommits(projectId, operation, bundle, project);
+      operation = await updateOperation(operation, { commit_sha: commitSha, status: "commit_ready" });
+    } else {
+      if (!operation.commit_sha) throw stateConflict();
+      commitSha = operation.commit_sha;
+      const [head, commit] = await Promise.all([api.getBranch(projectId, operation.branch), api.getCommit(projectId, commitSha)]);
+      const marker = parseCommitMarker(commit.message ?? "");
+      if (head !== commitSha || commit.id?.toLowerCase() !== commitSha || !marker || marker.operationId !== operation.id ||
+          marker.requestDigest !== operation.request_digest || marker.batch !== marker.total) {
+        throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "已完成源码的固定提交或操作分支已变化，已停止恢复。");
+      }
+    }
+    if (operation.status === "commit_ready" || operation.status === "tag_ready") {
+      const [tag, release] = await Promise.all([api.getTag(projectId, operation.tag), api.getRelease(projectId, operation.tag)]);
+      await ensureTag(projectId, operation.tag, commitSha, tag);
+      if (operation.status === "commit_ready") operation = await updateOperation(operation, { status: "tag_ready" });
+      await ensureRelease(projectId, operation.tag, commitSha, operation.id, operation.request_digest, release);
+      operation = await updateOperation(operation, { status: "release_ready" });
+    }
 
     let result: SubmitResult;
     try {
@@ -466,7 +489,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     }
     const appId = result.preview?.id ?? result.appId;
     binding = await updateBindingApp(binding, appId);
-    operation = await updateOperation(operation, { status: "submitted" });
+    operation = await updateOperation(operation, { status: "submitted", publication_id: result.id });
     return { ...result, managedAppId: binding.id, sourceUploaded: true };
   }
 
@@ -540,6 +563,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     let expected = new Map(baseEntries);
 
     let completed = 0;
+    let verifiedHead = operation.base_commit_sha ?? undefined;
     if (branchHead) {
       const commit = await api.getCommit(projectId, branchHead);
       const marker = parseCommitMarker(commit.message ?? "");
@@ -550,6 +574,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       for (let index = 0; index < marker.batch; index++) expected = applyActions(expected, batches[index]!);
       await api.assertTree(projectId, branchHead, expected);
       completed = marker.batch;
+      verifiedHead = branchHead;
       await updateOperation(operation, { commit_sha: branchHead });
     }
 
@@ -568,7 +593,18 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
 
       let postError: unknown;
       try {
-        await api.createCommit(projectId, payload);
+        const created = await api.createCommit(projectId, payload);
+        const createdMarker = parseCommitMarker(created.message ?? "");
+        const parent = completed === 0 && index === 0 ? operation.base_commit_sha : verifiedHead;
+        if (isSha(created.id) && createdMarker?.operationId === operation.id && createdMarker.requestDigest === operation.request_digest &&
+            createdMarker.batch === batch && createdMarker.total === batches.length && Array.isArray(created.parent_ids) &&
+            (parent ? created.parent_ids.length === 1 && created.parent_ids[0]?.toLowerCase() === parent : created.parent_ids.length === 0)) {
+          verifiedHead = created.id!.toLowerCase();
+          expected = nextExpected;
+          await updateOperation(operation, { commit_sha: verifiedHead });
+          continue;
+        }
+        // A missing/invalid response is an uncertain result, not permission to POST again.
       } catch (error) {
         postError = error;
       }
@@ -585,6 +621,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       if (recoveredMarker?.operationId === operation.id && recoveredMarker.requestDigest === operation.request_digest && recoveredMarker.total === batches.length && recoveredMarker.batch === batch) {
         await api.assertTree(projectId, recoveredHead, nextExpected);
         expected = nextExpected;
+        verifiedHead = recoveredHead;
         await updateOperation(operation, { commit_sha: recoveredHead });
         continue;
       }
@@ -598,19 +635,20 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     }
     const finalHead = await api.getBranch(projectId, operation.branch);
     if (!finalHead) throw gitlabUnavailable();
+    if (finalHead !== verifiedHead) throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "操作分支已被其他提交改变，已停止发布。");
     await api.assertTree(projectId, finalHead, expected);
     return finalHead;
   }
 
-  async function ensureTag(projectId: string, tag: string, commitSha: string): Promise<void> {
-    const existing = await api.getTag(projectId, tag);
+  async function ensureTag(projectId: string, tag: string, commitSha: string, existing: GitLabTag | undefined): Promise<void> {
     if (existing) {
       if (existing.commit?.id?.toLowerCase() !== commitSha.toLowerCase()) throw tagConflict();
       return;
     }
     let postError: unknown;
     try {
-      await api.createTag(projectId, tag, commitSha);
+      const created = await api.createTag(projectId, tag, commitSha);
+      if (created?.name === tag && created.commit?.id?.toLowerCase() === commitSha) return;
     } catch (error) {
       postError = error;
     }
@@ -621,19 +659,19 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     throw new DomainError(503, "SOURCE_UNAVAILABLE", "GitLab 暂未确认版本 tag。请使用相同幂等键重试。");
   }
 
-  async function ensureRelease(projectId: string, tag: string, commitSha: string, operationId: string, requestDigest: string): Promise<void> {
-    const existing = await api.getRelease(projectId, tag);
+  async function ensureRelease(projectId: string, tag: string, commitSha: string, operationId: string, requestDigest: string, existing: GitLabRelease | undefined): Promise<void> {
     if (existing) {
       if (existing.tag_name !== tag || existing.commit?.id?.toLowerCase() !== commitSha.toLowerCase()) throw releaseConflict();
       return;
     }
     let postError: unknown;
     try {
-      await api.createRelease(projectId, {
+      const created = await api.createRelease(projectId, {
         tag_name: tag,
         name: tag,
         description: `AI 应用广场托管上传\n\nOperation-ID: ${operationId}\nRequest-Digest: ${requestDigest}`,
       });
+      if (created?.tag_name === tag && created.commit?.id?.toLowerCase() === commitSha) return;
     } catch (error) {
       postError = error;
     }
@@ -1196,8 +1234,8 @@ class GitLabWriter {
     catch (error) { if (error instanceof GitLabApiError && error.status === 404) return undefined; throw error; }
   }
 
-  async createTag(projectId: string, tag: string, sha: string): Promise<void> {
-    await this.request(`api/v4/projects/${projectId}/repository/tags`, { method: "POST", body: { tag_name: tag, ref: sha } });
+  async createTag(projectId: string, tag: string, sha: string): Promise<GitLabTag> {
+    return this.request(`api/v4/projects/${projectId}/repository/tags`, { method: "POST", body: { tag_name: tag, ref: sha } });
   }
 
   async getRelease(projectId: string, tag: string): Promise<GitLabRelease | undefined> {
@@ -1205,8 +1243,8 @@ class GitLabWriter {
     catch (error) { if (error instanceof GitLabApiError && error.status === 404) return undefined; throw error; }
   }
 
-  async createRelease(projectId: string, body: Record<string, unknown>): Promise<void> {
-    await this.request(`api/v4/projects/${projectId}/releases`, { method: "POST", body });
+  async createRelease(projectId: string, body: Record<string, unknown>): Promise<GitLabRelease> {
+    return this.request(`api/v4/projects/${projectId}/releases`, { method: "POST", body });
   }
 
   private url(path: string): URL { return new URL(path, this.baseUrl); }
@@ -1215,6 +1253,17 @@ class GitLabWriter {
     pathOrUrl: string | URL,
     options: { method?: "GET" | "POST"; body?: unknown } = {},
   ): Promise<T> {
+    const signal = AbortSignal.timeout(API_TIMEOUT_MS);
+    try { return await gitlabConcurrency(this.baseUrl).run(signal, () => this.performRequest<T>(pathOrUrl, options, signal)); }
+    catch (error) {
+      if (error instanceof DomainError) throw error;
+      if (error instanceof GitLabApiError && error.status < 500) throw error;
+      throw gitlabUnavailable();
+    }
+  }
+
+  private async performRequest<T>(pathOrUrl: string | URL,
+    options: { method?: "GET" | "POST"; body?: unknown }, signal: AbortSignal): Promise<T> {
     let response: Response;
     const url = typeof pathOrUrl === "string" ? this.url(pathOrUrl) : pathOrUrl;
     try {
@@ -1227,7 +1276,7 @@ class GitLabWriter {
         },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         redirect: "error",
-        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+        signal,
       });
     } catch {
       throw new DomainError(503, "SOURCE_UNAVAILABLE", "暂时无法连接配置的 GitLab，请使用相同幂等键重试。");

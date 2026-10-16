@@ -272,6 +272,7 @@ test("a saved base remains fixed across a failed first commit, later candidates 
   assert.equal(saved.base_commit_sha, oldSha);
   await h.publisher.submit({ ...makeBundle("1.0.2", "后续候选"), managedAppId: first.managedAppId, expectedAppRevision: 0 }, key, "frozen-base-later-0001");
   h.gitlab.state.failCommitReadback = true;
+  h.gitlab.state.dropNextCommitResponse = true; // Force an uncertain POST; normal responses no longer need per-batch reads.
   await assert.rejects(h.publisher.submit(input, key, "frozen-base-revision-0001"), error => { assertDomainError(error, "SOURCE_UNAVAILABLE"); return true; });
   assert.equal(project.commits.size, 3, "first revision batch was accepted despite the unavailable readback");
   h.gitlab.state.dropCommitResponseOnNumber = h.gitlab.state.commitCreateCount + 1;

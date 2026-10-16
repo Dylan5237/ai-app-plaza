@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { setTimeout as pause } from 'node:timers/promises';
 import type { AddressInfo } from 'node:net';
 
 export const SHA = 'a'.repeat(40);
@@ -23,10 +24,18 @@ export async function startGitLabFixture(count = 1) {
     files.set(`docs/usage-${i}.md`, `# 使用步骤与说明\n\n1. 准备 Word 文档。\n2. 在目标工具中转换。\n3. 核对表格与输出。\n\n## 示例\n将需求文档转换为 Markdown。\n\n<script>window.fixtureXss=true</script>\n![remote](https://example.invalid/track.png)`);
     files.set(`docs/agent-${i}.md`, '# 接入说明\n\n此为协议测试材料，不执行真实安装。\n1. 核对环境和授权。\n2. 取得固定版本。\n3. 执行最小验证，失败时保留原配置。');
   }
-  const state = { offline: false, role: 40, tagName: DEFAULT_TAG, tagSha: SHA, releaseSha: SHA, releasePresent: true, userId: 10, files, modes: new Map<string, string>(), requests: [] as { method: string; path: string }[] };
-  const server = createServer((req, res) => {
+  const state = { offline: false, role: 40, tagName: DEFAULT_TAG, tagSha: SHA, releaseSha: SHA, releasePresent: true, userId: 10, files, modes: new Map<string, string>(), delayMs: 0, delayOverrides: new Map<string, number>(), active: 0, peak: 0, requests: [] as { method: string; path: string; query: string }[] };
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url!, 'http://127.0.0.1');
-    state.requests.push({ method: req.method!, path: url.pathname });
+    state.requests.push({ method: req.method!, path: url.pathname, query: url.search });
+    state.active++; state.peak = Math.max(state.peak, state.active);
+    let ended = false;
+    const controller = new AbortController();
+    const done = () => { if (!ended) { ended = true; state.active--; } };
+    res.once('finish', done);
+    res.once('close', () => { controller.abort(); done(); });
+    const delay = state.delayOverrides.get(url.pathname) ?? state.delayMs;
+    if (delay) try { await pause(delay, undefined, { signal: controller.signal }); } catch { return; }
     const send = (code: number, data: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, { error: 'READ_ONLY_FIXTURE' });
     if (state.offline) return send(503, { error: 'fixture unavailable' });

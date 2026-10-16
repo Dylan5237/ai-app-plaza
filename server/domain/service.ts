@@ -78,6 +78,7 @@ export interface PlazaService {
   submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult>;
   lookupManagedReceipt(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult | undefined>;
   publication(id: string, ticket: string): Promise<PublicationView>;
+  managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   retry(id: string, ticket: string): Promise<PublicationView>;
   list(options?: { query?: string; tags?: string[]; page?: number }): Promise<{ items: AppView[]; total: number; page: number; pageSize: 8; tags: string[] }>;
@@ -422,11 +423,10 @@ export function createService(config: ServiceConfig): PlazaService {
 
   async function assertAuthorAndSource(record: PublicationRecord): Promise<LoadedSource> {
     const token = decryptToken(record);
-    const { actorId } = await reader.currentUser(token);
-    if (actorId !== record.actor_id) {
-      throw new DomainError(403, "PERMISSION_DENIED", "当前 GitLab 授权身份与候选提交者不一致。");
-    }
-    return reader.load(getInput(record), token);
+    return reader.withAuthor(getInput(record), token, async (actorId, load) => {
+      if (actorId !== record.actor_id) throw new DomainError(403, "PERMISSION_DENIED", "当前 GitLab 授权身份与候选提交者不一致。");
+      return load();
+    });
   }
 
   async function register(record: PublicationRecord, source: LoadedSource): Promise<PublicationRecord> {
@@ -573,58 +573,73 @@ export function createService(config: ServiceConfig): PlazaService {
     async submit(input, gitlabToken, idempotencyKey) {
       await cleanupExpiredTokens();
       validateSubmitInput(input, gitlabToken, idempotencyKey);
-      const { actorId } = await reader.currentUser(gitlabToken);
-      const requestHash = hashInput(input);
-      const idempotencyDigest = createHmac("sha256", secret)
-        .update(`idempotency-v1:${actorId}:${idempotencyKey}`)
-        .digest("hex");
-      const encrypted = encryptToken(gitlabToken);
-      const now = new Date();
-      const publicationId = randomUUID();
-      const candidateAppId = randomUUID();
-      const expiry = new Date(now.getTime() + PUBLICATION_TTL_MS);
-      const created = await config.db.transaction(async (tx) => {
-        const inserted = await tx.query<PublicationRecord>(
-          `INSERT INTO publications (
-             id, actor_id, idempotency_digest, request_hash, submission, status, revision,
-             candidate_app_id, token_ciphertext, token_iv, token_auth_tag,
-             next_action, expires_at, created_at, updated_at
-           ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11)
-           ON CONFLICT (actor_id, idempotency_digest) DO NOTHING RETURNING *`,
-          [
-            publicationId,
-            actorId,
-            idempotencyDigest,
-            requestHash,
-            JSON.stringify(input),
-            candidateAppId,
-            encrypted.ciphertext,
-            encrypted.iv,
-            encrypted.authTag,
-            expiry,
-            now,
-          ],
-        );
-        if (inserted.rows[0]) return { record: inserted.rows[0], isNew: true };
-        const existing = (await tx.query<PublicationRecord>(
-          "SELECT * FROM publications WHERE actor_id = $1 AND idempotency_digest = $2 FOR UPDATE",
-          [actorId, idempotencyDigest],
-        )).rows[0];
-        if (!existing) throw new Error("Idempotency conflict row was not visible.");
-        if (existing.request_hash !== requestHash) {
-          throw new DomainError(409, "IDEMPOTENCY_CONFLICT", "相同幂等键已用于不同的候选内容。");
+      return reader.withAuthor(input, gitlabToken, async (actorId, load) => {
+        const requestHash = hashInput(input);
+        const idempotencyDigest = createHmac("sha256", secret)
+          .update(`idempotency-v1:${actorId}:${idempotencyKey}`)
+          .digest("hex");
+        const encrypted = encryptToken(gitlabToken);
+        const now = new Date();
+        const publicationId = randomUUID();
+        const candidateAppId = randomUUID();
+        const expiry = new Date(now.getTime() + PUBLICATION_TTL_MS);
+        const created = await config.db.transaction(async (tx) => {
+          const inserted = await tx.query<PublicationRecord>(
+            `INSERT INTO publications (
+               id, actor_id, idempotency_digest, request_hash, submission, status, revision,
+               candidate_app_id, token_ciphertext, token_iv, token_auth_tag,
+               next_action, expires_at, created_at, updated_at
+             ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11)
+             ON CONFLICT (actor_id, idempotency_digest) DO NOTHING RETURNING *`,
+            [
+              publicationId,
+              actorId,
+              idempotencyDigest,
+              requestHash,
+              JSON.stringify(input),
+              candidateAppId,
+              encrypted.ciphertext,
+              encrypted.iv,
+              encrypted.authTag,
+              expiry,
+              now,
+            ],
+          );
+          if (inserted.rows[0]) return { record: inserted.rows[0], isNew: true };
+          const existing = (await tx.query<PublicationRecord>(
+            "SELECT * FROM publications WHERE actor_id = $1 AND idempotency_digest = $2 FOR UPDATE",
+            [actorId, idempotencyDigest],
+          )).rows[0];
+          if (!existing) throw new Error("Idempotency conflict row was not visible.");
+          if (existing.request_hash !== requestHash) {
+            throw new DomainError(409, "IDEMPOTENCY_CONFLICT", "相同幂等键已用于不同的候选内容。");
+          }
+          return { record: existing, isNew: false };
+        });
+        if (!created.isNew) {
+          if (new Date(created.record.expires_at).getTime() <= Date.now()) {
+            throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+          }
+          return submitView(created.record);
         }
-        return { record: existing, isNew: false };
-      });
-      if (!created.isNew) return submitView(created.record);
 
-      try {
-        const source = await reader.load(input, gitlabToken);
-        const prepared = await preparePreview(created.record, source);
-        return submitView(prepared);
-      } catch (error) {
-        return submitView(await markFailed(created.record.id, error));
-      }
+        try {
+          const source = await load();
+          const prepared = await preparePreview(created.record, source);
+          return submitView(prepared);
+        } catch (error) {
+          return submitView(await markFailed(created.record.id, error));
+        }
+      });
+    },
+
+    // Internal only: the managed publisher has already checked ownership and bundle identity.
+    async managedReceipt(id, input) {
+      await cleanupExpiredTokens();
+      const record = (await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id])).rows[0];
+      if (!record || record.request_hash !== hashInput(input)) throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "原发布回执与本次固定来源不一致，已停止恢复。");
+      if (new Date(record.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+      return submitView(record);
     },
 
     async lookupManagedReceipt(input, gitlabToken, idempotencyKey) {
