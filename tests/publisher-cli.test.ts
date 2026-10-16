@@ -81,7 +81,9 @@ async function makeProject(parent: string) {
   return root;
 }
 
-function runCli(args: string[], injectPostResponseSaveFailure = false) {
+type CliInjection = 'post-response-save-failure' | 'receipt-open-permission';
+
+function runCli(args: string[], injectionMode: CliInjection | false = false) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
     const injection = `import importlib.util,os,sys
 target=os.environ['PLAZA_TEST_CLI_PATH']
@@ -89,18 +91,26 @@ spec=importlib.util.spec_from_file_location('publisher_cli_test_target', target)
 module=importlib.util.module_from_spec(spec)
 sys.modules[spec.name]=module
 spec.loader.exec_module(module)
-original=module.ReceiptStore.save
-count=0
-def fail_second_save(self, receipt):
- global count
- count+=1
- if count==2: raise module.CliError('injected receipt save failure')
- return original(self, receipt)
-module.ReceiptStore.save=fail_second_save
+if os.environ['PLAZA_TEST_INJECTION'] == 'receipt-open-permission':
+ def fail_open(self, *args, **kwargs): raise PermissionError('STATUS_RECEIPT_SECRET_SENTINEL')
+ module.ReceiptStore.open=fail_open
+else:
+ original=module.ReceiptStore.save
+ count=0
+ def fail_second_save(self, receipt):
+  global count
+  count+=1
+  if count==2: raise module.CliError('injected receipt save failure')
+  return original(self, receipt)
+ module.ReceiptStore.save=fail_second_save
 sys.argv=[target,*sys.argv[1:]]
 raise SystemExit(module.main())`;
-    const child = spawn(python, injectPostResponseSaveFailure ? ['-c', injection, ...args] : ['-u', cliPath, ...args], {
-      env: { ...process.env, PYTHONUTF8: '1', ...(injectPostResponseSaveFailure ? { PLAZA_TEST_CLI_PATH: cliPath } : {}) },
+    const child = spawn(python, injectionMode ? ['-c', injection, ...args] : ['-u', cliPath, ...args], {
+      env: {
+        ...process.env,
+        PYTHONUTF8: '1',
+        ...(injectionMode ? { PLAZA_TEST_CLI_PATH: cliPath, PLAZA_TEST_INJECTION: injectionMode } : {}),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const stdout: Buffer[] = [];
@@ -856,6 +866,77 @@ test('--status keeps explicit recovery_required when publicationStatus is unknow
   assert.equal(requests, 1, '--status must not make HTTP requests');
 });
 
+test('--status omits sourceUploaded when the saved unknown receipt is damaged', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-status-damaged-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  const portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') response.destroy();
+    else respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const uncertain = await runCli(args);
+  assert.notEqual(uncertain.code, 0);
+  assert.deepEqual(requests.map((request) => request.method), ['POST']);
+
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const receiptPath = path.join(stateDir, receiptName);
+  assert.ok((await readFile(receiptPath)).length > 0, 'the dropped POST persisted an unknown receipt');
+  const secret = 'DAMAGED_RECEIPT_SECRET_SENTINEL';
+  await writeFile(receiptPath, `{"secret":"${secret}",`);
+  const damagedBytes = await readFile(receiptPath);
+  const status = await runCli([...args, '--status']);
+  assert.equal(status.code, 2, status.stderr);
+  const output = JSON.parse(status.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'receipt_error');
+  assert.equal(output.handoffState, 'recovery_required');
+  assert.equal(output.publicationStatus, 'unknown');
+  assert.ok(!Object.hasOwn(output, 'sourceUploaded'), 'a damaged receipt cannot establish upload state');
+  assert.ok(!status.stdout.includes(secret) && !status.stderr.includes(secret));
+  assert.equal(requests.length, 1, '--status must not make HTTP requests');
+  assert.deepEqual(await readFile(receiptPath), damagedBytes, '--status must not rewrite the damaged receipt');
+});
+
+test('--status omits sourceUploaded when ReceiptStore.open raises PermissionError', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-status-permission-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  const portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') response.destroy();
+    else respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const uncertain = await runCli(args);
+  assert.notEqual(uncertain.code, 0);
+  assert.deepEqual(requests.map((request) => request.method), ['POST']);
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const receiptPath = path.join(stateDir, receiptName);
+  const before = await readFile(receiptPath);
+  assert.ok(before.length > 0, 'the dropped POST persisted an unknown receipt');
+
+  const status = await runCli([...args, '--status'], 'receipt-open-permission');
+  assert.equal(status.code, 2, status.stderr);
+  const output = JSON.parse(status.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'receipt_error');
+  assert.equal(output.handoffState, 'recovery_required');
+  assert.equal(output.publicationStatus, 'unknown');
+  assert.ok(!Object.hasOwn(output, 'sourceUploaded'), 'an unreadable receipt cannot establish upload state');
+  assert.ok(!status.stdout.includes('STATUS_RECEIPT_SECRET_SENTINEL') &&
+    !status.stderr.includes('STATUS_RECEIPT_SECRET_SENTINEL'));
+  assert.equal(requests.length, 1, '--status must not make HTTP requests');
+  assert.deepEqual(await readFile(receiptPath), before, '--status must not rewrite the receipt');
+});
+
 test('a changed bundle cannot replace an unresolved checking operation or send another POST', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-pending-update-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -1347,7 +1428,7 @@ test('receipt save failure after POST requires GET recovery and never prints the
   });
   t.after(portal.close);
   const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
-  const failedSave = await runCli(args, true);
+  const failedSave = await runCli(args, 'post-response-save-failure');
   assert.equal(failedSave.code, 1);
   const recoveryOutput = JSON.parse(failedSave.stdout) as Record<string, unknown>;
   assert.equal(recoveryOutput.status, 'HANDOFF_RECOVERY_REQUIRED');
