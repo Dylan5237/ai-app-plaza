@@ -10,7 +10,7 @@
     "dev": "node scripts/dev.mjs",
     "build": "npm run generate && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=4 tests/*.test.ts",
     "dev:prototype": "npm run generate && vite --host 127.0.0.1",
     "dev:api": "node --env-file-if-exists=.env --import tsx --watch server/index.ts",
     "start": "node --env-file-if-exists=.env --import tsx server/index.ts",
