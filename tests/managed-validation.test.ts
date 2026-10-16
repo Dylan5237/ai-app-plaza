@@ -329,6 +329,65 @@ test("receipt reports partial operations and rejects expired publications withou
   assert.deepEqual(await tableSnapshot(portal.db), expiredBefore);
 });
 
+test("receipt does not mark an intermediate multi-batch commit checkpoint as uploaded source", async t => {
+  const portal = await startPortal();
+  t.after(() => portal.close());
+  const owner = randomBytes(32).toString("base64url");
+  const idempotencyKey = randomUUID();
+  const candidate = makeCandidate("sample-multi-batch-partial");
+  const files = candidate.files as Array<{ path: string; content: string }>;
+  for (let index = 0; index < 101; index++) {
+    files.push({
+      path: `generated/part-${String(index).padStart(3, "0")}.txt`,
+      content: Buffer.from(`bounded upload fixture part ${index}\n`, "utf8").toString("base64"),
+    });
+  }
+  portal.gitlab.state.rejectCommitStatusOnNumber = 2;
+
+  const stopped = await request(portal, "POST", "/api/managed-publications", candidate, {
+    "x-plaza-publish-key": owner,
+    "idempotency-key": idempotencyKey,
+  });
+  assert.equal(stopped.status, 503, stopped.text);
+  assert.equal(stopped.json.error?.code, "SOURCE_UNAVAILABLE");
+  assert.equal(portal.gitlab.state.commitCreateCount, 2, "the second batch is rejected after the first was confirmed");
+
+  const binding = (await portal.db.query<{ id: string }>(
+    "SELECT id FROM managed_app_bindings LIMIT 1",
+  )).rows[0]!;
+  const operation = (await portal.db.query<{
+    id: string; project_id: string | null; commit_sha: string | null; status: string;
+  }>(
+    "SELECT id, project_id, commit_sha, status FROM managed_publish_operations LIMIT 1",
+  )).rows[0]!;
+  assert.equal(operation.status, "project_ready", "the operation has not crossed the complete-upload checkpoint");
+  assert.ok(operation.project_id);
+  assert.ok(operation.commit_sha, "the confirmed first-batch SHA remains a recovery checkpoint");
+  const project = portal.gitlab.state.projects.get(Number(operation.project_id))!;
+  const checkpoint = project.commits.get(operation.commit_sha)!;
+  assert.match(checkpoint.message, /Batch: 1\/2(?:\n|$)/);
+  assert.equal(checkpoint.files.size, 100, "the checkpoint contains only the first 100 of 105 source files");
+
+  const beforeReceipt = await tableSnapshot(portal.db);
+  const writesBefore = portal.dbWrites.length;
+  const gitlabWritesBefore = gitlabWriteCount(portal);
+  const receipt = await request(portal, "GET", "/api/managed-publications/receipt", undefined, {
+    "x-plaza-publish-key": owner,
+    "idempotency-key": idempotencyKey,
+  });
+  assert.equal(receipt.status, 200, receipt.text);
+  assert.equal(receipt.json.status, "recovery_required");
+  assert.equal(receipt.json.nextAction, "retry_original");
+  assert.equal(receipt.json.recoveryRequired, true);
+  assert.equal(receipt.json.sourceUploaded, false, "an intermediate batch SHA is not proof that all source is uploaded");
+  assert.equal(receipt.json.operationStatus, "project_ready");
+  assert.deepEqual(await tableSnapshot(portal.db), beforeReceipt, "receipt lookup leaves all seven business tables unchanged");
+  assert.equal(portal.dbWrites.length, writesBefore, "receipt lookup performs no SQL writes");
+  assert.equal(gitlabWriteCount(portal), gitlabWritesBefore, "receipt lookup performs no GitLab writes");
+  assert.equal(portal.gitlab.state.writes.length, gitlabWritesBefore);
+  assert.equal(binding.id, receipt.json.managedAppId);
+});
+
 test("receipt marks source uploaded when its publication insert was interrupted after release_ready", async t => {
   const portal = await startPortal();
   t.after(() => portal.close());
