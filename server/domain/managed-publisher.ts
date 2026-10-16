@@ -42,7 +42,7 @@ interface OperationRecord {
 }
 
 function operationHasUploadedSource(operation: OperationRecord): boolean {
-  return operation.commit_sha !== null || operation.status === "commit_ready" || operation.status === "tag_ready" ||
+  return operation.status === "commit_ready" || operation.status === "tag_ready" ||
     operation.status === "release_ready" || operation.status === "submitted";
 }
 

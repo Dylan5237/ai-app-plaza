@@ -974,6 +974,232 @@ test('--recover preserves the original receipt when the server says the operatio
   assert.equal(requests[1]!.headers['x-plaza-publish-key'], beforeOwner);
 });
 
+test('--recover retry_original permits only the exact original POST after a source change', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-retry-original-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let postCount = 0;
+  const portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET' && request.url === '/api/managed-apps/' + MANAGED_ID + '/status') {
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 7 });
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/api/managed-publications/receipt') {
+      respondJson(response, {
+        status: 'recovery_required', nextAction: 'retry_original', managedAppId: MANAGED_ID,
+        recoveryRequired: true, sourceUploaded: true, operationStatus: 'commit_ready',
+      });
+      return;
+    }
+    assert.equal(request.method, 'POST');
+    postCount += 1;
+    if (postCount === 2) {
+      respondJson(response, publicationResponse(portal.origin, { status: 'checking' }), 202);
+      return;
+    }
+    if (postCount === 3) {
+      response.destroy();
+      return;
+    }
+    respondJson(response, publicationResponse(portal.origin));
+  });
+  t.after(portal.close);
+  const baseArgs = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+
+  assert.equal((await runCli(baseArgs)).code, 0, 'create the original owned publication');
+  const manifestPath = path.join(root, 'ai-app.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  manifest.projectVersion = '1.2.4';
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("ORIGINAL_UPDATE_BODY")\n');
+  assert.equal((await runCli([...baseArgs, '--managed-app-id', MANAGED_ID])).code, 1, 'the operation is still checking');
+  const posts = () => requests.filter((item) => item.method === 'POST');
+  const originalUpdate = posts()[1]!;
+  assert.equal(decodedBody(originalUpdate).expectedAppRevision, 7);
+
+  const recovered = await runCli([...baseArgs, '--recover']);
+  assert.equal(recovered.code, 1);
+  const recoveredOutput = JSON.parse(recovered.stdout) as Record<string, unknown>;
+  assert.equal(recoveredOutput.nextAction, 'retry_original');
+  assert.equal(recoveredOutput.sourceUploaded, true, 'a valid true recovery value is preserved');
+  const status = await runCli([...baseArgs, '--status']);
+  assert.equal(status.code, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).sourceUploaded, true, 'status preserves the saved true value');
+
+  const changedManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  changedManifest.projectVersion = '1.2.5';
+  await writeFile(manifestPath, JSON.stringify(changedManifest, null, 2));
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("MUST_NOT_REPLACE_ORIGINAL_RETRY")\n');
+  const retried = await runCli([...baseArgs, '--managed-app-id', MANAGED_ID]);
+  assert.equal(retried.code, 2, retried.stderr, 'the replay response is lost after the request is sent');
+  const replay = posts()[2]!;
+  assert.deepEqual(replay.body, originalUpdate.body, 'recovery replays the exact saved original body');
+  assert.equal(replay.headers['idempotency-key'], originalUpdate.headers['idempotency-key']);
+  assert.equal(replay.headers['x-plaza-publish-key'], originalUpdate.headers['x-plaza-publish-key']);
+  assert.equal(decodedBody(replay).managedAppId, MANAGED_ID);
+  assert.equal(decodedBody(replay).expectedAppRevision, 7, 'recovery does not refresh the original revision');
+  assert.equal(requests.filter((item) => item.method === 'GET' && item.url === '/api/managed-apps/' + MANAGED_ID + '/status').length, 1);
+  const replayFiles = decodedBody(replay).files;
+  const originalSource = replayFiles.find((file) => file.path === 'src/main.py');
+  assert.equal(Buffer.from(originalSource!.content, 'base64').toString('utf8'), 'print("ORIGINAL_UPDATE_BODY")\n');
+  assert.ok(!replay.body.toString('utf8').includes('MUST_NOT_REPLACE_ORIGINAL_RETRY'));
+  assert.deepEqual(requests.map((item) => item.method), ['POST', 'GET', 'POST', 'GET', 'POST']);
+});
+
+test('--recover rejects stale or unknown retry actions and keeps sourceUploaded unknown', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-retry-unknown-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let recoveryReads = 0;
+  const portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') {
+      response.destroy();
+      return;
+    }
+    assert.equal(request.url, '/api/managed-publications/receipt');
+    recoveryReads += 1;
+    if (recoveryReads === 1) {
+      respondJson(response, {
+        status: 'recovery_required', nextAction: 'retry_original', managedAppId: MANAGED_ID,
+        recoveryRequired: true, sourceUploaded: true, operationStatus: 'commit_ready',
+      });
+    } else if (recoveryReads === 2) {
+      respondJson(response, {
+        status: 'recovery_required', nextAction: 'not-a-protocol-action', managedAppId: MANAGED_ID,
+        recoveryRequired: true, sourceUploaded: 'unknown', operationStatus: 'commit_ready',
+      });
+    } else {
+      respondJson(response, {
+        status: 'recovery_required', managedAppId: MANAGED_ID,
+        recoveryRequired: true, operationStatus: 'commit_ready',
+      });
+    }
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  assert.notEqual((await runCli(args)).code, 0);
+  assert.equal((await runCli([...args, '--recover'])).code, 1);
+
+  const invalid = await runCli([...args, '--recover']);
+  assert.equal(invalid.code, 1);
+  const invalidOutput = JSON.parse(invalid.stdout) as Record<string, unknown>;
+  assert.ok(!Object.hasOwn(invalidOutput, 'nextAction'));
+  assert.ok(!Object.hasOwn(invalidOutput, 'sourceUploaded'), 'invalid boolean data stays unknown');
+  const invalidStatus = await runCli([...args, '--status']);
+  const invalidStatusOutput = JSON.parse(invalidStatus.stdout) as Record<string, unknown>;
+  assert.ok(!Object.hasOwn(invalidStatusOutput, 'nextAction'), 'unknown response clears the prior retry permission');
+  assert.ok(!Object.hasOwn(invalidStatusOutput, 'sourceUploaded'));
+
+  const missing = await runCli([...args, '--recover']);
+  assert.equal(missing.code, 1);
+  assert.ok(!Object.hasOwn(JSON.parse(missing.stdout), 'sourceUploaded'), 'a missing field stays unknown');
+  const manifestPath = path.join(root, 'ai-app.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  manifest.projectVersion = '1.2.4';
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("UNAUTHORIZED_CHANGED_BODY")\n');
+  const blocked = await runCli(args);
+  assert.equal(blocked.code, 1);
+  assert.equal(JSON.parse(blocked.stdout).status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.equal(requests.filter((item) => item.method === 'POST').length, 1, 'unknown actions never authorize a new POST');
+});
+
+test('failed submit_again permits only a changed bundle under the saved managed owner', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-submit-again-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let postCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      assert.equal(request.url, '/api/managed-apps/' + MANAGED_ID + '/status');
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 8 });
+      return;
+    }
+    postCount += 1;
+    if (postCount === 1) {
+      respondJson(response, publicationResponse(portal.origin, { status: 'failed', nextAction: 'submit_again' }));
+    } else {
+      respondJson(response, publicationResponse(portal.origin));
+    }
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const failed = await runCli(args);
+  assert.equal(failed.code, 1);
+  assert.equal(JSON.parse(failed.stdout).nextAction, 'submit_again');
+  const originalPost = requests[0]!;
+  const sameBundle = await runCli(args);
+  assert.equal(sameBundle.code, 1);
+  assert.equal(requests.length, 1, 'submit_again does not retry the same failed package');
+
+  const manifestPath = path.join(root, 'ai-app.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  manifest.projectVersion = '1.2.4';
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("NEWER_SUBMISSION")\n');
+  const submitted = await runCli([...args, '--managed-app-id', MANAGED_ID]);
+  assert.equal(submitted.code, 0, submitted.stderr);
+  const retry = requests.filter((item) => item.method === 'POST')[1]!;
+  assert.equal(retry.headers['x-plaza-publish-key'], originalPost.headers['x-plaza-publish-key']);
+  assert.notEqual(retry.headers['idempotency-key'], originalPost.headers['idempotency-key']);
+  assert.equal(decodedBody(retry).managedAppId, MANAGED_ID);
+  assert.equal(decodedBody(retry).expectedAppRevision, 8);
+  const sentManifest = decodedBody(retry).files.find((file) => file.path === 'ai-app.json')!;
+  assert.equal(JSON.parse(Buffer.from(sentManifest.content, 'base64').toString('utf8')).projectVersion, '1.2.4');
+  assert.deepEqual(requests.map((item) => item.method), ['POST', 'GET', 'POST']);
+});
+
+test('malformed failed submit_again recovery cannot authorize a changed bundle', async (t) => {
+  for (const malformed of ['missing-publication-id', 'source-not-uploaded'] as const) {
+    await t.test(malformed, async (subtest) => {
+      const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-submit-again-malformed-'));
+      subtest.after(() => rm(temporary, { recursive: true, force: true }));
+      const root = await makeProject(temporary);
+      const stateDir = path.join(temporary, 'private-state');
+      const requests: CapturedRequest[] = [];
+      const portal = await createPortal((request, response) => {
+        requests.push(request);
+        assert.equal(request.method, 'POST');
+        const failure: Record<string, unknown> = publicationResponse(portal.origin, {
+          status: 'failed',
+          nextAction: 'submit_again',
+          ...(malformed === 'source-not-uploaded' ? { sourceUploaded: false } : {}),
+        });
+        if (malformed === 'missing-publication-id') {
+          delete failure.id;
+          delete failure.publicationId;
+        }
+        respondJson(response, failure);
+      });
+      subtest.after(portal.close);
+      const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+      const failed = await runCli(args);
+      assert.equal(failed.code, 1);
+      assert.equal(JSON.parse(failed.stdout).nextAction, 'submit_again');
+
+      const manifestPath = path.join(root, 'ai-app.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+      manifest.projectVersion = '1.2.4';
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      await writeFile(path.join(root, 'src', 'main.py'), `print("${malformed}")\n`);
+      const blocked = await runCli([...args, '--managed-app-id', MANAGED_ID]);
+      assert.equal(blocked.code, 1);
+      assert.equal(JSON.parse(blocked.stdout).status, 'HANDOFF_RECOVERY_REQUIRED');
+      assert.equal(requests.length, 1, 'malformed failed receipts cannot authorize another POST');
+    });
+  }
+});
+
 test('--recover rejects a response for a different managed application without changing the saved request', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-identity-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
