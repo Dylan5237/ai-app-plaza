@@ -532,6 +532,156 @@ test('secret assignment scanning consumes complete quoted values and fails close
       secret: 'correct horse battery staple',
     },
     {
+      path: 'src/triple-double.py',
+      content: 'password = """correct horse battery staple"""\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/triple-single.py',
+      content: "password = '''correct horse battery staple'''\n",
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/triple-double-multiline.py',
+      content: 'password = """\ncorrect horse battery staple\n"""\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/triple-single-multiline.py',
+      content: "password = '''\ncorrect horse battery staple\n'''\n",
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/raw-triple-multiline.py',
+      content: 'password = r"""\ncorrect horse battery staple\n"""\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/f-triple-multiline.py',
+      content: 'password = f"""\ncorrect horse battery staple\n"""\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/rf-triple-multiline.py',
+      content: "password = rf'''\ncorrect horse battery staple\n'''\n",
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/fr-triple-multiline.py',
+      content: "password = Fr'''\ncorrect horse battery staple\n'''\n",
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/bytes-prefix.py',
+      content: 'password = b"correct horse battery staple"\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/unicode-prefix.py',
+      content: "password = u'correct horse battery staple'\n",
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/adjacent-short-first.py',
+      content: 'password = "" "correct horse battery staple"\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/plus-short-first.py',
+      content: 'password = "abc" + "correct horse battery staple"\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/prefixed-short-first.py',
+      content: 'password = r"" "correct horse battery staple"\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/js-plus-short-first.ts',
+      content: 'const password = "abc" + "correct horse battery staple";\n',
+      secret: 'correct horse battery staple',
+    },
+    {
+      path: 'src/js-block-plus.ts',
+      content: 'const password = "x" /* note */ + "CorrectHorse@Battery:Staple/More!Secret";\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/js-line-plus.ts',
+      content: 'const password = "x" // note\n + "CorrectHorse@Battery:Staple/More!Secret";\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/python-floor-division.py',
+      content: 'password = "x" // "CorrectHorse@Battery:Staple/More!Secret"\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/parenthesized-comment-triple.py',
+      content: 'password = (\n    # comment\n    """CorrectHorse@Battery:Staple/More!Secret"""\n)\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/parenthesized-js.ts',
+      content: 'const password = (\n  "CorrectHorse@Battery:Staple/More!Secret"\n);\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/explicit-continuation.py',
+      content: 'password = \\\n  "CorrectHorse@Battery:Staple/More!Secret"\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/parenthesized-nonliteral-prefix.py',
+      content: 'password = (\n    fallback or "CorrectHorse@Battery:Staple/More!Secret"\n)\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/unknown-python-continuation.py',
+      content: 'password = f() or \\\n    "CorrectHorse@Battery:Staple/More!Secret"\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/unknown-js-continuation.ts',
+      content: 'const password = f()\n  || "CorrectHorse@Battery:Staple/More!Secret";\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/commented-js-continuation.ts',
+      content: 'const password = f() /* note */\n  || "CorrectHorse@Battery:Staple/More!Secret";\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/unclosed-comment-continuation.ts',
+      content: 'const password = f()\n  /* unclosed\n  || "CorrectHorse@Battery:Staple/More!Secret";\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/open-js-expression.ts',
+      content: 'const password = f(\n  "CorrectHorse@Battery:Staple/More!Secret");\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/open-python-expression.py',
+      content: 'password = f(\n    "CorrectHorse@Battery:Staple/More!Secret"\n)\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/password-block.yaml',
+      content: 'password: |\n  CorrectHorse@Battery:Staple/More!Secret\n',
+      secret: 'CorrectHorse@Battery:Staple/More!Secret',
+    },
+    {
+      path: 'src/unreliable-literal-continuation.py',
+      content: 'password = "short" + getPasswordFromVault()\n',
+      secret: 'short',
+    },
+    {
+      path: 'src/unclosed-triple.py',
+      content: 'password = """correct horse battery staple\n',
+      secret: 'correct horse battery staple',
+    },
+    {
       path: 'src/punctuated.ts',
       content: "const password = 'CorrectHorse@Battery:Staple/More!Secret';\n",
       secret: 'CorrectHorse@Battery:Staple/More!Secret',
@@ -578,13 +728,73 @@ test('secret assignment scanning consumes complete quoted values and fails close
     for (const mode of modes) {
       const result = await runCli([...baseArgs, ...mode.flags]);
       assert.equal(result.code, 2, item.path + ' (' + mode.name + '): ' + result.stderr);
-      assert.ok(result.stdout.includes(item.path) || result.stderr.includes(item.path), 'reports only the safe path');
+      assert.ok(result.stdout.includes(item.path) || result.stderr.includes(item.path), item.path + ' (' + mode.name + '): reports only the safe path');
       assert.ok(!result.stdout.includes(item.secret) && !result.stderr.includes(item.secret), 'does not echo the credential');
       assert.equal(requestCount, 0, mode.name + ' must reject before any HTTP request');
       await assert.rejects(access(stateDir), { code: 'ENOENT' }, mode.name + ' must not create a receipt');
     }
     await rm(filePath, { force: true });
   }
+});
+
+test('secret assignment scanning preserves the 20-character literal threshold', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-secret-threshold-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const sourcePath = path.join(root, 'src', 'main.py');
+  let requestCount = 0;
+  const portal = await createPortal((_request, response) => {
+    requestCount += 1;
+    response.writeHead(500);
+    response.end();
+  });
+  t.after(() => portal.close());
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--dry-run'];
+
+  await writeFile(sourcePath, 'password = "1234567890123456789"\n');
+  const short = await runCli(args);
+  assert.equal(short.code, 0, short.stderr);
+  assert.equal(JSON.parse(short.stdout).dryRun, true);
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+
+  await writeFile(path.join(root, 'src', 'template.ts'), 'const password = `short\ntext`;\n');
+  const multilineTemplate = await runCli(args);
+  assert.equal(multilineTemplate.code, 0, multilineTemplate.stderr);
+  assert.equal(JSON.parse(multilineTemplate.stdout).dryRun, true);
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+
+  await writeFile(sourcePath, 'password = "12345678901234567890"\n');
+  const threshold = await runCli(args);
+  assert.equal(threshold.code, 2, threshold.stderr);
+  const output = JSON.parse(threshold.stdout) as Record<string, any>;
+  assert.equal(output.status, 'validation_failed');
+  assert.ok(JSON.stringify(output.diagnostics).includes('src/main.py'));
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+
+  await writeFile(sourcePath, 'password = "short"\n"CorrectHorse@Battery:Staple/More!Secret"\n');
+  const nextLogicalLine = await runCli(args);
+  assert.equal(nextLogicalLine.code, 0, nextLogicalLine.stderr);
+  assert.equal(JSON.parse(nextLogicalLine.stdout).dryRun, true);
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+
+  await writeFile(sourcePath, 'def send(password="short"):\n    return password\n');
+  const pythonCallBoundary = await runCli(args);
+  assert.equal(pythonCallBoundary.code, 0, pythonCallBoundary.stderr);
+  assert.equal(JSON.parse(pythonCallBoundary.stdout).dryRun, true);
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
+
+  await writeFile(path.join(root, 'src', 'call.ts'), 'send(password="short");\n');
+  const jsCallBoundary = await runCli(args);
+  assert.equal(jsCallBoundary.code, 0, jsCallBoundary.stderr);
+  assert.equal(JSON.parse(jsCallBoundary.stdout).dryRun, true);
+  assert.equal(requestCount, 0);
+  await assert.rejects(access(stateDir), { code: 'ENOENT' });
 });
 
 test('CLI dry-run permits JS/TS credential references but still blocks secret literals and config credentials', async (t) => {

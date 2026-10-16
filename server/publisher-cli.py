@@ -735,41 +735,221 @@ def _js_reference_ends_expression(raw: bytes, offset: int) -> bool:
     return False
 
 
-def _secret_assignment_value(raw: bytes, start: int) -> tuple[bytes, int, bool, bool]:
+def _secret_string_literal(raw: bytes, start: int, allow_python_prefix: bool) -> tuple[bytes, int, int, bool] | None:
     index = start
-    while index < len(raw) and raw[index] in b" \t\r\n\v\f":
+    prefix = b""
+    if allow_python_prefix and (index >= len(raw) or raw[index] not in (0x22, 0x27, 0x60)):
+        for size in (2, 1):
+            candidate = raw[index:index + size].lower()
+            quote_index = index + size
+            if candidate in {b"br", b"rb", b"fr", b"rf", b"r", b"b", b"u", b"f"} and quote_index < len(raw) and raw[quote_index] in (0x22, 0x27):
+                prefix = candidate
+                index = quote_index
+                break
+
+    if index >= len(raw) or raw[index] not in (0x22, 0x27, 0x60):
+        return None
+
+    quote = raw[index]
+    if quote == 0x60:
+        delimiter = bytes((quote,))
+    elif raw.startswith(bytes((quote,)) * 3, index):
+        delimiter = bytes((quote,)) * 3
+    else:
+        delimiter = bytes((quote,))
+    content_start = index + len(delimiter)
+    cursor = content_start
+    while cursor < len(raw):
+        current = raw[cursor]
+        if current == 0x5C:
+            if cursor + 1 >= len(raw):
+                return raw[content_start:cursor], content_start, len(raw), False
+            if raw[cursor + 1:cursor + 3] == b"\r\n":
+                cursor += 3
+            else:
+                cursor += 2
+            continue
+        if quote == 0x60 and raw.startswith(b"${", cursor):
+            return raw[content_start:cursor], content_start, len(raw), False
+        if raw.startswith(delimiter, cursor):
+            content = raw[content_start:cursor]
+            interpolated = b"f" in prefix and (b"{" in content or b"}" in content)
+            return content, content_start, cursor + len(delimiter), not interpolated
+        if len(delimiter) == 1 and quote != 0x60 and current in (0x0A, 0x0D):
+            return raw[content_start:cursor], content_start, cursor, False
+        cursor += 1
+    return raw[content_start:cursor], content_start, cursor, False
+
+
+def _skip_secret_trivia(raw: bytes, start: int, allow_python_prefix: bool) -> tuple[int, bool, bool, bool]:
+    index = start
+    saw_newline = False
+    explicit_continuation = False
+    while index < len(raw):
+        if raw[index] in b" \t\r\n\v\f":
+            saw_newline = saw_newline or raw[index] in b"\r\n"
+            index += 1
+            continue
+        if allow_python_prefix and raw[index:index + 1] == b"\\":
+            if raw.startswith(b"\\\r\n", index):
+                index += 3
+            elif raw[index:index + 2] in (b"\\\n", b"\\\r"):
+                index += 2
+            else:
+                break
+            saw_newline = True
+            explicit_continuation = True
+            continue
+        if allow_python_prefix and raw[index:index + 1] == b"#":
+            newline = min((position for position in (raw.find(b"\n", index + 1), raw.find(b"\r", index + 1)) if position >= 0), default=-1)
+            if newline < 0:
+                return len(raw), saw_newline, explicit_continuation, True
+            saw_newline = True
+            index = newline + (2 if raw.startswith(b"\r\n", newline) else 1)
+            continue
+        if not allow_python_prefix and raw.startswith(b"//", index):
+            newline = min((position for position in (raw.find(b"\n", index + 2), raw.find(b"\r", index + 2)) if position >= 0), default=-1)
+            if newline < 0:
+                return len(raw), saw_newline, explicit_continuation, True
+            saw_newline = True
+            index = newline + (2 if raw.startswith(b"\r\n", newline) else 1)
+            continue
+        if not allow_python_prefix and raw.startswith(b"/*", index):
+            close = raw.find(b"*/", index + 2)
+            if close < 0:
+                return len(raw), saw_newline, explicit_continuation, False
+            comment = raw[index + 2:close]
+            saw_newline = saw_newline or b"\n" in comment or b"\r" in comment
+            index = close + 2
+            continue
+        break
+    return index, saw_newline, explicit_continuation, True
+
+
+def _secret_line_has_open_delimiter(raw: bytes, start: int, line_end: int, allow_python_prefix: bool) -> bool:
+    delimiters = {0x28: 0x29, 0x5B: 0x5D, 0x7B: 0x7D}
+    closing = {value: key for key, value in delimiters.items()}
+    stack: list[int] = []
+    index = start
+    while index < line_end:
+        if allow_python_prefix and raw[index:index + 1] == b"#":
+            break
+        if not allow_python_prefix and raw.startswith(b"//", index):
+            break
+        if not allow_python_prefix and raw.startswith(b"/*", index):
+            close = raw.find(b"*/", index + 2)
+            if close < 0 or close >= line_end:
+                return True
+            index = close + 2
+            continue
+        if raw[index] in (0x22, 0x27, 0x60):
+            literal = _secret_string_literal(raw, index, allow_python_prefix)
+            if literal is None or literal[2] > line_end:
+                return True
+            index = literal[2]
+            continue
+        current = raw[index]
+        if current in delimiters:
+            stack.append(current)
+        elif current in closing:
+            if not stack:
+                return False
+            if stack.pop() != closing[current]:
+                return True
+        elif current in b";," and not stack:
+            return False
         index += 1
+    return bool(stack)
+
+
+def _secret_expression_continues(raw: bytes, start: int, line_end: int, allow_python_prefix: bool, allow_vue_markup: bool) -> bool:
+    line = raw[start:line_end].rstrip()
+    if _secret_line_has_open_delimiter(raw, start, line_end, allow_python_prefix):
+        return True
+    continuation_suffixes = (b"\\",) + tuple(bytes((character,)) for character in JS_REFERENCE_CONTINUATION)
+    if line.endswith(continuation_suffixes):
+        return True
+    next_index, saw_newline, _, reliable = _skip_secret_trivia(raw, line_end, allow_python_prefix)
+    if not reliable:
+        return True
+    if allow_vue_markup and re.match(rb"</(?:script|template|style)\b", raw[next_index:], re.IGNORECASE):
+        return False
+    return saw_newline and next_index < len(raw) and raw[next_index] in JS_REFERENCE_CONTINUATION
+
+
+def _secret_assignment_value(raw: bytes, start: int, allow_python_prefix: bool = False, allow_vue_markup: bool = False) -> tuple[bytes, int, bool, bool]:
+    index, _, _, trivia_reliable = _skip_secret_trivia(raw, start, allow_python_prefix)
+    if not trivia_reliable:
+        return b"", index, True, False
     if index >= len(raw):
         return b"", index, False, True
 
-    quote = raw[index]
-    if quote in (0x22, 0x27, 0x60):
-        content_start = index + 1
-        index = content_start
-        while index < len(raw):
-            current = raw[index]
-            if current == 0x5C:
-                if index + 1 >= len(raw):
-                    return raw[content_start:index], content_start, True, False
-                if raw[index + 1:index + 3] == b"\r\n":
-                    index += 3
-                else:
-                    index += 2
-                continue
-            if quote == 0x60 and raw.startswith(b"${", index):
-                return raw[content_start:index], content_start, True, False
-            if current == quote:
-                return raw[content_start:index], content_start, True, True
-            if quote != 0x60 and current in (0x0A, 0x0D):
-                return raw[content_start:index], content_start, True, False
-            index += 1
-        return raw[content_start:index], content_start, True, False
+    opening_parentheses = 0
+    probe = index
+    while probe < len(raw) and raw[probe] == 0x28:
+        opening_parentheses += 1
+        probe += 1
+        probe, _, _, trivia_reliable = _skip_secret_trivia(raw, probe, allow_python_prefix)
+        if not trivia_reliable:
+            return b"", probe, True, False
+    literal = _secret_string_literal(raw, probe, allow_python_prefix)
 
-    line_end = len(raw)
-    for newline in (raw.find(b"\n", index), raw.find(b"\r", index)):
-        if newline >= 0:
-            line_end = min(line_end, newline)
-    return raw[index:line_end].strip(), index, False, True
+    if literal is None:
+        if opening_parentheses:
+            return b"", probe, True, False
+        line_end = len(raw)
+        for newline in (raw.find(b"\n", index), raw.find(b"\r", index)):
+            if newline >= 0:
+                line_end = min(line_end, newline)
+        if _secret_expression_continues(raw, index, line_end, allow_python_prefix, allow_vue_markup):
+            return b"", index, True, False
+        return raw[index:line_end].strip(), index, False, True
+
+    first_content_start = literal[1]
+    values = [literal[0]]
+    reliable = literal[3]
+    cursor = literal[2]
+    while True:
+        next_index, saw_newline, explicit_continuation, trivia_reliable = _skip_secret_trivia(raw, cursor, allow_python_prefix)
+        if not trivia_reliable:
+            return b"".join(values), first_content_start, True, False
+
+        if next_index < len(raw) and raw[next_index] == 0x29 and opening_parentheses:
+            opening_parentheses -= 1
+            cursor = next_index + 1
+            continue
+        if allow_python_prefix and saw_newline and not opening_parentheses and not explicit_continuation:
+            break
+        if next_index >= len(raw) or raw[next_index] in b";,]}):":
+            if opening_parentheses:
+                return b"".join(values), first_content_start, True, False
+            break
+
+        if raw[next_index] == 0x2B:
+            next_index += 1
+            next_index, plus_newline, plus_continuation, trivia_reliable = _skip_secret_trivia(raw, next_index, allow_python_prefix)
+            if not trivia_reliable or (allow_python_prefix and plus_newline and not opening_parentheses and not plus_continuation):
+                return b"".join(values), first_content_start, True, False
+            following = _secret_string_literal(raw, next_index, allow_python_prefix)
+            if following is None:
+                return b"".join(values), first_content_start, True, False
+            values.append(following[0])
+            reliable = reliable and following[3]
+            cursor = following[2]
+            continue
+
+        following = _secret_string_literal(raw, next_index, allow_python_prefix)
+        if following is not None and (allow_python_prefix and (opening_parentheses or explicit_continuation) or not allow_python_prefix and not saw_newline):
+            values.append(following[0])
+            reliable = reliable and following[3]
+            cursor = following[2]
+            continue
+
+        if saw_newline and not opening_parentheses and (not allow_python_prefix or not explicit_continuation):
+            break
+        return b"".join(values), first_content_start, True, False
+
+    return b"".join(values), first_content_start, True, reliable
 
 
 def _looks_secret(raw: bytes, path: str) -> bool:
@@ -778,8 +958,11 @@ def _looks_secret(raw: bytes, path: str) -> bool:
     suffix = PurePosixPath(path).suffix.casefold()
     is_js_source = suffix in JS_SOURCE_SUFFIXES
     code_mask = None
+    python_source = suffix in {".py", ".pyi", ".pyw"}
     for match in SECRET_ASSIGNMENT_PATTERN.finditer(raw):
-        value, value_start, quoted, reliable = _secret_assignment_value(raw, match.end())
+        if suffix in {".yaml", ".yml"} and raw[match.end():match.end() + 1] in {b"|", b">"}:
+            return True
+        value, value_start, quoted, reliable = _secret_assignment_value(raw, match.end(), python_source, suffix == ".vue")
         if quoted:
             if not reliable or len(value) >= 20:
                 return True
