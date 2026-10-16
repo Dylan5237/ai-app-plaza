@@ -830,6 +830,71 @@ test('--status never re-emits a receipt URL whose identity binding no longer ver
   assert.ok(!Object.hasOwn(output, 'previewUrl'));
 });
 
+test('--status keeps explicit recovery_required when publicationStatus is unknown and performs no network request', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-status-recovery-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  let requests = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((_request, response) => {
+    requests += 1;
+    respondJson(response, publicationResponse(portal.origin, { status: 'unknown' }));
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const unresolved = await runCli(args);
+  assert.equal(unresolved.code, 1);
+  assert.equal(requests, 1);
+
+  const status = await runCli([...args, '--status']);
+  assert.equal(status.code, 0, status.stderr);
+  const output = JSON.parse(status.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'receipt_saved');
+  assert.equal(output.handoffState, 'recovery_required');
+  assert.equal(output.publicationStatus, 'unknown');
+  assert.equal(requests, 1, '--status must not make HTTP requests');
+});
+
+test('a changed bundle cannot replace an unresolved checking operation or send another POST', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-pending-update-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 7 });
+      return;
+    }
+    respondJson(response, publicationResponse(portal.origin, { status: 'checking', nextAction: 'retry_original' }));
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const first = await runCli(args);
+  assert.equal(first.code, 1);
+  assert.equal(JSON.parse(first.stdout).handoffState, 'pending');
+  assert.equal(requests.length, 1);
+  const firstPost = requests[0]!;
+  assert.equal(firstPost.method, 'POST');
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const receiptPath = path.join(stateDir, receiptName);
+  const before = await readFile(receiptPath);
+  assert.ok(firstPost.headers['x-plaza-publish-key']);
+  assert.ok(firstPost.headers['idempotency-key']);
+
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("CHANGED_PENDING_SOURCE")\n');
+  const changed = await runCli(args);
+  assert.notEqual(changed.code, 0);
+  assert.equal(JSON.parse(changed.stdout).status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.equal(requests.length, 1, 'must not GET status or POST a changed bundle while the prior operation is pending');
+  assert.deepEqual(await readFile(receiptPath), before, 'owner, idempotency key, body, and receipt bytes stay unchanged');
+  assert.equal(requests.filter((request) => request.method === 'POST').length, 1);
+});
+
 test('--recover GETs the original receipt only and recovers after the project source changes', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -907,6 +972,69 @@ test('--recover preserves the original receipt when the server says the operatio
   assert.equal(requests[1]!.body.length, 0);
   assert.equal(requests[1]!.headers['idempotency-key'], beforeKey);
   assert.equal(requests[1]!.headers['x-plaza-publish-key'], beforeOwner);
+});
+
+test('--recover rejects a response for a different managed application without changing the saved request', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-identity-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  const foreignPublicationId = 'b7f57658-aea1-4c8d-b353-e5196c9e02c4';
+  const foreignTicket = 'B'.repeat(43);
+  let postCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET' && request.url === '/api/managed-publications/receipt') {
+      respondJson(response, publicationResponse(portal.origin, {
+        id: foreignPublicationId,
+        managedAppId: WRONG_MANAGED_ID,
+        previewUrl: portal.origin + '/#publish=' + foreignPublicationId + '&key=' + foreignTicket,
+        ticket: foreignTicket,
+      }));
+      return;
+    }
+    if (request.method === 'GET') {
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 7 });
+      return;
+    }
+    postCount += 1;
+    if (postCount === 1) {
+      respondJson(response, publicationResponse(portal.origin));
+    } else {
+      response.destroy();
+    }
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  assert.equal((await runCli(args)).code, 0);
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("UNCERTAIN_UPDATED_SOURCE")\n');
+  assert.notEqual((await runCli(args)).code, 0, 'the update response is intentionally lost');
+  assert.deepEqual(requests.map((request) => request.method), ['POST', 'GET', 'POST']);
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const receiptPath = path.join(stateDir, receiptName);
+  const before = await readFile(receiptPath);
+  const updatePost = requests[2]!;
+
+  const recovered = await runCli([...args, '--recover']);
+  assert.equal(recovered.code, 1);
+  const output = JSON.parse(recovered.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.equal(output.managedAppId, MANAGED_ID);
+  assert.ok(!recovered.stdout.includes(WRONG_MANAGED_ID));
+  assert.ok(!recovered.stdout.includes(foreignPublicationId));
+  assert.ok(!recovered.stdout.includes(foreignTicket));
+  assert.deepEqual(await readFile(receiptPath), before, 'mismatched recovery data must not alter the saved request');
+  assert.equal(decodedBody(updatePost).managedAppId, MANAGED_ID);
+  assert.ok(updatePost.headers['x-plaza-publish-key']);
+  assert.ok(updatePost.headers['idempotency-key']);
+  assert.deepEqual(requests.map((request) => request.method), ['POST', 'GET', 'POST', 'GET']);
+  assert.equal(requests.filter((request) => request.method === 'POST').length, 2, 'recover must not resubmit source');
+  assert.equal(requests[3]!.headers['idempotency-key'], updatePost.headers['idempotency-key']);
+  assert.equal(requests[3]!.headers['x-plaza-publish-key'], updatePost.headers['x-plaza-publish-key']);
+  assert.equal(requests[3]!.body.length, 0);
 });
 
 test('registered publications are reported separately and do not claim preview handoff completion', async (t) => {
@@ -1097,6 +1225,65 @@ test('updates require the receipt target and use its current revision', async (t
   assert.ok(updatePost.headers['idempotency-key'] !== firstIdempotency, 'changed bundle gets a new idempotency key');
   const updatedSource = updateBody.files.find((file) => file.path === 'src/main.py');
   assert.ok(Buffer.from(updatedSource!.content, 'base64').toString('utf8') === 'print("UPDATED_SOURCE_SENTINEL")\n', 'updated source was sent');
+});
+
+test('a POST response for a different managed application cannot overwrite the receipt identity', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-post-identity-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  const foreignPublicationId = '4bdc3046-6714-4ec6-bc1b-6976cdb08654';
+  const foreignTicket = 'C'.repeat(43);
+  let postCount = 0;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') {
+      respondJson(response, { managedAppId: MANAGED_ID, appKey: 'demo-assistant', appId: PUBLIC_ID, revision: 7 });
+      return;
+    }
+    postCount += 1;
+    if (postCount === 1) {
+      respondJson(response, publicationResponse(portal.origin));
+    } else {
+      respondJson(response, publicationResponse(portal.origin, {
+        id: foreignPublicationId,
+        managedAppId: WRONG_MANAGED_ID,
+        previewUrl: portal.origin + '/#publish=' + foreignPublicationId + '&key=' + foreignTicket,
+        ticket: foreignTicket,
+      }));
+    }
+  });
+  t.after(portal.close);
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  assert.equal((await runCli(args)).code, 0);
+  const firstPost = requests[0]!;
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("MISMATCHED_UPDATE_SOURCE")\n');
+  const update = await runCli(args);
+  assert.equal(update.code, 1);
+  const output = JSON.parse(update.stdout) as Record<string, unknown>;
+  assert.equal(output.status, 'HANDOFF_RECOVERY_REQUIRED');
+  assert.equal(output.managedAppId, MANAGED_ID);
+  assert.ok(!update.stdout.includes(WRONG_MANAGED_ID));
+  assert.ok(!update.stdout.includes(foreignPublicationId));
+  assert.ok(!update.stdout.includes(foreignTicket));
+  assert.deepEqual(requests.map((request) => request.method), ['POST', 'GET', 'POST']);
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const updatePost = requests[2]!;
+  assert.equal(decodedBody(updatePost).managedAppId, MANAGED_ID);
+  assert.equal(updatePost.headers['x-plaza-publish-key'], firstPost.headers['x-plaza-publish-key']);
+  assert.ok(updatePost.headers['idempotency-key']);
+  const status = await runCli([...args, '--status']);
+  assert.equal(status.code, 0, status.stderr);
+  const statusOutput = JSON.parse(status.stdout) as Record<string, unknown>;
+  assert.equal(statusOutput.managedAppId, MANAGED_ID, 'the original managed identity remains authoritative');
+  assert.equal(statusOutput.publicationId, PUBLICATION_ID, 'foreign publication metadata is not persisted');
+  assert.ok(!Object.hasOwn(statusOutput, 'previewUrl'), 'foreign preview URL is not persisted');
+  assert.ok(!status.stdout.includes(WRONG_MANAGED_ID));
+  assert.ok(!status.stdout.includes(foreignPublicationId));
+  assert.ok(!status.stdout.includes(foreignTicket));
 });
 
 for (const errorCode of ['VALIDATION_FAILED', 'INVALID_REQUEST']) {

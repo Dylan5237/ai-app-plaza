@@ -1304,6 +1304,7 @@ def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[st
 
 def _store_publication_result(store: ReceiptStore, receipt: dict[str, Any], details: dict[str, Any], complete: bool) -> None:
     receipt["responseKnown"] = True
+    receipt.pop("knownRequestRejection", None)
     receipt["publicationId"] = details.get("publicationId")
     receipt["publicationStatus"] = details.get("status", "unknown")
     receipt["sourceUploaded"] = details.get("sourceUploaded") is True
@@ -1407,7 +1408,9 @@ def _receipt_status_output(receipt: dict[str, Any], origin: str) -> dict[str, An
     publication_status = receipt.get("publicationStatus")
     if not isinstance(publication_status, str) or publication_status not in SAFE_PUBLICATION_STATUSES:
         publication_status = "unknown"
-    if _saved_preview_url(receipt, origin):
+    if receipt.get("handoffState") == "recovery_required" or receipt.get("handoffRecoveryRequired") is True:
+        handoff_state = "recovery_required"
+    elif _saved_preview_url(receipt, origin):
         handoff_state = "complete"
     elif receipt.get("handoffState") == "registered" and publication_status == "registered" and receipt.get("sourceUploaded") is True:
         handoff_state = "registered"
@@ -1540,6 +1543,9 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
     try:
         publish_key = receipt.get("publishKey")
         idempotency_key = _valid_uuid(receipt.get("idempotencyKey"), "receipt Idempotency-Key")
+        expected_managed = None
+        if receipt.get("managedAppId") is not None:
+            expected_managed = _valid_uuid(receipt.get("managedAppId"), "receipt managedAppId")
         if not isinstance(publish_key, str) or len(publish_key) < 20:
             raise CliError("本机 receipt 缺少恢复凭据。")
     except CliError:
@@ -1566,6 +1572,16 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
     except CliError:
         _print_json(_recovery_required_output())
         return 1
+
+    if expected_managed and response.get("managedAppId") is not None:
+        try:
+            returned_managed = _valid_uuid(response.get("managedAppId"), "managedAppId")
+        except CliError:
+            returned_managed = None
+        if returned_managed != expected_managed:
+            _print_json(_recovery_required_output(managed_id=expected_managed
+                                                  if isinstance(expected_managed, str) else None))
+            return 1
 
     if response.get("status") == "recovery_required":
         managed_id = None
@@ -1598,11 +1614,10 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
         return 1
 
     details, complete = _publication_handoff(response, origin)
-    expected_managed = receipt.get("managedAppId")
     if expected_managed and details.get("managedAppId") != expected_managed:
-        details.pop("previewUrl", None)
-        details["handoffState"] = "recovery_required"
-        complete = False
+        _print_json(_recovery_required_output(managed_id=expected_managed
+                                              if isinstance(expected_managed, str) else None))
+        return 1
     try:
         _store_publication_result(store, receipt, details, complete)
     except CliError:
@@ -1673,22 +1688,34 @@ def _run(args: argparse.Namespace) -> int:
         old_digest = receipt.get("bundleDigest")
         response_known = receipt.get("responseKnown") is True
         refresh_revision = receipt.get("refreshRevisionAfterRejection") is True
+        known_request_rejection = receipt.get("knownRequestRejection") is True
+        changed_bundle = bool(old_digest and old_digest != digest)
         deferred_update = bool(old_digest and old_digest != digest and not response_known)
+        known_completed_handoff = receipt.get("handoffState") in {"complete", "registered"}
+        if (
+            changed_bundle and response_known and not refresh_revision and not known_request_rejection
+            and not known_completed_handoff
+        ):
+            _print_json(_recovery_required_output(managed_id=receipt.get("managedAppId")
+                                                  if isinstance(receipt.get("managedAppId"), str) else None))
+            return 1
         if old_digest is None:
             receipt["idempotencyKey"] = str(uuid.uuid4())
             receipt["bundleDigest"] = digest
             receipt["files"] = files
             receipt["responseKnown"] = False
+            receipt.pop("knownRequestRejection", None)
             receipt["refreshRevisionAfterRejection"] = False
             receipt["requestManagedAppId"] = None
             receipt["requestExpectedAppRevision"] = None
             receipt["handoffState"] = "pending"
             receipt["handoffComplete"] = False
-        elif refresh_revision or (old_digest != digest and response_known):
+        elif refresh_revision or (changed_bundle and (known_request_rejection or known_completed_handoff)):
             receipt["idempotencyKey"] = str(uuid.uuid4())
             receipt["bundleDigest"] = digest
             receipt["files"] = files
             receipt["responseKnown"] = False
+            receipt.pop("knownRequestRejection", None)
             receipt["refreshRevisionAfterRejection"] = False
             receipt["requestManagedAppId"] = receipt.get("managedAppId")
             receipt["requestExpectedAppRevision"] = None
@@ -1710,6 +1737,11 @@ def _run(args: argparse.Namespace) -> int:
         if request_managed_id is not None:
             request_managed_id = _valid_uuid(request_managed_id, "receipt request managedAppId")
         receipt["identity"] = {"origin": origin, "projectRoot": str(project_root), "appKey": app_key}
+        # Starting or retrying a POST makes its outcome unknown until the response is
+        # durably recorded. A prior rejection cannot authorize a later changed bundle
+        # if this retry loses its response.
+        receipt["responseKnown"] = False
+        receipt.pop("knownRequestRejection", None)
         store.save(receipt)
 
         expected_revision: int | None = None
@@ -1735,12 +1767,14 @@ def _run(args: argparse.Namespace) -> int:
             error_code = _response_error_code(raw)
             if status == 400 and error_code in {"VALIDATION_FAILED", "INVALID_REQUEST"}:
                 receipt["responseKnown"] = True
+                receipt["knownRequestRejection"] = True
                 store.save(receipt)
                 _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
                              "diagnostics": _sanitize_server_diagnostics(raw)})
                 return 2
             if status == 409 and error_code in {"REVISION_CONFLICT", "VERSION_NOT_NEWER"}:
                 receipt["responseKnown"] = True
+                receipt["knownRequestRejection"] = True
                 if error_code == "REVISION_CONFLICT":
                     receipt["refreshRevisionAfterRejection"] = True
                     receipt["requestExpectedAppRevision"] = None
@@ -1754,9 +1788,8 @@ def _run(args: argparse.Namespace) -> int:
             return 1
         details, complete = _publication_handoff(response, origin)
         if managed_id and details.get("managedAppId") != managed_id:
-            details.pop("previewUrl", None)
-            details["handoffState"] = "recovery_required"
-            complete = False
+            _print_json(_recovery_required_output(managed_id=managed_id))
+            return 1
         try:
             _store_publication_result(store, receipt, details, complete)
         except CliError:
