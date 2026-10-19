@@ -408,14 +408,17 @@ function preparePublicationRoute() {
   return true
 }
 
-function handleHashChange() {
+async function handleHashChange() {
   if (preparePublicationRoute()) return
   if (!publicationId.value) return
   publicationId.value = ''
   publication.value = null
   publicationError.value = ''
   publicationLoading.value = false
-  void loadCatalog()
+  await nextTick()
+  updateCatalogPageSize(false)
+  catalogReady = true
+  await loadCatalog()
 }
 
 async function loadPublication(id = publicationId.value) {

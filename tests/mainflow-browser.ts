@@ -335,6 +335,17 @@ try {
     if (viewport.width === 1440) await verifyResponseIsolation(page, harness);
     await context.close();
   }
+  const hashContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const hashPage = await hashContext.newPage();
+  hashPage.on('pageerror', error => report.errors.push(error.message));
+  await hashPage.goto(publication.previewUrl);
+  await hashPage.getByText('应用已收录', { exact: true }).waitFor();
+  await hashPage.evaluate(() => { window.location.hash = ''; });
+  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 9);
+  await hashPage.setViewportSize({ width: 1280, height: 720 });
+  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 8);
+  report.previewHashReturn = true;
+  await hashContext.close();
   for (let i = 10; i <= 25; i++) await seedTagCatalog(harness.db, harness.config.audience, ['文档处理'], i);
   const layoutContext = await browser.newContext();
   const layoutPage = await layoutContext.newPage();
