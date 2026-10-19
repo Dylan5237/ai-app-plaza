@@ -1,11 +1,11 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "projectVersion": "1.3.0",
   "appKey": "review-helper",
   "name": "ReviewHelper 变更检查助手",
   "summary": "基于项目约定检查变更，整理有证据的问题清单。",
   "tags": ["代码评审", "变更检查"],
-  "maintainers": ["example-maintainer"],
+  "maintainers": [{"name": "示例作者", "nameEn": "Example Author"}],
   "capabilities": {
     "scenarios": ["提交前检查当前变更", "生成可供评审者核对的问题列表"],
     "inputs": ["项目仓库上下文", "待检查的提交或变更范围"],

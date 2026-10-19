@@ -1,10 +1,11 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
+  "projectVersion": "1.0.0",
   "appKey": "doc-converter",
   "name": "DocConverter 文档转换器",
   "summary": "在用户授权的本地环境批量转换文档并保留资源引用。",
   "tags": ["文档转换", "批量处理"],
-  "maintainers": ["example-owner"],
+  "maintainers": [{"name": "示例作者", "nameEn": "Example Author"}],
   "capabilities": {
     "scenarios": ["把一组文档转换为便于检索的文本和资源目录"],
     "inputs": ["待转换文件或目录"],

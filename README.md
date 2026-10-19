@@ -8,7 +8,7 @@
 
 ## 本地运行
 
-需要 Node.js 22.16+、Python 3.10+（仅历史原型生成使用）。
+需要 Node.js 22.16+；历史原型生成和作者侧托管上传工具需要 Python 3.10+。
 
 ```powershell
 npm ci
@@ -26,6 +26,8 @@ npm start
 
 ## 发布与使用
 
+Agent 首先阅读[上传、分享与更新接入规范](docs/integration/publishing.md)，再取得目标门户的在线契约。该规范统一说明 v2 资料、托管/直连发布、作者确认、版本更新、回执恢复及已知限制；旧资料契约页只保留索引。
+
 配置统一托管时，“分享我的AI应用”默认提供免 GitLab 配置的发布提示词。AI 从项目中准备 `ai-app.json`、共享说明与必要源码，运行广场提供的 Python 辅助工具完成上传。服务端只在固定群组内创建私有独立仓库、commit、版本 tag 和 Release，随后仍使用原有来源核验及作者私有预览确认。新仓库关闭 CI，上传内容不在广场执行。
 
 每个应用的专属发布凭证由辅助工具保存在用户私有目录，Windows 用 DPAPI 保护，POSIX 使用私有文件权限；它不能更新其他应用，也不是 GitLab 令牌。首次运行前保存恢复记录，网络不确定时沿用原操作和原内容；更新自动复用凭证并核对广场版本。姓名仍由负责人确认，是作者声明；GitLab 操作身份由统一托管服务提供，不宣称员工实名验证。
@@ -42,13 +44,13 @@ Agent 返回本次专属预览链接，作者检查内容后确认。**任何持
 
 收录后，所有能访问门户的人都能查看已批准的介绍和使用资料。平台应用直接跳转；其他应用复制固定版本接入提示词，由用户自己的 Agent 完成授权、下载和安装。源码、软件包和目标系统仍使用它们本来的权限，广场不代理下载、不执行代码。
 
-作者更新时，在应用详情点“发布新版本”，复制带应用上下文的更新提示词。Agent 保持原项目与 appKey，准备更高版本的 Release 并提交预览；作者核对版本变化与变更项后确认，原应用链接不变。重复的相同内容不会重复收录；同版本改内容、版本倒退及旧预览覆盖会被拒绝，失败时保留当前版本。
+作者更新时，在应用详情点“发布新版本”，复制带应用上下文的更新提示词。Agent 保持原项目与 appKey，准备更高版本资料：托管模式由服务器创建匹配 tag 和 Release，直连模式由作者 Agent 按项目授权准备；随后生成预览。作者核对版本变化与变更项后确认，原应用链接不变。重复的相同内容不会重复收录；同版本改内容、版本倒退及旧预览覆盖会被拒绝，失败时保留当前版本。
 
 使用者升级仍从“接入我的Agent”进入。提示词要求 Agent 先核对广场已确认版本及本地状态，按未安装、旧版或已是目标版本分别处理，保留配置与本地修改，并执行最小验证。广场不记录本地安装情况、不执行升级、不自动追踪未收录的 GitLab Release。
 
 ## Agent 接口
 
-HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的直接入口，无须先安装 MCP。
+HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的直接入口，无须先安装 MCP。现有 MCP 的提交工具只提交 GitLab 固定来源，托管文件上传使用契约下发的官方 CLI；完整字段与状态见[统一接入规范](docs/integration/publishing.md#7-http-与-mcp-对照)。
 
 | 操作 | 接口 |
 | --- | --- |
@@ -90,15 +92,15 @@ npm run test:prototype
 ## 代码与项目约定
 
 - `src/`：当前 Vue/Element Plus 门户；`server/`：API、GitLab 读取、SQL 数据与 MCP 适配器。
-- `server/contracts/app-manifest.schema.json`：可执行资料规范；`docs/product/mainflow-scope.md`：本次最小范围。
+- `server/contracts/app-manifest.schema.json`：唯一完整可执行资料 Schema；`docs/integration/publishing.md`：统一接入规范；`docs/product/mainflow-scope.md`：本次最小范围。
 - `prototype/`、`scripts/apply_compact_portal.py` 与 `build_fuxi_portal.cjs`：历史 Mock 原型。不要直接修改生成的 `public/portal.html`。
 - `tests/`：领域、HTTP、MCP 进程和浏览器测试；`archive/`、`artifacts/`：本地历史和证据，不提交。
 - 唯一写入权威为 [GitHub origin](https://github.com/Dylan5237/ai-app-plaza)，APO 约定见 `AGENTS.md`。主题分支提交后按既有授权推送；不自动合并、部署或宣布 Phase Accept。
 
 技术依据：[GitLab 文件 API](https://docs.gitlab.com/api/repository_files/)、[PGlite 本地 PostgreSQL](https://pglite.dev/docs/)、[MCP 官方 SDK](https://modelcontextprotocol.io/docs/sdk)。本地嵌入式数据库用于开发和测试，生产配置使用外部 PostgreSQL；未声称已在公司环境完成上线。
 
-## 早期设计记录
+## 文档与历史记录
 
-[需求说明](docs/product/requirements.md)保留早期产品讨论与决定。历史记录包含后续阶段已调整的范围；当前行为以本文、服务端资料契约和 GitHub 已冻结阶段为准。
+[需求说明](docs/product/requirements.md)与[架构说明](docs/architecture/architecture.md)已按现行实现校正；Agent 接入统一从[上传、分享与更新规范](docs/integration/publishing.md)进入。[旧资料契约地址](docs/architecture/data-contract.md)保留迁移说明，旧 Schema 路径引用服务端 Schema，三个资料样例已更新为 v2。
 
-[架构设计](docs/architecture/architecture.md)、[设计决策](docs/architecture/decisions-2026-10-10.md)、[资料契约设计](docs/architecture/data-contract.md)和[架构图](docs/architecture/plaza-architecture.html)保留对应设计阶段的记录。当前可执行资料规范位于 `server/contracts/app-manifest.schema.json`；托管发布的独立边界见 Phase #17。
+[2026-10-10 设计决策](docs/architecture/decisions-2026-10-10.md)、[历史架构图](docs/architecture/plaza-architecture.html)与[原型说明](docs/product/capability-boundaries.md)保留当时语境，不能用其中的登录、可选 Release 等安排指导现行发布。阶段状态和验收仍以 GitHub 控制面为准。

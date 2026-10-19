@@ -1,6 +1,6 @@
 # [Command Center] AI应用广场
 
-此文件为待发布正文；发布时以实际 Issue / PR 链接替换明确的待创建项。
+此文件保留初始化时的 Command Center 正文草稿，以下状态不是当前项目状态。当前状态见 [GitHub Command Center #1](https://github.com/Dylan5237/ai-app-plaza/issues/1)；上传、分享与更新使用[现行接入规范](../integration/publishing.md)。
 
 ## 1. One-glance / 一眼状态
 

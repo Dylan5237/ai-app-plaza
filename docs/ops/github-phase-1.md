@@ -1,5 +1,7 @@
 # [Phase 1] 确认应用登记的最小契约
 
+历史提案提示：以下保留初始化时的范围与待冻结状态，不是当前接入合同。当前项目状态见 [Command Center #1](https://github.com/Dylan5237/ai-app-plaza/issues/1)，Agent 使用[上传、分享与更新规范](../integration/publishing.md)。
+
 状态：`type:phase`、`status:backlog`，待 `@Dylan5237` Freeze。此文件为首个 Phase 提案，不授权开始落地开发。
 
 ## Core problem

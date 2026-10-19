@@ -1,11 +1,11 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "projectVersion": "2.1.0",
   "appKey": "task-studio",
   "name": "TaskStudio 需求工作台",
   "summary": "将需求材料整理为可评审的业务场景和验收清单。",
   "tags": ["需求分析", "业务评审"],
-  "maintainers": ["example-author"],
+  "maintainers": [{"name": "示例作者", "nameEn": "Example Author"}],
   "capabilities": {
     "scenarios": ["评审前整理零散需求", "检查业务流程是否覆盖异常情况"],
     "inputs": ["文字需求或已有需求文档"],
