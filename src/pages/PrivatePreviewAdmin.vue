@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
+import plazaMark from '../assets/plaza-mark.svg'
 import { apiRequest } from '../lib/api.js'
 
 const sessionState = ref('loading')
@@ -67,11 +68,11 @@ function clearPrivateState() {
   selectedId.value = ''
 }
 
-function handleExpiredSession() {
+function handleExpiredSession(message = '管理员会话已失效，请重新登录。') {
   clearPrivateState()
   authenticated.value = false
   sessionState.value = 'ready'
-  sessionError.value = '管理员会话已失效，请重新登录。'
+  sessionError.value = message
 }
 
 async function checkSession() {
@@ -161,12 +162,13 @@ async function loadList(nextPage = page.value) {
     }
   } catch (error) {
     if (sequence !== listSequence) return
-    if (error?.status === 401) {
-      handleExpiredSession()
+    if (error?.status === 401 || error?.status === 403) {
+      handleExpiredSession(error?.status === 403 ? '当前管理权限不可用，请重新验证管理员身份。' : undefined)
       return
     }
     items.value = []
     total.value = 0
+    counts.value = { all: 0, preview_ready: 0, expired: 0, checking: 0, failed: 0 }
     listError.value = requestError(error, 'list')
   } finally {
     if (sequence === listSequence) listLoading.value = false
@@ -203,8 +205,8 @@ async function openDetail(item) {
     selectedPublication.value = result
   } catch (error) {
     if (sequence !== detailSequence) return
-    if (error?.status === 401) {
-      handleExpiredSession()
+    if (error?.status === 401 || error?.status === 403) {
+      handleExpiredSession(error?.status === 403 ? '当前管理权限不可用，请重新验证管理员身份。' : undefined)
       return
     }
     selectedPublication.value = null
@@ -238,7 +240,7 @@ async function logout() {
     password.value = ''
   } catch (error) {
     if (sequence !== logoutSequence) return
-    if (error?.status === 401) handleExpiredSession()
+    if (error?.status === 401 || error?.status === 403) handleExpiredSession()
     else logoutError.value = requestError(error, 'logout')
   } finally {
     if (sequence === logoutSequence) logoutLoading.value = false
@@ -305,7 +307,7 @@ function nextActionLabel(value) {
 }
 
 function changeKindLabel(value) {
-  return ({ update: '应用更新', unchanged: '版本未变化', initial: '首次收录' })[value] || value || '发布变更'
+  return ({ update: '应用更新', unchanged: '版本未变化', create: '首次收录' })[value] || value || '发布变更'
 }
 
 function returnToPlaza() {
@@ -330,13 +332,14 @@ onUnmounted(() => {
   <div class="private-preview-admin">
     <header class="admin-topbar">
       <button class="admin-brand" type="button" aria-label="返回 AI 应用广场" @click="returnToPlaza">
-        <span class="brand-mark" aria-hidden="true">AI</span>
+        <span class="brand-mark" aria-hidden="true"><img :src="plazaMark" alt="" /></span>
         <span>AI 应用广场</span>
       </button>
       <div class="topbar-context">
         <span class="context-dot" aria-hidden="true" />
-        作者发布确认管理
+        私有预览管理
       </div>
+      <el-button class="return-button" plain @click="returnToPlaza">返回广场</el-button>
       <el-button
         v-if="authenticated"
         class="logout-button"
@@ -373,7 +376,7 @@ onUnmounted(() => {
       <section v-else-if="!authenticated" class="login-layout">
         <div class="login-intro">
           <p class="eyebrow">PRIVATE PREVIEW ADMIN</p>
-          <h1>作者发布确认管理</h1>
+          <h1>私有预览管理</h1>
           <p>登录后查看作者尚未确认的发布记录。此页面只提供受保护的只读查看，作者仍通过原私有预览链接完成确认。</p>
         </div>
         <el-card class="login-card" shadow="never">
@@ -402,7 +405,7 @@ onUnmounted(() => {
               {{ loginLoading ? '正在验证…' : '安全登录' }}
             </el-button>
           </form>
-          <p class="login-note"><span aria-hidden="true">▣</span> 登录状态由安全会话保护，口令不会保存在浏览器中。</p>
+          <p class="login-note">管理员会话有效期为30分钟。</p>
         </el-card>
       </section>
 
@@ -410,7 +413,7 @@ onUnmounted(() => {
         <div class="page-heading">
           <div>
             <p class="eyebrow">PRIVATE PREVIEW ADMIN</p>
-            <h1 id="admin-heading">作者发布确认管理</h1>
+            <h1 id="admin-heading">私有预览管理</h1>
             <p class="page-subtitle">集中查看尚未完成作者确认的发布记录与来源信息。</p>
           </div>
           <span class="readonly-badge"><span class="readonly-mark" aria-hidden="true">R</span> 只读管理</span>
@@ -555,7 +558,7 @@ onUnmounted(() => {
               <el-tag :type="statusType(selectedPublication)" effect="light">{{ statusLabel(selectedPublication) }}</el-tag>
             </div>
             <p class="detail-guidance">{{ statusKey(selectedPublication) === 'expired'
-              ? '原私有预览已过期，本页仅提供发布记录和来源信息。'
+              ? '原私有链接已过期；以下为保留的只读快照，不延长链接有效期。'
               : statusKey(selectedPublication) === 'preview_ready'
                 ? '作者仍需通过原私有预览链接确认；此管理页面只提供只读查看。'
                 : statusKey(selectedPublication) === 'checking'
@@ -608,14 +611,16 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.private-preview-admin { min-height: 100vh; background: #f3f5f8; color: #26364b; font-family: inherit; }
+.private-preview-admin { width: 100%; height: 100%; min-height: 0; overflow-y: auto; background: #f3f5f8; color: #26364b; font-family: inherit; }
 .admin-topbar { position: sticky; z-index: 5; top: 0; display: flex; height: 62px; align-items: center; gap: 27px; padding: 0 clamp(18px, 3.3vw, 48px); border-bottom: 1px solid #e4e9f0; background: rgb(255 255 255 / 96%); box-shadow: 0 2px 8px rgb(34 52 77 / 3%); }
 .admin-brand { display: inline-flex; flex: none; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; color: #26364b; font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
 .admin-brand:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 4px; border-radius: 4px; }
-.brand-mark { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 8px; background: #3569d4; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: -.5px; }
+.brand-mark { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid #e4e9f0; border-radius: 8px; background: #fff; }
+.brand-mark img { display: block; width: 100%; height: 100%; }
 .topbar-context { display: flex; align-items: center; gap: 8px; color: #617086; font-size: 12px; }
 .context-dot { width: 6px; height: 6px; border-radius: 50%; background: #6a8fd6; }
-.logout-button { margin-left: auto; }
+.return-button { margin-left: auto; }
+.logout-button { margin-left: 0; }
 .admin-main { width: min(1440px, 100%); min-height: calc(100vh - 62px); margin: 0 auto; padding: 32px clamp(16px, 3.3vw, 48px) 30px; }
 .workspace { min-width: 0; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin: 4px 0 22px; }
@@ -721,7 +726,8 @@ onUnmounted(() => {
 }
 @media (max-width: 700px) {
   .admin-topbar { height: 56px; gap: 12px; padding: 0 14px; }
-  .topbar-context { font-size: 11px; }
+  .topbar-context { display: none; }
+  .return-button { padding: 7px 9px; font-size: 11px; }
   .admin-main { min-height: calc(100vh - 56px); padding: 22px 13px 24px; }
   .page-heading { align-items: flex-start; margin-bottom: 16px; }
   .page-heading h1, .login-intro h1 { font-size: 21px; }

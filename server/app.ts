@@ -11,6 +11,7 @@ import type { Config } from './config.js';
 import { publishContract } from './publish-contract.js';
 import { publisherScript } from './managed-publish-contract.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
+import { registerPreviewAdmin } from './preview-admin.js';
 
 const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
@@ -184,9 +185,12 @@ export async function createApp(config: Config, db: Database) {
   app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
   app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
+  registerPreviewAdmin(app, config, db);
   try {
     await access(config.staticDir);
     await app.register(staticPlugin, { root: config.staticDir, index: ['index.html'], dotfiles: 'deny' });
+    app.get('/private-previews', (_request, reply) => reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow').sendFile('index.html'));
+    app.get('/private-previews/', (_request, reply) => reply.redirect('/private-previews'));
   } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
   return { app, service, managed };
 }
