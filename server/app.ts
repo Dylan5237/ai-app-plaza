@@ -11,6 +11,7 @@ import type { Config } from './config.js';
 import { publishContract } from './publish-contract.js';
 import { publisherScript } from './managed-publish-contract.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
+import { createAppFinder } from './app-finder.js';
 
 const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
@@ -55,6 +56,7 @@ function parseManagedCandidate(value: unknown) {
 
 export async function createApp(config: Config, db: Database) {
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience });
+  const finder = createAppFinder(service, config.chat);
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false });
@@ -125,6 +127,20 @@ export async function createApp(config: Config, db: Database) {
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务尚未启用统一托管发布');
     const script = await publisherScript();
     return reply.type('text/x-python; charset=utf-8').header('X-Content-SHA256', script.sha256).send(script.text);
+  });
+  app.post('/api/app-finder/chat', {
+    config: config.rateLimit ? { rateLimit: { max: 12, timeWindow: '1 minute' } } : {},
+  }, async (request) => {
+    const input = z.object({
+      messages: z.array(z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string().trim().min(1).max(500),
+      }).strict()).min(1).max(8),
+    }).strict().parse(request.body);
+    if (input.messages[input.messages.length - 1]?.role !== 'user') {
+      throw new DomainError(400, 'INVALID_REQUEST', '最后一条必须是用户提出的需求');
+    }
+    return finder(input.messages);
   });
   app.get('/api/apps', async (request) => {
     const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(8) }).parse(request.query);

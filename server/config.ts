@@ -8,6 +8,7 @@ export interface Config {
   secret: string; databaseUrl?: string; dataDir: string; local: boolean;
   audience: string; staticDir: string; rateLimit: boolean;
   managedPublishing?: { groupId: string; groupPath: string; token: string };
+  chat?: { endpoint: string; model: string; apiKey: string };
 }
 
 function origin(value: string, name: string) {
@@ -70,6 +71,24 @@ export async function loadConfig(env = process.env): Promise<Config> {
     if (managedToken.length > 8192 || /[\r\n\u0000]/.test(managedToken)) throw new Error('托管 GitLab 授权格式无效');
     managedPublishing = { groupId: env.PLAZA_MANAGED_GROUP_ID!, groupPath: env.PLAZA_MANAGED_GROUP_PATH!, token: managedToken };
   }
+  let chat: Config['chat'];
+  const chatKeys = [env.PLAZA_CHAT_ENDPOINT, env.PLAZA_CHAT_MODEL, env.PLAZA_CHAT_API_KEY];
+  if (chatKeys.some(Boolean)) {
+    if (!chatKeys.every(Boolean)) throw new Error('模型接入配置缺少字段');
+    const endpoint = new URL(env.PLAZA_CHAT_ENDPOINT!);
+    if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !endpoint.pathname.endsWith('/chat/completions')) {
+      throw new Error('模型地址必须是无凭据、无查询参数的 Chat Completions URL');
+    }
+    if (endpoint.protocol === 'http:') {
+      const privateAddress = isRfc1918IPv4(endpoint.hostname, endpoint.origin) || ['127.0.0.1', 'localhost'].includes(endpoint.hostname);
+      if (!privateAddress || env.PLAZA_CHAT_ALLOW_HTTP !== '1') throw new Error('明文模型连接只允许显式批准的可信内网网关');
+    }
+    const apiKey = env.PLAZA_CHAT_API_KEY!;
+    if (apiKey.length > 8192 || /[\r\n\u0000-\u001f]/.test(apiKey)) throw new Error('模型密钥格式无效');
+    if (env.PLAZA_CHAT_MODEL!.length > 128 || /[\r\n\u0000-\u001f]/.test(env.PLAZA_CHAT_MODEL!)) throw new Error('模型标识格式无效');
+    chat = { endpoint: endpoint.href, model: env.PLAZA_CHAT_MODEL!, apiKey };
+  }
   return { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
-    dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true, ...(managedPublishing ? { managedPublishing } : {}) };
+    dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true,
+    ...(managedPublishing ? { managedPublishing } : {}), ...(chat ? { chat } : {}) };
 }
