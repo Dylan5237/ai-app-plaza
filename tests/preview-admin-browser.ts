@@ -8,6 +8,14 @@ const h = await startPreviewAdminFixture();
 const report: any = { status: 'RUNNING', boundary: 'Local controlled GitLab protocol fixture, real Fastify and PGlite; no company GitLab, production previews or deployment', checks: [], errors: [], unexpectedRequests: [], requests: [] };
 let browser: any;
 let page: any;
+function observePage(target: any) {
+  target.on('pageerror', (error: any) => report.errors.push(error.message));
+  target.on('request', (request: any) => {
+    const url = new URL(request.url());
+    if (url.origin !== h.origin) report.unexpectedRequests.push(url.origin + url.pathname);
+    if (url.origin === h.origin && url.pathname.startsWith('/api/preview-admin')) report.requests.push({ method: request.method(), path: url.pathname });
+  });
+}
 const snapshot = async () => {
   const result: any = {};
   for (const table of ['catalog_apps', 'published_snapshots', 'publications', 'catalog_tag_overrides', 'catalog_tag_cleanup_operations', 'managed_app_bindings', 'managed_publish_operations']) {
@@ -20,12 +28,7 @@ try {
   browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   page = await context.newPage();
-  page.on('pageerror', (error: any) => report.errors.push(error.message));
-  page.on('request', (request: any) => {
-    const url = new URL(request.url());
-    if (url.origin !== h.origin) report.unexpectedRequests.push(url.origin + url.pathname);
-    if (url.origin === h.origin && url.pathname.startsWith('/api/preview-admin')) report.requests.push({ method: request.method(), path: url.pathname });
-  });
+  observePage(page);
   await page.goto(h.origin);
   await page.getByTestId('app-card').first().waitFor();
   const logo = page.getByRole('button', { name: 'AI应用广场', exact: true });
@@ -100,6 +103,30 @@ try {
   assert.equal(await page.locator('.publication-table').count(), 0);
   assert.equal(await page.locator('.summary-grid').count(), 0);
   report.checks.push('403 also removes records, counts and private detail before returning to login');
+  await page.unroute('**/api/preview-admin/publications?**');
+  const timedPage = await context.newPage(); observePage(timedPage);
+  await timedPage.clock.install();
+  await timedPage.goto(h.origin + '/private-previews');
+  await timedPage.getByText('共 25 项', { exact: true }).waitFor();
+  await timedPage.getByRole('button', { name: '详情', exact: true }).first().click();
+  await timedPage.getByRole('heading', { name: '应用预览与来源' }).waitFor();
+  await context.clearCookies();
+  await timedPage.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await timedPage.getByRole('heading', { name: '管理员登录' }).waitFor();
+  assert.equal(await timedPage.locator('.publication-table, .summary-grid, .detail-overview').count(), 0);
+  report.checks.push('focus revalidation removes an existing private detail when the server session is gone');
+  await timedPage.getByLabel('管理员口令', { exact: true }).fill(ADMIN_FIXTURE_PASSWORD);
+  await timedPage.getByRole('button', { name: '安全登录', exact: true }).click();
+  await timedPage.getByText('共 25 项', { exact: true }).waitFor();
+  await timedPage.getByRole('button', { name: '详情', exact: true }).first().click();
+  await timedPage.getByRole('heading', { name: '应用预览与来源' }).waitFor();
+  const requestsBeforeIdle = report.requests.length;
+  await timedPage.clock.fastForward(31 * 60 * 1000);
+  await timedPage.getByRole('heading', { name: '管理员登录' }).waitFor();
+  assert.equal(await timedPage.locator('.publication-table, .summary-grid, .detail-overview').count(), 0);
+  assert.equal(report.requests.length, requestsBeforeIdle, 'idle timeout clears private content without waiting for another request');
+  report.checks.push('idle session TTL automatically clears list, counts and complete detail without further requests');
+  await timedPage.close();
   assert.deepEqual(report.errors, []); assert.deepEqual(report.unexpectedRequests, []);
   assert.equal(report.requests.some((request: any) => !['GET', 'POST', 'DELETE'].includes(request.method)), false);
   assert.equal(report.requests.filter((request: any) => request.method !== 'GET').some((request: any) => request.path !== '/api/preview-admin/session'), false);

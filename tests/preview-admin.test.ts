@@ -14,6 +14,7 @@ const headers = (h: any, cookie?: string) => ({ host: new URL(h.origin).host, or
 async function login(h: any) {
   const response = await h.app.inject({ method: 'POST', url: `${BASE}/session`, headers: headers(h), payload: { password: PASSWORD } });
   assert.equal(response.statusCode, 200);
+  assert.equal(response.json().expiresInMs, 30 * 60 * 1000);
   return cookieFrom(response);
 }
 async function snapshot(h: any) {
@@ -71,6 +72,8 @@ test('admin sessions are HttpOnly, expire, rotate and revoke on logout without g
   assert.match(setCookie, /Path=\/api\/preview-admin/); assert.match(setCookie, /Max-Age=1800/);
   assert.ok(!response.body.includes(PASSWORD));
   const first = cookieFrom(response);
+  const checked = await h.app.inject({ url: `${BASE}/session`, headers: headers(h, first) });
+  assert.ok(checked.json().expiresInMs > 0 && checked.json().expiresInMs <= response.json().expiresInMs);
   const secondResponse = await h.app.inject({ method: 'POST', url: `${BASE}/session`, headers: headers(h, first), payload: { password: PASSWORD } });
   const second = cookieFrom(secondResponse); assert.notEqual(first, second);
   assert.equal((await h.app.inject({ url: `${BASE}/session`, headers: headers(h, first) })).statusCode, 401);

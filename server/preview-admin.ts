@@ -78,7 +78,7 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
   // Use the same validated identity for the plugin's request limit and login failures.
   // Route stores also keep public traffic on a shared proxy from locking out admins.
   const routeConfig = { rateLimit: { max: 120, timeWindow: '1 minute', keyGenerator: (request: FastifyRequest) => `preview-admin:${clientIp(request)}` } };
-  app.get('/api/preview-admin/session', { config: routeConfig, preHandler: authorize }, async () => ({ authenticated: true }));
+  app.get('/api/preview-admin/session', { config: routeConfig, preHandler: authorize }, async request => ({ authenticated: true, expiresInMs: Math.max(0, sessions.get(sessionKey(request)!)! - Date.now()) }));
   app.post('/api/preview-admin/session', { config: routeConfig }, async (request, reply) => {
     enabled(); requireOrigin(request); prune();
     const sourceIp = clientIp(request);
@@ -100,7 +100,7 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
     while (sessions.size >= 128) sessions.delete(sessions.keys().next().value!);
     const token = randomBytes(32).toString('base64url');
     sessions.set(hash(token).toString('hex'), Date.now() + SESSION_MS);
-    return reply.header('Set-Cookie', cookie(token, SESSION_MS / 1000)).send({ authenticated: true });
+    return reply.header('Set-Cookie', cookie(token, SESSION_MS / 1000)).send({ authenticated: true, expiresInMs: SESSION_MS });
   });
   app.delete('/api/preview-admin/session', { config: routeConfig, preHandler: authorize }, async (request, reply) => {
     requireOrigin(request);

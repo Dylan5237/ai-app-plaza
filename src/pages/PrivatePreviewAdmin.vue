@@ -43,6 +43,24 @@ let listSequence = 0
 let detailSequence = 0
 let loginSequence = 0
 let logoutSequence = 0
+let sessionExpiryTimer
+
+function cancelSessionExpiry() {
+  window.clearTimeout(sessionExpiryTimer)
+  sessionExpiryTimer = undefined
+}
+
+function armSessionExpiry(result, requestStartedAt) {
+  cancelSessionExpiry()
+  const duration = Number(result?.expiresInMs)
+  const remaining = Math.min(duration, 30 * 60 * 1000) - Math.max(0, performance.now() - requestStartedAt)
+  if (!Number.isFinite(remaining) || remaining <= 0) {
+    handleExpiredSession()
+    return false
+  }
+  sessionExpiryTimer = window.setTimeout(() => handleExpiredSession(), remaining)
+  return true
+}
 
 function requestError(error, action) {
   if (error?.status === 403) return '当前管理会话无权执行此操作，请重新登录后再访问。'
@@ -69,6 +87,9 @@ function clearPrivateState() {
 }
 
 function handleExpiredSession(message = '管理员会话已失效，请重新登录。') {
+  cancelSessionExpiry()
+  sessionSequence += 1
+  sessionLoading.value = false
   clearPrivateState()
   authenticated.value = false
   sessionState.value = 'ready'
@@ -77,6 +98,10 @@ function handleExpiredSession(message = '管理员会话已失效，请重新登
 
 async function checkSession() {
   const sequence = ++sessionSequence
+  const requestStartedAt = performance.now()
+  cancelSessionExpiry()
+  clearPrivateState()
+  authenticated.value = false
   sessionLoading.value = true
   sessionState.value = 'loading'
   sessionError.value = ''
@@ -84,7 +109,7 @@ async function checkSession() {
     const result = await apiRequest('/api/preview-admin/session')
     if (sequence !== sessionSequence) return
     sessionState.value = 'ready'
-    authenticated.value = result?.authenticated === true
+    authenticated.value = result?.authenticated === true && armSessionExpiry(result, requestStartedAt)
     if (authenticated.value) void loadList(1)
   } catch (error) {
     if (sequence !== sessionSequence) return
@@ -107,6 +132,9 @@ async function checkSession() {
 async function submitLogin() {
   if (loginLoading.value || !password.value) return
   const sequence = ++loginSequence
+  const requestStartedAt = performance.now()
+  sessionSequence += 1
+  cancelSessionExpiry()
   loginLoading.value = true
   loginError.value = ''
   const requestBody = { password: password.value }
@@ -118,6 +146,7 @@ async function submitLogin() {
       loginError.value = '登录未完成，请检查管理员口令后重试。'
       return
     }
+    if (!armSessionExpiry(result, requestStartedAt)) return
     authenticated.value = true
     sessionState.value = 'ready'
     sessionError.value = ''
@@ -233,6 +262,7 @@ async function logout() {
   try {
     await apiRequest('/api/preview-admin/session', { method: 'DELETE' })
     if (sequence !== logoutSequence) return
+    cancelSessionExpiry()
     clearPrivateState()
     authenticated.value = false
     sessionState.value = 'ready'
@@ -318,13 +348,26 @@ function updateDrawerSize() {
   drawerSize.value = window.innerWidth <= 700 ? '100%' : '76%'
 }
 
+function recheckOnReturn() {
+  if (authenticated.value && document.visibilityState === 'visible' && !sessionLoading.value && !logoutLoading.value) void checkSession()
+}
+
 onMounted(() => {
   window.addEventListener('resize', updateDrawerSize)
+  window.addEventListener('focus', recheckOnReturn)
+  document.addEventListener('visibilitychange', recheckOnReturn)
   void checkSession()
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateDrawerSize)
+  window.removeEventListener('focus', recheckOnReturn)
+  document.removeEventListener('visibilitychange', recheckOnReturn)
+  cancelSessionExpiry()
+  sessionSequence += 1
+  loginSequence += 1
+  logoutSequence += 1
+  clearPrivateState()
 })
 </script>
 
