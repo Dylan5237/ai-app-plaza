@@ -64,6 +64,8 @@ const publication = ref(null)
 const publicationLoading = ref(false)
 const publicationBusy = ref(false)
 const publicationError = ref('')
+let brandClickCount = 0
+let brandClickTimer = 0
 
 const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const selectedAppEntries = computed(() => {
@@ -131,6 +133,21 @@ function safeHttpUrl(value) {
   } catch {
     return ''
   }
+}
+
+function handleBrandClick() {
+  if (brandClickTimer) window.clearTimeout(brandClickTimer)
+  brandClickCount += 1
+  if (brandClickCount >= 3) {
+    brandClickCount = 0
+    brandClickTimer = 0
+    window.location.assign('/private-previews')
+    return
+  }
+  brandClickTimer = window.setTimeout(() => {
+    brandClickCount = 0
+    brandClickTimer = 0
+  }, 1500)
 }
 
 async function loadCatalog({ preserveNotice = false } = {}) {
@@ -523,6 +540,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', scheduleCatalogLayout)
   layoutObserver?.disconnect()
   cancelAnimationFrame(layoutFrame)
+  if (brandClickTimer) window.clearTimeout(brandClickTimer)
 })
 </script>
 
@@ -638,9 +656,9 @@ onUnmounted(() => {
     <main ref="directoryMain" class="directory-main">
       <header class="directory-header">
         <div class="brand-block">
-          <div class="brand-mark" aria-hidden="true">
+          <button class="brand-mark" type="button" aria-label="AI应用广场" @click="handleBrandClick">
             <img :src="plazaMark" alt="" />
-          </div>
+          </button>
           <div>
             <h1>AI应用广场</h1>
             <p>发现适合当前任务的 AI 应用</p>
@@ -937,7 +955,8 @@ onUnmounted(() => {
 .catalog-results { flex: 1 0 auto; }
 .directory-header { display: flex; align-items: center; justify-content: space-between; gap: 22px; }
 .brand-block { display: flex; align-items: center; gap: 12px; }
-.brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; }
+.brand-mark { display: grid; width: 42px; height: 42px; padding: 0; place-items: center; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
+.brand-mark:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
 .brand-mark img { display: block; width: 100%; height: 100%; }
 .brand-block h1 { margin: 0; color: #1e2b3c; font-size: 21px; font-weight: 650; line-height: 1.35; }
 .brand-block p { margin: 3px 0 0; color: #8993a2; font-size: 12px; }
