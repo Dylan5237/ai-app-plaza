@@ -52,7 +52,12 @@ export function createPreviewAdministration(db: Database) {
         params.push(`%${options.query.trim().replace(/[\\%_]/g, '\\$&')}%`);
         where += ` AND (COALESCE(preview_jsonb->'manifest'->>'name', '') ILIKE $1
           OR COALESCE(submission->>'appKey', '') ILIKE $1
-          OR COALESCE((preview_jsonb->'manifest'->'maintainers')::text, '') ILIKE $1)`;
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(preview_jsonb->'manifest'->'maintainers') = 'array'
+              THEN preview_jsonb->'manifest'->'maintainers' ELSE '[]'::jsonb END
+          ) AS maintainer(value) WHERE
+            (CASE WHEN jsonb_typeof(value) = 'string' THEN value #>> '{}' ELSE '' END) ILIKE $1
+            OR COALESCE(value->>'name', '') ILIKE $1 OR COALESCE(value->>'nameEn', '') ILIKE $1))`;
       }
       const stats = (await db.query<any>(`SELECT count(*) AS all,
         count(*) FILTER (WHERE expires_at > now() AND status = 'preview_ready') AS preview_ready,

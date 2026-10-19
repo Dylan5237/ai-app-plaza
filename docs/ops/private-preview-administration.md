@@ -10,6 +10,8 @@
 
 连续点击广场 Logo 三次（相邻两击间隔不超过1.5秒），或访问 `/private-previews`。管理员在页面输入口令；通过后建立30分钟的独立管理会话，Cookie 为 HttpOnly、SameSite=Strict，HTTPS 时带 Secure，且限定 `/api/preview-admin`。页面不把口令写入浏览器持久存储，提交后清空输入。退出、会话过期、服务重启或同一浏览器重新登录都会使旧会话失效。连续5次口令错误后，该来源5分钟内不能继续登录。
 
+非本地管理员部署还必须配置 `PLAZA_PREVIEW_ADMIN_PROXY_IP` 为 HTTPS 反向代理的单一数值IP，并由代理用 `X-Real-IP` **覆盖**客户端输入（如 Nginx `proxy_set_header X-Real-IP $remote_addr`）。管理 API 只接受来自该代理连接、带单一有效IP的请求；缺失或直接伪造请求均拒绝。按该真实来源分别限频，避免一名访客的错误口令锁住所有管理员。后端必须绑定隔离地址或由防火墙限制直连；代理保持与 `PUBLIC_ORIGIN` 一致的 Host。既有公共/作者 API 继续 `trustProxy:false`，不全局信任转发头。本地回环验证不要求代理。
+
 ## 能看到什么
 
 列表覆盖 `checking`、`preview_ready`、`failed` 且 `confirmed_at IS NULL` 的发布，包含所有作者；已收录、已取消及已经确认的记录不进入列表。已过期单独显示，不能因能查看历史快照而认为旧链接重新有效。未完成来源核验的记录可能没有完整预览，界面需展示真实进度或错误。

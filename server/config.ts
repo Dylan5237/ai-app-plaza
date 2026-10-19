@@ -8,7 +8,7 @@ export interface Config {
   secret: string; databaseUrl?: string; dataDir: string; local: boolean;
   audience: string; staticDir: string; rateLimit: boolean;
   managedPublishing?: { groupId: string; groupPath: string; token: string };
-  previewAdmin?: { password: string };
+  previewAdmin?: { password: string; trustedProxyIp?: string };
 }
 
 function origin(value: string, name: string) {
@@ -81,7 +81,12 @@ export async function loadConfig(env = process.env): Promise<Config> {
       throw new Error('PLAZA_PREVIEW_ADMIN_PASSWORD 需为至少32字符且不超过512字节的独立管理员口令');
     }
     if (adminPassword === secret || adminPassword === managedPublishing?.token) throw new Error('管理员口令必须独立于发布或GitLab凭据');
-    previewAdmin = { password: adminPassword };
+    const trustedProxyIp = env.PLAZA_PREVIEW_ADMIN_PROXY_IP;
+    if (trustedProxyIp && (!isIP(trustedProxyIp) || trustedProxyIp.includes('%'))) throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
+    if (!(local && host === '127.0.0.1' && publicOriginUrl.hostname === '127.0.0.1') && !trustedProxyIp) {
+      throw new Error('非本地私有预览管理需配置 PLAZA_PREVIEW_ADMIN_PROXY_IP，并由可信 HTTPS 代理覆盖 X-Real-IP');
+    }
+    previewAdmin = { password: adminPassword, ...(trustedProxyIp ? { trustedProxyIp } : {}) };
   }
   return { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
     dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true, ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}) };

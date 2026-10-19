@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { request } from 'node:http';
 import { loadConfig } from '../server/config.js';
 import { startHarness } from './helpers/harness.js';
 import { SHA, TOKEN, DEFAULT_TAG } from './helpers/gitlab-fixture.js';
@@ -22,12 +23,15 @@ async function snapshot(h: any) {
 }
 
 test('preview administration is opt-in and requires an independent strong configured password', async () => {
-  const base = { PUBLIC_ORIGIN: 'https://plaza.example.invalid', GITLAB_URL: 'https://gitlab.example.invalid', DATABASE_URL: 'postgresql://unused', PLAZA_SECRET: 'fixture-only-publication-secret-at-least-32' };
+  const base = { PUBLIC_ORIGIN: 'https://plaza.example.invalid', GITLAB_URL: 'https://gitlab.example.invalid', DATABASE_URL: 'postgresql://unused', PLAZA_SECRET: 'fixture-only-publication-secret-at-least-32', PLAZA_PREVIEW_ADMIN_PROXY_IP: '127.0.0.1' };
   assert.equal((await loadConfig(base)).previewAdmin, undefined);
   for (const password of ['short', '中'.repeat(16), 'x'.repeat(513), 'x'.repeat(32) + '\n', base.PLAZA_SECRET]) {
     await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: password }), /管理员口令|PLAZA_PREVIEW_ADMIN_PASSWORD/);
   }
   assert.equal((await loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD })).previewAdmin?.password, PASSWORD);
+  for (const proxy of ['', '127.0.0.1, 192.0.2.1', 'localhost', '0.0.0.0/0', 'fe80::1%eth0']) {
+    await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD, PLAZA_PREVIEW_ADMIN_PROXY_IP: proxy }), /PLAZA_PREVIEW_ADMIN_PROXY_IP/);
+  }
   await assert.rejects(loadConfig({ ...base, PUBLIC_ORIGIN: 'http://192.168.2.145:16090', ALLOW_INSECURE_PORTAL: '1', PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD }), /需要 HTTPS/);
   assert.equal((await loadConfig({ PLAZA_LOCAL: '1', HOST: '127.0.0.1', PUBLIC_ORIGIN: 'http://127.0.0.1:4173', GITLAB_URL: base.GITLAB_URL, PLAZA_SECRET: base.PLAZA_SECRET, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD })).previewAdmin?.password, PASSWORD);
 });
@@ -94,10 +98,32 @@ test('repeated incorrect admin passwords are rate limited and HTTPS sessions are
   assert.equal(blocked.statusCode, 429); assert.ok(Number(blocked.headers['retry-after']) > 0);
   const { createApp } = await import('../server/app.js');
   await assert.rejects(createApp({ ...h.config, local: false, host: '0.0.0.0', publicOrigin: 'http://192.168.2.145:16090' }, h.db), /需要 HTTPS/);
-  const secure = await createApp({ ...h.config, publicOrigin: 'https://plaza.example.invalid' }, h.db);
+  await assert.rejects(createApp({ ...h.config, publicOrigin: 'https://plaza.example.invalid' }, h.db), /PLAZA_PREVIEW_ADMIN_PROXY_IP/);
+  const secure = await createApp({ ...h.config, publicOrigin: 'https://plaza.example.invalid', previewAdmin: { password: PASSWORD, trustedProxyIp: '127.0.0.1' } }, h.db);
   t.after(() => secure.app.close());
-  const response = await secure.app.inject({ method: 'POST', url: `${BASE}/session`, headers: { host: 'plaza.example.invalid', origin: 'https://plaza.example.invalid' }, payload: { password: PASSWORD } });
+  const response = await secure.app.inject({ method: 'POST', url: `${BASE}/session`, headers: { host: 'plaza.example.invalid', origin: 'https://plaza.example.invalid', 'x-real-ip': '192.0.2.20' }, payload: { password: PASSWORD } });
   assert.equal(response.statusCode, 200); assert.match(String(response.headers['set-cookie']), /; Secure/);
+});
+
+test('only the configured proxy supplies client identity and one client cannot lock out another', async t => {
+  const h = await startHarness(1, 'memory://', { previewAdmin: { password: PASSWORD, trustedProxyIp: '127.0.0.1' } }); t.after(() => h.close());
+  const post = (ip: string, password: string, remoteAddress = '127.0.0.1') => h.app.inject({ method: 'POST', url: `${BASE}/session`, remoteAddress,
+    headers: { ...headers(h), 'x-real-ip': ip }, payload: { password } });
+  for (let attempt = 0; attempt < 5; attempt++) assert.equal((await post('192.0.2.10', 'wrong')).statusCode, 401);
+  assert.equal((await post('192.0.2.10', PASSWORD)).statusCode, 429);
+  const admin = await post('192.0.2.20', PASSWORD); assert.equal(admin.statusCode, 200);
+  for (const ip of ['not-an-ip', '192.0.2.20, 192.0.2.21', '', 'fe80::1%eth0']) assert.equal((await post(ip, PASSWORD)).statusCode, 403);
+  assert.equal((await post('192.0.2.21', PASSWORD, '::ffff:127.0.0.1')).statusCode, 200, 'mapped loopback is the same proxy');
+  assert.equal((await post('192.0.2.20', PASSWORD, '192.0.2.99')).statusCode, 403, 'direct callers cannot forge a trusted header');
+  const cookie = cookieFrom(admin);
+  assert.equal((await h.app.inject({ url: `${BASE}/publications`, headers: { ...headers(h, cookie), 'x-real-ip': '192.0.2.20' }, remoteAddress: '192.0.2.99' })).statusCode, 403);
+  assert.equal((await h.app.inject({ url: `${BASE}/session`, headers: headers(h, cookie) })).statusCode, 403, 'proxy must supply the client identity');
+  assert.equal((await h.app.inject({ url: `${BASE}/session`, headers: { ...headers(h, cookie), 'x-real-ip': '192.0.2.20' } })).statusCode, 200);
+  const duplicateStatus = await new Promise<number | undefined>((resolve, reject) => {
+    const req = request(h.origin + BASE + '/session', { headers: { ...headers(h, cookie), 'x-real-ip': ['192.0.2.20', '192.0.2.20'] } }, response => { response.resume(); resolve(response.statusCode); });
+    req.on('error', reject); req.end();
+  });
+  assert.equal(duplicateStatus, 403, 'duplicate identity headers are rejected on real HTTP');
 });
 
 test('all-author enumeration filters confirmed records, paginates, hides credentials and performs zero business writes', async t => {
@@ -106,7 +132,7 @@ test('all-author enumeration filters confirmed records, paginates, hides credent
   assert.equal(publication.status, 'preview_ready');
   async function seed(status: string, owner: string, expired = false, confirmed = false, withPreview = true) {
     const id = randomUUID();
-    const preview = withPreview ? { ...publication.preview, ticket: 'must-not-forward-stored-ticket', digest: 'must-not-forward-digest', manifest: { ...publication.preview!.manifest, name: `私有-${owner}`, maintainers: [{ name: owner, nameEn: 'Fixture' }] } } : null;
+    const preview = withPreview ? { ...publication.preview, ticket: 'must-not-forward-stored-ticket', digest: 'must-not-forward-digest', manifest: { ...publication.preview!.manifest, name: `私有-${owner}`, maintainers: [{ name: owner, nameEn: 'Fixture' }, 'Literal String Author'] } } : null;
     await h.db.query(`INSERT INTO publications (id, actor_id, idempotency_digest, request_hash, submission, status, candidate_app_id,
       preview_jsonb, next_action, expires_at, created_at, updated_at, confirmed_at, error_code, error_message, token_ciphertext)
       VALUES ($1, $2, $3, 'fixture', $4::jsonb, $5, $6, $7::jsonb, 'confirm', $8, now(), now(), $9, $10, $11, 'must-not-forward-encrypted-credential')`,
@@ -133,6 +159,9 @@ test('all-author enumeration filters confirmed records, paginates, hides credent
   }
   const search = await get('/publications?query=' + encodeURIComponent('另一作者'));
   assert.equal(search.json().total, 1); assert.equal(search.json().items[0].id, other);
+  for (const property of ['name', 'nameEn']) assert.equal((await get('/publications?query=' + property)).json().total, 0, 'maintainer JSON keys must not be searched');
+  assert.ok((await get('/publications?query=Fixture')).json().total > 0, 'English maintainer values remain searchable');
+  assert.ok((await get('/publications?query=String%20Author')).json().total > 0, 'string maintainers remain searchable');
   assert.equal((await get('/publications?query=' + encodeURIComponent('%'))).json().total, 0, 'search wildcard must be literal');
   for (const id of excluded) assert.equal((await get(`/publications/${id}`)).statusCode, 404);
   const detail = await get(`/publications/${other}`); assert.equal(detail.statusCode, 200);

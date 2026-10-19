@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
@@ -13,9 +14,29 @@ const hash = (value: string) => createHash('sha256').update(value).digest();
 
 export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: Database) {
   const adminOrigin = new URL(config.publicOrigin);
-  if (config.previewAdmin && adminOrigin.protocol !== 'https:' && !(config.local && config.host === '127.0.0.1' && adminOrigin.hostname === '127.0.0.1')) {
+  const localLoopback = config.local && config.host === '127.0.0.1' && adminOrigin.hostname === '127.0.0.1';
+  if (config.previewAdmin && adminOrigin.protocol !== 'https:' && !localLoopback) {
     throw new Error('私有预览管理员功能需要 HTTPS；仅本地回环验证允许 HTTP');
   }
+  const proxyIp = config.previewAdmin?.trustedProxyIp;
+  if (config.previewAdmin && ((!localLoopback && !proxyIp) || (proxyIp && (!isIP(proxyIp) || proxyIp.includes('%'))))) {
+    throw new Error('非本地私有预览管理需配置有效的 PLAZA_PREVIEW_ADMIN_PROXY_IP');
+  }
+  const normalizeIp = (value: string) => {
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(value);
+    if (mapped && isIP(mapped[1]) === 4) return mapped[1];
+    return isIP(value) === 6 ? new URL(`http://[${value}]/`).hostname : value;
+  };
+  const clientIp = (request: FastifyRequest) => {
+    if (!proxyIp) return request.ip;
+    const remote = request.raw.socket.remoteAddress;
+    const forwarded = request.headers['x-real-ip'];
+    const identityHeaders = request.raw.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'x-real-ip').length;
+    if (!remote || normalizeIp(remote) !== normalizeIp(proxyIp) || identityHeaders !== 1 || typeof forwarded !== 'string' || !isIP(forwarded) || forwarded.includes('%')) {
+      throw new DomainError(403, 'ADMIN_PROXY_REQUIRED', '管理员请求必须经过已配置的 HTTPS 代理');
+    }
+    return normalizeIp(forwarded);
+  };
   const reader = createPreviewAdministration(db);
   const sessions = new Map<string, number>();
   const failures = new Map<string, { count: number; until: number }>();
@@ -50,13 +71,15 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
   app.addHook('onRequest', async (request, reply) => {
     if (request.url.split('?')[0].startsWith('/api/preview-admin')) {
       reply.header('Cache-Control', 'no-store').header('Cross-Origin-Resource-Policy', 'same-origin').header('X-Robots-Tag', 'noindex, nofollow');
+      if (config.previewAdmin) clientIp(request);
     }
   });
   app.addHook('onClose', async () => { sessions.clear(); failures.clear(); });
   app.get('/api/preview-admin/session', { preHandler: authorize }, async () => ({ authenticated: true }));
   app.post('/api/preview-admin/session', async (request, reply) => {
     enabled(); requireOrigin(request); prune();
-    const prior = failures.get(request.ip);
+    const sourceIp = clientIp(request);
+    const prior = failures.get(sourceIp);
     if (prior && prior.count >= 5) {
       reply.header('Retry-After', String(Math.ceil((prior.until - Date.now()) / 1000)));
       throw new DomainError(429, 'ADMIN_LOGIN_LIMITED', '口令尝试次数过多，请稍后再试');
@@ -64,10 +87,10 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
     const { password } = z.object({ password: z.string().min(1).max(512) }).strict().parse(request.body);
     if (!timingSafeEqual(hash(password), passwordHash!)) {
       if (!prior && failures.size >= 256) failures.delete(failures.keys().next().value!);
-      failures.set(request.ip, { count: (prior?.count || 0) + 1, until: prior?.until || Date.now() + ATTEMPT_MS });
+      failures.set(sourceIp, { count: (prior?.count || 0) + 1, until: prior?.until || Date.now() + ATTEMPT_MS });
       throw new DomainError(401, 'ADMIN_AUTH_REQUIRED', '管理员口令不正确');
     }
-    failures.delete(request.ip);
+    failures.delete(sourceIp);
     // Re-authentication revokes the browser's prior session instead of accumulating it.
     const old = sessionKey(request);
     if (old) sessions.delete(old);
