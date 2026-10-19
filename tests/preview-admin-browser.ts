@@ -126,6 +126,32 @@ try {
   assert.equal(await timedPage.locator('.publication-table, .summary-grid, .detail-overview').count(), 0);
   assert.equal(report.requests.length, requestsBeforeIdle, 'idle timeout clears private content without waiting for another request');
   report.checks.push('idle session TTL automatically clears list, counts and complete detail without further requests');
+  await timedPage.getByLabel('管理员口令', { exact: true }).fill(ADMIN_FIXTURE_PASSWORD);
+  await timedPage.getByRole('button', { name: '安全登录', exact: true }).click();
+  await timedPage.getByText('共 25 项', { exact: true }).waitFor();
+  let releaseLogout!: () => void;
+  let logoutStarted!: () => void;
+  const logoutGate = new Promise<void>(resolve => { releaseLogout = resolve; });
+  const logoutSeen = new Promise<void>(resolve => { logoutStarted = resolve; });
+  await timedPage.route('**/api/preview-admin/session', async (route: Route) => {
+    if (route.request().method() === 'DELETE') { logoutStarted(); await logoutGate; }
+    await route.continue();
+  });
+  const pendingLogout = timedPage.waitForResponse((response: any) => response.request().method() === 'DELETE' && new URL(response.url()).pathname === '/api/preview-admin/session');
+  try {
+    await timedPage.getByRole('button', { name: '退出管理' }).click(); await logoutSeen;
+    await timedPage.clock.fastForward(31 * 60 * 1000);
+    await timedPage.getByRole('heading', { name: '管理员登录' }).waitFor();
+    assert.equal(await timedPage.getByLabel('管理员口令', { exact: true }).isEnabled(), false, 'pending logout must prevent a new login after TTL');
+    assert.equal(await timedPage.getByRole('button', { name: '安全登录', exact: true }).isEnabled(), false);
+  } finally { releaseLogout(); }
+  await (await pendingLogout).finished();
+  await timedPage.getByLabel('管理员口令', { exact: true }).fill(ADMIN_FIXTURE_PASSWORD);
+  await timedPage.getByRole('button', { name: '安全登录', exact: true }).click();
+  await timedPage.getByText('共 25 项', { exact: true }).waitFor();
+  assert.equal((await context.request.get(h.origin + '/api/preview-admin/session')).status(), 200);
+  await timedPage.unroute('**/api/preview-admin/session');
+  report.checks.push('expiry during a delayed logout blocks re-login until the old response settles, then preserves the new session');
   await timedPage.close();
   assert.deepEqual(report.errors, []); assert.deepEqual(report.unexpectedRequests, []);
   assert.equal(report.requests.some((request: any) => !['GET', 'POST', 'DELETE'].includes(request.method)), false);

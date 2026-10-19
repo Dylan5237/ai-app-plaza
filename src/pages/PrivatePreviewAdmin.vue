@@ -130,7 +130,7 @@ async function checkSession() {
 }
 
 async function submitLogin() {
-  if (loginLoading.value || !password.value) return
+  if (loginLoading.value || logoutLoading.value || !password.value) return
   const sequence = ++loginSequence
   const requestStartedAt = performance.now()
   sessionSequence += 1
@@ -440,11 +440,11 @@ onUnmounted(() => {
               autocomplete="current-password"
               placeholder="请输入管理员口令"
               show-password
-              :disabled="loginLoading"
+              :disabled="loginLoading || logoutLoading"
               @keyup.enter="submitLogin"
             />
             <p v-if="loginError" class="inline-error" role="alert">{{ loginError }}</p>
-            <el-button class="login-submit" type="primary" native-type="submit" :loading="loginLoading" :disabled="loginLoading || !password">
+            <el-button class="login-submit" type="primary" native-type="submit" :loading="loginLoading" :disabled="loginLoading || logoutLoading || !password">
               {{ loginLoading ? '正在验证…' : '安全登录' }}
             </el-button>
           </form>
