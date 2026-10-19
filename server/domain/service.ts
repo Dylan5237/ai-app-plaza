@@ -81,7 +81,7 @@ export interface PlazaService {
   managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   retry(id: string, ticket: string): Promise<PublicationView>;
-  list(options?: { query?: string; tags?: string[]; page?: number }): Promise<{ items: AppView[]; total: number; page: number; pageSize: 8; tags: string[] }>;
+  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[] }>;
   app(id: string): Promise<AppView>;
   instructions(id: string, entryId: string): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string }>;
 }
@@ -715,8 +715,12 @@ export function createService(config: ServiceConfig): PlazaService {
     async list(options = {}) {
       await cleanupExpiredTokens();
       const page = options.page ?? 1;
+      const pageSize = options.pageSize ?? PAGE_SIZE;
       if (!Number.isInteger(page) || page < 1 || page > 100_000) {
         throw new DomainError(400, "VALIDATION_FAILED", "page 必须是有效的正整数。");
+      }
+      if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+        throw new DomainError(400, "VALIDATION_FAILED", "pageSize 必须是 1 到 100 之间的整数。");
       }
       const tokens = searchTokens(options.query ?? "");
       // All catalog filters use the same snapshot-scoped classification as the displayed tags.
@@ -751,7 +755,7 @@ export function createService(config: ServiceConfig): PlazaService {
       );
       const total = Number(totalResult.rows[0]?.total ?? 0);
       const tags = await catalogTags(config.db, config.audience);
-      const itemParams = [...params, PAGE_SIZE, (page - 1) * PAGE_SIZE];
+      const itemParams = [...params, pageSize, (page - 1) * pageSize];
       const limitParam = `$${itemParams.length - 1}`;
       const offsetParam = `$${itemParams.length}`;
       const itemResult = await config.db.query<AppRecord>(
@@ -762,7 +766,7 @@ export function createService(config: ServiceConfig): PlazaService {
         items: itemResult.rows.map((row) => appView(row, false)),
         total,
         page,
-        pageSize: PAGE_SIZE,
+        pageSize,
         tags,
       };
     },

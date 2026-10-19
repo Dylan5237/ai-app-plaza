@@ -63,7 +63,7 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 | 查询私有预览/结果 | `GET /api/publications/:id`，Bearer 本次凭证 |
 | 作者确认收录 | `POST /api/publications/:id/confirm`，本次凭证及预览 revision/digest |
 | 恢复核验/已确认收录 | `POST /api/publications/:id/retry`，本次凭证 |
-| 发现与作者标签 | `GET /api/apps?query=...&tags=...&page=1`，多标签为交集，每页 8 项 |
+| 发现与作者标签 | `GET /api/apps?query=...&tags=...&page=1&pageSize=12`，多标签为交集；`pageSize` 可选，1–100，默认 8；网页按可用高度选择完整卡片行数 |
 | 已有能力标签 | `GET /api/tags`，返回已有名称及单应用最多 3 个的上限；发布规范也返回 `tagPolicy` |
 | 详情与接入说明 | `GET /api/apps/:id`、`GET /api/apps/:id/instructions/:entryId` |
 
