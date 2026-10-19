@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import plazaMark from '../assets/plaza-mark.svg'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
@@ -15,6 +15,12 @@ const authorTags = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(8)
+const directoryMain = ref(null)
+const catalogHeading = ref(null)
+const paginationRow = ref(null)
+let layoutObserver
+let layoutFrame = 0
+let catalogReady = false
 const catalogLoading = ref(false)
 const catalogError = ref('')
 const catalogNotice = ref('')
@@ -127,16 +133,17 @@ function safeHttpUrl(value) {
   }
 }
 
-async function loadCatalog() {
+async function loadCatalog({ preserveNotice = false } = {}) {
   const requestSequence = ++catalogRequestSequence
   catalogLoading.value = true
   catalogError.value = ''
-  catalogNotice.value = ''
+  if (!preserveNotice) catalogNotice.value = ''
   const params = new URLSearchParams()
   const trimmedQuery = query.value.trim()
   if (trimmedQuery) params.set('query', trimmedQuery)
   for (const tag of selectedTags.value) params.append('tags', tag)
   params.set('page', String(page.value))
+  params.set('pageSize', String(pageSize.value))
 
   try {
     const result = await apiRequest(`/api/apps?${params.toString()}`)
@@ -145,7 +152,6 @@ async function loadCatalog() {
     authorTags.value = Array.isArray(result.tags) ? result.tags : []
     total.value = Number.isFinite(Number(result.total)) ? Number(result.total) : 0
     page.value = Number.isFinite(Number(result.page)) && Number(result.page) > 0 ? Number(result.page) : page.value
-    pageSize.value = Number.isFinite(Number(result.pageSize)) && Number(result.pageSize) > 0 ? Number(result.pageSize) : 8
   } catch (error) {
     if (requestSequence !== catalogRequestSequence) return
     apps.value = []
@@ -155,6 +161,45 @@ async function loadCatalog() {
     if (requestSequence === catalogRequestSequence) catalogLoading.value = false
   }
 }
+
+function updateCatalogPageSize(reload = true) {
+  const main = directoryMain.value
+  const heading = catalogHeading.value
+  const footer = paginationRow.value
+  if (!main || !heading || !footer) return
+  const style = getComputedStyle(main)
+  const columns = Number(style.getPropertyValue('--catalog-columns'))
+  const cardHeight = parseFloat(style.getPropertyValue('--catalog-card-height'))
+  const gap = parseFloat(style.getPropertyValue('--catalog-gap'))
+  const notice = main.querySelector('.catalog-notice')
+  const noticeHeight = notice ? notice.offsetHeight + parseFloat(getComputedStyle(notice).marginBottom) : 0
+  const availableHeight = main.clientHeight - (heading.getBoundingClientRect().bottom - main.getBoundingClientRect().top)
+    - parseFloat(getComputedStyle(heading).marginBottom) - parseFloat(style.paddingBottom) - footer.offsetHeight - noticeHeight
+  const rows = Math.max(1, Math.floor((availableHeight + gap) / (cardHeight + gap)))
+  const capacity = Math.min(rows, Math.floor(100 / columns)) * columns
+  if (capacity === pageSize.value) return
+  pageSize.value = capacity
+  page.value = 1
+  if (reload && catalogReady) loadCatalog({ preserveNotice: true })
+}
+
+function scheduleCatalogLayout() {
+  cancelAnimationFrame(layoutFrame)
+  layoutFrame = requestAnimationFrame(() => updateCatalogPageSize())
+}
+
+watch(directoryMain, (main) => {
+  layoutObserver?.disconnect()
+  if (!main) return
+  layoutObserver = new ResizeObserver(scheduleCatalogLayout)
+  layoutObserver.observe(main)
+  layoutObserver.observe(main.querySelector('.catalog-section'))
+  scheduleCatalogLayout()
+}, { flush: 'post' })
+watch(catalogNotice, async () => {
+  await nextTick()
+  scheduleCatalogLayout()
+})
 
 function searchCatalog() {
   page.value = 1
@@ -363,14 +408,17 @@ function preparePublicationRoute() {
   return true
 }
 
-function handleHashChange() {
+async function handleHashChange() {
   if (preparePublicationRoute()) return
   if (!publicationId.value) return
   publicationId.value = ''
   publication.value = null
   publicationError.value = ''
   publicationLoading.value = false
-  void loadCatalog()
+  await nextTick()
+  updateCatalogPageSize(false)
+  catalogReady = true
+  await loadCatalog()
 }
 
 async function loadPublication(id = publicationId.value) {
@@ -447,6 +495,9 @@ async function returnToCatalog() {
   query.value = ''
   selectedTags.value = []
   page.value = 1
+  await nextTick()
+  updateCatalogPageSize(false)
+  catalogReady = true
   await loadCatalog()
   if (appId) {
     catalogNotice.value = '目录已刷新，以下为已收录应用的最新详情。'
@@ -456,14 +507,23 @@ async function returnToCatalog() {
 
 onMounted(async () => {
   window.addEventListener('hashchange', handleHashChange)
+  window.addEventListener('resize', scheduleCatalogLayout)
   if (preparePublicationRoute()) return
 
   const appId = new URLSearchParams(window.location.search).get('app')
+  await nextTick()
+  updateCatalogPageSize(false)
+  catalogReady = true
   await loadCatalog()
   if (appId) await openApp(appId)
 })
 
-onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
+onUnmounted(() => {
+  window.removeEventListener('hashchange', handleHashChange)
+  window.removeEventListener('resize', scheduleCatalogLayout)
+  layoutObserver?.disconnect()
+  cancelAnimationFrame(layoutFrame)
+})
 </script>
 
 <template>
@@ -575,7 +635,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
   </div>
 
   <div v-else class="directory-shell">
-    <main class="directory-main">
+    <main ref="directoryMain" class="directory-main">
       <header class="directory-header">
         <div class="brand-block">
           <div class="brand-mark" aria-hidden="true">
@@ -620,7 +680,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
       </section>
 
       <section class="catalog-section" aria-labelledby="catalog-heading">
-        <div class="catalog-heading-row">
+        <div ref="catalogHeading" class="catalog-heading-row">
           <div>
             <h2 id="catalog-heading">应用目录</h2>
             <span class="catalog-total">{{ total }} 项应用</span>
@@ -669,17 +729,17 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
               </div>
             </article>
           </div>
-          <div v-if="apps.length" class="pagination-row" :class="{ 'pagination-empty': pages <= 1 }" data-testid="pagination">
-            <el-pagination
-              v-if="pages > 1"
-              :current-page="page"
-              :page-size="pageSize"
-              :total="total"
-              layout="prev, pager, next"
-              background
-              @current-change="changePage"
-            />
-          </div>
+        </div>
+        <div ref="paginationRow" class="pagination-row" data-testid="pagination">
+          <el-pagination
+            v-if="apps.length && pages > 1"
+            :current-page="page"
+            :page-size="pageSize"
+            :total="total"
+            layout="prev, pager, next"
+            background
+            @current-change="changePage"
+          />
         </div>
       </section>
     </main>
@@ -871,7 +931,10 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 :global(html), :global(body), :global(#app) { width: 100%; height: 100%; margin: 0; }
 :global(body) { background: #f4f6f9; color: #273449; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .directory-shell { width: 100%; height: 100%; overflow-y: auto; background: #f4f6f9; }
-.directory-main { width: min(1480px, calc(100% - 64px)); min-height: 100%; margin: 0 auto; padding: 18px 0; }
+.directory-main { --catalog-columns: 4; --catalog-card-height: 164px; --catalog-gap: 12px; display: flex; flex-direction: column; width: min(1480px, calc(100% - 64px)); height: 100%; margin: 0 auto; padding: 18px 0; }
+.directory-header, .search-section, .catalog-heading-row { flex-shrink: 0; }
+.catalog-section { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.catalog-results { flex: 1 0 auto; }
 .directory-header { display: flex; align-items: center; justify-content: space-between; gap: 22px; }
 .brand-block { display: flex; align-items: center; gap: 12px; }
 .brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; }
@@ -902,8 +965,8 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .catalog-total { color: #8a94a3; font-size: 12px; }
 .clear-filters { border: 0; background: transparent; color: #5273a6; font: inherit; font-size: 12px; cursor: pointer; }
 .clear-filters:hover { text-decoration: underline; }
-.app-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.app-card { display: flex; height: 164px; min-width: 0; flex-direction: column; padding: 12px 13px 10px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(25 43 67 / 2%); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.app-grid { display: grid; grid-template-columns: repeat(var(--catalog-columns), minmax(0, 1fr)); gap: var(--catalog-gap); }
+.app-card { display: flex; height: var(--catalog-card-height); min-width: 0; flex-direction: column; padding: 12px 13px 10px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(25 43 67 / 2%); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .app-card { cursor: pointer; }
 .app-card:hover { transform: translateY(-1px); border-color: #ccd6e4; box-shadow: 0 5px 15px rgb(25 43 67 / 5%); }
 .app-card-top { display: flex; height: 25px; min-height: 25px; align-items: flex-start; justify-content: space-between; gap: 10px; }
@@ -927,8 +990,7 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .catalog-state.is-error strong { color: #9c4545; }
 .empty-mark { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 50%; background: #f2f5f8; color: #8a96a6; font-size: 27px; }
 .catalog-notice { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #dce8dc; border-radius: 6px; background: #f8fcf7; color: #4d7250; font-size: 12px; }
-.pagination-row { display: flex; justify-content: center; padding: 12px 0 2px; }
-.pagination-row.pagination-empty { min-height: 1px; padding: 0; }
+.pagination-row { display: flex; flex: 0 0 44px; align-items: center; justify-content: center; margin-top: auto; }
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
 .detail-update-link { border: 0; background: none; color: #5d6d8a; font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }
 .detail-update-link:hover { color: #3d5bbb; text-decoration: underline; }
@@ -1005,17 +1067,16 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
 .publication-source-commit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 13px 0; color: #8a94a3; font-size: 11px; }
 .publication-source-commit code { color: #55667d; font-family: Consolas, monospace; overflow-wrap: anywhere; }
 @media (max-width: 1180px) {
-  .app-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .directory-main { --catalog-columns: 3; }
 }
 @media (max-width: 900px) {
-  .directory-main { width: min(100% - 36px, 760px); padding-top: 20px; }
-  .app-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .directory-main { --catalog-columns: 2; width: min(100% - 36px, 760px); padding-top: 20px; }
   .detail-layout { grid-template-columns: minmax(0, 1fr); height: 75vh; max-height: 75vh; }
   .detail-content-scroll { max-height: 47vh; padding-right: 3px; }
   .detail-actions { max-height: 25vh; }
 }
 @media (max-width: 620px) {
-  .directory-main { width: calc(100% - 28px); padding-top: 16px; }
+  .directory-main { --catalog-columns: 1; --catalog-card-height: 200px; --catalog-gap: 10px; width: calc(100% - 28px); padding-top: 16px; }
   .directory-header { align-items: flex-start; }
   .brand-mark { width: 36px; height: 36px; }
   .brand-block h1 { font-size: 18px; }
@@ -1024,25 +1085,22 @@ onUnmounted(() => window.removeEventListener('hashchange', handleHashChange))
   .search-section { margin: 20px 0 23px; padding: 14px; }
   .search-row { gap: 7px; }
   .search-submit { min-width: 62px; padding: 0 10px; }
-  .app-grid { grid-template-columns: 1fr; gap: 10px; }
-  .app-card { height: auto; min-height: 200px; }
+  .app-card { min-height: var(--catalog-card-height); }
   .publication-main { width: calc(100% - 24px); margin-top: 12px; }
   .publication-status-card, .publication-preview { padding: 17px 15px; }
   .publication-status-heading h1, .preview-section-heading h2 { font-size: 17px; }
 }
 @media (min-width: 901px) and (max-height: 760px) {
-  .directory-main { padding-top: 12px; padding-bottom: 12px; }
+  .directory-main { --catalog-card-height: 158px; --catalog-gap: 10px; padding-top: 12px; padding-bottom: 12px; }
   .search-section { margin: 14px 0 15px; padding: 10px 12px 8px; }
   .tag-filter-row { max-height: 48px; gap: 5px; margin-top: 8px; }
   .filter-chip { min-height: 24px; padding: 2px 8px; }
   .catalog-heading-row { margin-bottom: 8px; }
-  .app-grid { gap: 10px; }
-  .app-card { height: 158px; padding: 10px 12px 9px; }
+  .app-card { padding: 10px 12px 9px; }
   .app-card-top { height: 24px; min-height: 24px; }
   .app-summary { height: 39px; margin: 4px 0 6px; font-size: 12.5px; }
   .app-tags { height: 21px; min-height: 21px; }
   .app-card-footer { padding-top: 6px; }
   .app-dates { font-size: 9px; }
-  .pagination-row { padding-top: 9px; }
 }
 </style>

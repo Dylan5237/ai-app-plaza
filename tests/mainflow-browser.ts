@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { randomUUID } from 'node:crypto';
 import { startHarness } from './helpers/harness.js';
+import { seedTagCatalog } from './helpers/tag-catalog.js';
 import { DEFAULT_TAG, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 
 await mkdir('artifacts', { recursive: true });
@@ -213,7 +214,8 @@ try {
     }
     await page.goto(harness.origin);
     await page.getByTestId('app-card').first().waitFor();
-    assert.equal(await page.getByTestId('app-card').count(), 8);
+    const expectedCards = viewport.height === 900 ? 9 : 8;
+    await page.waitForFunction(count => document.querySelectorAll('[data-testid="app-card"]').length === count, expectedCards);
     const firstCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 1' });
     const legacyCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 2' });
     assert.equal(await firstCard.locator('.app-author').innerText(), '张明');
@@ -260,13 +262,23 @@ try {
     await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
 
     const boxes = await page.getByTestId('app-card').evaluateAll(cards => cards.map(card => { const r = card.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), width: r.width, height: r.height }; }));
-    assert.equal(new Set(boxes.map(box => box.y)).size, 2, 'eight cards must occupy two rows');
+    assert.equal(new Set(boxes.map(box => box.y)).size, Math.ceil(expectedCards / 4), 'show the third row when it fits');
     assert.equal(new Set(boxes.map(box => box.x)).size, 4, 'four cards per row');
     const overflow = await page.evaluate(() => ({ horizontal: document.documentElement.scrollWidth > innerWidth, vertical: document.documentElement.scrollHeight > innerHeight }));
     assert.equal(overflow.horizontal, false);
     assert.equal(overflow.vertical, false, 'catalog must fit desktop viewport');
     const catalogOverflow = await page.locator('.directory-shell').evaluate(el => ({ horizontal: el.scrollWidth > el.clientWidth, vertical: el.scrollHeight > el.clientHeight }));
     assert.deepEqual(catalogOverflow, { horizontal: false, vertical: false }, 'catalog scroll container must also fit desktop viewport');
+    const footer = await page.getByTestId('pagination').boundingBox();
+    assert.ok(footer && footer.y + footer.height >= viewport.height - 18, 'pagination stays at the bottom');
+    if (viewport.height === 720) {
+      await page.getByTestId('pagination').getByText('2', { exact: true }).click();
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 1);
+      assert.deepEqual(await page.getByTestId('pagination').boundingBox(), footer, 'last page must keep the same footer position');
+      await page.getByTestId('pagination').getByText('1', { exact: true }).click();
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 8);
+    }
+    await page.screenshot({ path: `artifacts/mainflow-catalog-${viewport.width}.png` });
     await page.getByRole('textbox', { name: '搜索应用名称、用途或能力' }).fill('Word');
     await page.getByTestId('search-button').click();
     await page.getByTestId('app-card').first().waitFor();
@@ -319,10 +331,84 @@ try {
     assert.equal(await web.getAttribute('href'), 'https://example.invalid/docpilot');
     assert.ok((await web.getAttribute('rel'))?.includes('noopener'));
     await page.screenshot({ path: `artifacts/mainflow-detail-${viewport.width}.png` });
-    report.views.push({ viewport, cards: boxes.length, columns: 4, rows: 2, overflow, publicationReload: viewport.width === 1440 });
+    report.views.push({ viewport, cards: boxes.length, columns: 4, rows: Math.ceil(expectedCards / 4), footer, overflow, publicationReload: viewport.width === 1440 });
     if (viewport.width === 1440) await verifyResponseIsolation(page, harness);
     await context.close();
   }
+  const hashContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const hashPage = await hashContext.newPage();
+  hashPage.on('pageerror', error => report.errors.push(error.message));
+  await hashPage.goto(publication.previewUrl);
+  await hashPage.getByText('应用已收录', { exact: true }).waitFor();
+  await hashPage.evaluate(() => { window.location.hash = ''; });
+  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 9);
+  await hashPage.setViewportSize({ width: 1280, height: 720 });
+  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 8);
+  report.previewHashReturn = true;
+  await hashContext.close();
+  for (let i = 10; i <= 25; i++) await seedTagCatalog(harness.db, harness.config.audience, ['文档处理'], i);
+  const layoutContext = await browser.newContext();
+  const layoutPage = await layoutContext.newPage();
+  layoutPage.on('pageerror', error => report.errors.push(error.message));
+  for (const view of [
+    { width: 1440, height: 900, cards: 12, columns: 4 },
+    { width: 1440, height: 1080, cards: 16, columns: 4 },
+    { width: 1100, height: 900, cards: 9, columns: 3 },
+    { width: 800, height: 900, cards: 6, columns: 2 },
+    { width: 390, height: 844, cards: 2, columns: 1 },
+    { width: 390, height: 400, cards: 1, columns: 1 },
+  ]) {
+    await layoutPage.setViewportSize({ width: view.width, height: view.height });
+    if (layoutPage.url() === 'about:blank') await layoutPage.goto(harness.origin);
+    await layoutPage.waitForFunction(count => document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false'
+      && document.querySelectorAll('[data-testid="app-card"]').length === count, view.cards);
+    const cards = await layoutPage.getByTestId('app-card').evaluateAll(elements => elements.map(el => {
+      const box = el.getBoundingClientRect();
+      return { x: box.x, y: box.y, bottom: box.bottom };
+    }));
+    const footer = await layoutPage.getByTestId('pagination').boundingBox();
+    const scrollTop = await layoutPage.locator('.directory-shell').evaluate(el => el.scrollTop);
+    assert.ok(footer);
+    assert.equal(new Set(cards.map(card => card.x)).size, view.columns, 'responsive columns agree with page capacity');
+    assert.ok(Math.max(...cards.map(card => card.bottom)) <= footer.y, 'footer must not cover the last card');
+    if (view.height >= 800) assert.ok(footer.y + footer.height <= view.height, 'full rows and footer fit without scrolling');
+    const pageTwo = layoutPage.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname === '/api/apps' && url.searchParams.get('page') === '2';
+    });
+    await layoutPage.getByTestId('pagination').getByText('2', { exact: true }).click();
+    await pageTwo;
+    await layoutPage.waitForFunction(() => document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false');
+    const nextFooter = await layoutPage.getByTestId('pagination').boundingBox();
+    const nextScrollTop = await layoutPage.locator('.directory-shell').evaluate(el => el.scrollTop);
+    assert.equal(nextFooter!.y + nextScrollTop, footer.y + scrollTop, 'paging keeps the footer position in the scroll container');
+    report.views.push({ viewport: { width: view.width, height: view.height }, cards: cards.length, columns: view.columns, footer, responsive: true });
+  }
+  await layoutPage.setViewportSize({ width: 1440, height: 900 });
+  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 12
+    && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1');
+  let releaseResize: () => void = () => {};
+  let markResizeStarted: () => void = () => {};
+  const resizeHeld = new Promise<void>(resolve => { markResizeStarted = resolve; });
+  const resizeReleased = new Promise<void>(resolve => { releaseResize = resolve; });
+  await layoutPage.route('**/api/apps?**', async route => {
+    if (new URL(route.request().url()).searchParams.get('pageSize') === '16') {
+      markResizeStarted();
+      await resizeReleased;
+    }
+    await route.continue();
+  });
+  await layoutPage.setViewportSize({ width: 1440, height: 1080 });
+  await resizeHeld;
+  await layoutPage.setViewportSize({ width: 1280, height: 720 });
+  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 8);
+  const staleResizeResponse = layoutPage.waitForResponse(response => new URL(response.url()).searchParams.get('pageSize') === '16');
+  releaseResize();
+  await staleResizeResponse;
+  await layoutPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await layoutPage.getByTestId('app-card').count(), 8, 'late resize response cannot replace the current capacity');
+  report.resizeResponseIsolation = true;
+  await layoutContext.close();
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);
   report.status = 'PASS';
