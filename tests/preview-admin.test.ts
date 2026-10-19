@@ -126,6 +126,23 @@ test('only the configured proxy supplies client identity and one client cannot l
   assert.equal(duplicateStatus, 403, 'duplicate identity headers are rejected on real HTTP');
 });
 
+test('production request limits isolate validated admin clients and the public proxy bucket', async t => {
+  const h = await startHarness(1, 'memory://', { previewAdmin: { password: PASSWORD, trustedProxyIp: '127.0.0.1' } }); t.after(() => h.close());
+  const { createApp } = await import('../server/app.js');
+  const limited = await createApp({ ...h.config, rateLimit: true }, h.db); t.after(() => limited.app.close());
+  const clientHeaders = (ip: string, cookie?: string) => ({ ...headers(h, cookie), 'x-real-ip': ip });
+  const loggedIn = await limited.app.inject({ method: 'POST', url: `${BASE}/session`, headers: clientHeaders('192.0.2.20'), payload: { password: PASSWORD } });
+  assert.equal(loggedIn.statusCode, 200); const cookie = cookieFrom(loggedIn);
+  for (let count = 0; count < 120; count++) assert.equal((await limited.app.inject({ url: `${BASE}/session`, headers: clientHeaders('192.0.2.10') })).statusCode, 401);
+  assert.equal((await limited.app.inject({ url: `${BASE}/session`, headers: clientHeaders('192.0.2.10') })).statusCode, 429);
+  assert.equal((await limited.app.inject({ url: `${BASE}/session`, headers: clientHeaders('192.0.2.20', cookie) })).statusCode, 200, 'same route must have separate validated client buckets');
+  for (let count = 0; count < 120; count++) assert.equal((await limited.app.inject({ url: '/api/health', headers: headers(h) })).statusCode, 200);
+  assert.equal((await limited.app.inject({ url: '/api/health', headers: headers(h) })).statusCode, 429);
+  assert.equal((await limited.app.inject({ url: `${BASE}/session`, headers: clientHeaders('192.0.2.20', cookie) })).statusCode, 200, 'public proxy traffic must not consume the admin bucket');
+  assert.equal((await limited.app.inject({ url: `${BASE}/publications`, headers: clientHeaders('192.0.2.20', cookie) })).statusCode, 200);
+  assert.equal((await limited.app.inject({ method: 'DELETE', url: `${BASE}/session`, headers: clientHeaders('192.0.2.20', cookie) })).statusCode, 200);
+});
+
 test('all-author enumeration filters confirmed records, paginates, hides credentials and performs zero business writes', async t => {
   const h = await startHarness(1, 'memory://', { previewAdmin: { password: PASSWORD } }); t.after(() => h.close());
   const publication = await h.service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());

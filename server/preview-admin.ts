@@ -75,8 +75,11 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
     }
   });
   app.addHook('onClose', async () => { sessions.clear(); failures.clear(); });
-  app.get('/api/preview-admin/session', { preHandler: authorize }, async () => ({ authenticated: true }));
-  app.post('/api/preview-admin/session', async (request, reply) => {
+  // Use the same validated identity for the plugin's request limit and login failures.
+  // Route stores also keep public traffic on a shared proxy from locking out admins.
+  const routeConfig = { rateLimit: { max: 120, timeWindow: '1 minute', keyGenerator: (request: FastifyRequest) => `preview-admin:${clientIp(request)}` } };
+  app.get('/api/preview-admin/session', { config: routeConfig, preHandler: authorize }, async () => ({ authenticated: true }));
+  app.post('/api/preview-admin/session', { config: routeConfig }, async (request, reply) => {
     enabled(); requireOrigin(request); prune();
     const sourceIp = clientIp(request);
     const prior = failures.get(sourceIp);
@@ -99,12 +102,12 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
     sessions.set(hash(token).toString('hex'), Date.now() + SESSION_MS);
     return reply.header('Set-Cookie', cookie(token, SESSION_MS / 1000)).send({ authenticated: true });
   });
-  app.delete('/api/preview-admin/session', { preHandler: authorize }, async (request, reply) => {
+  app.delete('/api/preview-admin/session', { config: routeConfig, preHandler: authorize }, async (request, reply) => {
     requireOrigin(request);
     sessions.delete(sessionKey(request)!);
     return reply.header('Set-Cookie', cookie('', 0)).send({ authenticated: false });
   });
-  app.get('/api/preview-admin/publications', { preHandler: authorize }, async request => {
+  app.get('/api/preview-admin/publications', { config: routeConfig, preHandler: authorize }, async request => {
     const options = z.object({
       query: z.string().max(200).default(''),
       status: z.enum(['all', 'preview_ready', 'expired', 'checking', 'failed']).default('all'),
@@ -112,7 +115,7 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
     }).strict().parse(request.query);
     return reader.list(options);
   });
-  app.get('/api/preview-admin/publications/:id', { preHandler: authorize }, async request => {
+  app.get('/api/preview-admin/publications/:id', { config: routeConfig, preHandler: authorize }, async request => {
     return reader.detail(z.object({ id: z.string().uuid() }).parse(request.params).id);
   });
 }
