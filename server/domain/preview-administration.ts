@@ -16,7 +16,8 @@ interface RecordRow {
   expires_at: string | Date; next_action: string; error_code: string | null;
   error_message: string | null; preview_jsonb?: any;
 }
-const BASE = "status IN ('checking', 'preview_ready', 'failed') AND confirmed_at IS NULL";
+const PUBLICATION_STATUSES = "status IN ('checking', 'preview_ready', 'failed')";
+const BASE = `${PUBLICATION_STATUSES} AND confirmed_at IS NULL`;
 const FIELDS = `id, submission->>'appKey' AS app_key,
   COALESCE(preview_jsonb->>'version', preview_jsonb->'manifest'->>'projectVersion', '') AS version,
   preview_jsonb->'manifest' AS manifest, status, created_at, updated_at, expires_at,
@@ -43,11 +44,12 @@ function summary(row: RecordRow): AdminPreviewSummary {
 
 // This reader deliberately does not use publication(id, ticket): reading an expired
 // publication there clears credentials. Administration must only SELECT safe fields.
-export function createPreviewAdministration(db: Database) {
+export function createPreviewAdministration(db: Database, options: { includeConfirmed?: boolean } = {}) {
+  const listBase = options.includeConfirmed ? PUBLICATION_STATUSES : BASE;
   return {
     async list(options: { query: string; status: AdminPreviewStatus; page: number }) {
       const params: unknown[] = [];
-      let where = BASE;
+      let where = listBase;
       if (options.query.trim()) {
         params.push(`%${options.query.trim().replace(/[\\%_]/g, '\\$&')}%`);
         where += ` AND (COALESCE(preview_jsonb->'manifest'->>'name', '') ILIKE $1
