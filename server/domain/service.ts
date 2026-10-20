@@ -20,6 +20,9 @@ import {
 import { compareProjectVersions, type AgentEntry, type AppManifest, type StoredAppManifest } from "./manifest.js";
 import { catalogTags, EFFECTIVE_TAGS, TAG_OVERRIDE_JOIN, validateTagReuse } from './tags.js';
 
+export type AppLifecycleStatus = 'published' | 'offline' | 'deleted';
+export interface AppLifecycle { status: AppLifecycleStatus; revision: number; updatedAt?: string }
+
 export interface AppView {
   id: string;
   revision: number;
@@ -30,6 +33,7 @@ export interface AppView {
   updatedAt: string;
   source: AppSource;
   documents: Record<string, string>;
+  lifecycle?: AppLifecycle;
 }
 
 export type PublicationStatus = "checking" | "preview_ready" | "registered" | "failed" | "cancelled";
@@ -84,9 +88,9 @@ export interface PlazaService {
   managementPublication(id: string): Promise<PublicationView>;
   managementConfirm(id: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   managementRetry(id: string): Promise<PublicationView>;
-  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[] }>;
-  app(id: string): Promise<AppView>;
-  instructions(id: string, entryId: string): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string }>;
+  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[] }>;
+  app(id: string, options?: { includeHidden?: boolean }): Promise<AppView>;
+  instructions(id: string, entryId: string, options?: { includeHidden?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string }>;
 }
 
 interface PublicationRecord {
