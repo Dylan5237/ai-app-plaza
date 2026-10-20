@@ -53,6 +53,7 @@ function bundle(options: {
     primaryEntry: options.entry === 'web' ? 'web' : 'agent',
   };
   const files = [
+    { path: 'src/keep-source.ts', text: 'export const retainedSource = \"fixture source must survive metadata edits\";\n' },
     { path: 'ai-app.json', text: JSON.stringify(data, null, 2) },
     { path: 'README.md', text: `# ${options.name}\n\n本地合成 fixture，仅用于管理后台交互试用。` },
     { path: 'docs/usage.md', text: `# 使用说明\n\n${options.summary}\n\n此内容来自本地 fixture，不代表真实业务能力。` },

@@ -254,6 +254,8 @@ function openCard(event, id) {
   openApp(id)
 }
 
+function appPath(id) { return `${props.management && props.managementEnabled ? '/api/management' : '/api'}/apps/${encodeURIComponent(id)}` }
+
 async function openApp(id) {
   if (!id) return
   const requestSequence = ++detailRequestSequence
@@ -270,7 +272,7 @@ async function openApp(id) {
   instructionEntry.value = null
   instructionError.value = ''
   try {
-    const result = await apiRequest(`/api/apps/${encodeURIComponent(id)}`)
+    const result = await apiRequest(appPath(id))
     if (requestSequence !== detailRequestSequence) return
     selectedApp.value = result
   } catch (error) {
@@ -313,7 +315,7 @@ async function loadAgentInstructions(entry) {
   instructionLoading.value = true
   try {
     const result = await apiRequest(
-      `/api/apps/${encodeURIComponent(appId)}/instructions/${encodeURIComponent(entryId)}`,
+      `${appPath(appId)}/instructions/${encodeURIComponent(entryId)}`,
     )
     if (requestSequence !== instructionRequestSequence || selectedApp.value?.id !== appId || instructionEntry.value?.id !== entryId) return
     instruction.value = result
@@ -384,7 +386,7 @@ async function openShareDialog(appId = '') {
   contractError.value = ''
   publishContract.value = null
   try {
-    const result = await apiRequest(appId ? `/api/apps/${encodeURIComponent(appId)}/publish-contract` : '/api/publish-contract')
+    const result = await apiRequest(appId ? `${appPath(appId)}/publish-contract` : '/api/publish-contract')
     if (sequence === contractRequestSequence) publishContract.value = result
   } catch (error) {
     if (sequence === contractRequestSequence) contractError.value = errorText(error)
@@ -674,7 +676,7 @@ onUnmounted(() => {
   </div>
 
   <div v-else class="directory-shell">
-    <slot v-if="props.management" name="management" :open-app="openApp" :open-update="openShareDialog" :open-publication="openPublication" />
+    <slot v-if="props.management" name="management" :open-app="openApp" :open-update="openShareDialog" :open-publication="openPublication" :open-create="openShareDialog" />
     <main v-else ref="directoryMain" class="directory-main">
       <header class="directory-header">
         <div class="brand-block">
@@ -794,7 +796,7 @@ onUnmounted(() => {
       <template #header>
         <div class="detail-dialog-heading">
           <span>应用详情</span>
-          <button v-if="props.management && selectedApp && !detailLoading" type="button" class="detail-update-link" data-testid="publish-update" :disabled="!props.managementEnabled" @click="openShareDialog(selectedApp.id)">发布新版本</button>
+          <button v-if="props.management && selectedApp && !detailLoading && selectedApp.lifecycle?.status !== 'deleted'" type="button" class="detail-update-link" data-testid="publish-update" :disabled="!props.managementEnabled" @click="openShareDialog(selectedApp.id)">发布新版本</button>
         </div>
       </template>
       <div v-if="detailLoading" class="dialog-state" role="status">正在读取应用详情…</div>

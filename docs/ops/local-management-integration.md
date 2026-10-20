@@ -1,6 +1,6 @@
 # 后台本地集成
 
-本候选按 [#65](https://github.com/Dylan5237/ai-app-plaza/issues/65) 将管理和更新入口集中到 `/admin`，复用现有详情、更新提示词、预览及确认/重试。它不代表线上更新或完整后台验收。
+本地候选按 [#65](https://github.com/Dylan5237/ai-app-plaza/issues/65) 集中后台入口，并按 [#66](https://github.com/Dylan5237/ai-app-plaza/issues/66) 补齐上下架、回收恢复和手动修改详情。详情、更新提示词及预览确认/重试继续共用原有组件与服务。它不代表线上部署或业务验收。
 
 ## 本机试用
 
@@ -34,10 +34,23 @@ npm run dev:management-local
 
 管理写入要求显式 `PLAZA_LOCAL_MANAGEMENT=1`，同时 `PLAZA_LOCAL=1`，HOST/PUBLIC_ORIGIN 必须是同端口 `127.0.0.1`。生产或非本地配置拒绝启用。默认不注册 `/api/management/*`，Host/Origin 及跨站校验继续生效。这是本地候选边界，不是生产管理员身份方案。
 
-不改数据库 schema，不执行应用代码，不操作真实应用或公司 GitLab。试用脚本自动使用上述隔离配置。
+数据库增加独立的应用状态表及托管发布 operation_kind 字段。试用脚本自动使用隔离内存库，不操作真实应用或公司 GitLab。
 
-## 尚未实现与验证
+## 基础管理
 
-现有服务没有手动编辑详情后回写 GitLab、删除和上下架的接口。这些需求没有用直接改已收录快照或模拟成功代替，本轮不宣称完整增删改查已交付。真实 GitLab/Host、生产管理员策略、部署和业务验收均未完成。
+- 新增应用复用原首次发布提示词，资料就绪后进入原收录预览。
+- 下架后，广场列表、标签、详情、说明和发布规范的公开地址均不可访问；后台可查看、修改或发布新版本。确认内容更新会保留下架状态。
+- 删除移入回收站，保留源码、版本和发布记录；恢复后保持下架，需另行上架。删除期间不允许内容更新确认。
+- 状态 revision 与已收录内容 revision 分开检查，过时列表的操作被拒绝；状态变化不伪装成源码版本变化。
+- “修改”预填现有资料，可编辑名称、简介、标签、作者、能力、示例、条件限制、入口信息和原共享 Markdown。应用身份、源码项目及文档路径保持原值。
+- 保存资料会以当前已收录固定 commit 为父，仅修订 manifest 与现有声明文档，保留其余文件，创建更高版本的 commit/tag/Release 后打开原预览。确认前已收录详情保持原版；确认后同一应用更新。
+- 仅统一托管且受服务器群组授权覆盖的来源可直接编辑；其余来源明确显示原因，可继续用原发布新版本流程。服务器令牌和作者发布凭证不会返回网页。
+- 保存响应不确定时锁定草稿，使用原 UUID 和原内容恢复；同键重放不重复写 GitLab。
 
-执行 `npm run typecheck`、`npm test`、`npm run build`、`npm run test:e2e`、`npm run test:docs`。浏览器用合成 GitLab/PGlite 检查流程复用、首次收录、失败重试、旧版保持、过期禁用、预览竞态和移动端。测试通过不代表生产或业务验收完成。
+管理 API 增加 `GET /api/management/apps?status=all|published|offline|deleted`、应用详情/说明/发布规范、`POST /api/management/apps/:id/lifecycle` 及 `GET/POST /api/management/apps/:id/editor`。生命周期请求包含 action、expectedAppRevision 和 expectedLifecycleRevision；编辑请求包含 expectedAppRevision、manifest、documents，使用 Idempotency-Key。所有管理 API 仍受上述本地门禁限制。
+
+## 验证边界
+
+真实 GitLab/Host、生产管理员策略、部署和业务验收均未完成。当前试用只操作隔离的 GitLab 协议 fixture 和本地数据库。
+
+执行 `npm run typecheck`、`npm test`、`npm run build`、`npm run test:e2e`、`npm run test:docs`。浏览器用合成 GitLab/PGlite 检查流程复用、首次收录、失败重试、旧版保持、过期禁用、预览竞态、上下架与回收恢复、资料写回与源码保留、丢失响应恢复和移动端。测试通过不代表生产或业务验收完成。
