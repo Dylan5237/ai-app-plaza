@@ -158,7 +158,7 @@
 
 发布记录有效期为 24 小时，以返回的 `expiresAt` 为准。完整链接携带本次能力凭证，持有者可以查看并确认；这不是实名审批。只交给本次作者，不写公共日志、Issue、群聊或共享文档。网页读取凭证后存入本标签页 sessionStorage，并从地址栏移除。
 
-公开目录无需登录。部署者可另行启用[私有预览只读管理](../ops/private-preview-administration.md)，通过独立管理员口令及会话查看各作者尚未确认的记录。管理接口不返回作者 ticket 或确认摘要，不能确认、重试、恢复、取消或删除；管理员会话不能代替作者 Bearer ticket，也不会延长作者链接有效期。此能力不改变下述发布与确认协议。
+公开目录无需登录。[私有预览只读管理](../ops/private-preview-administration.md)直接启用，所有门户访问者无需密码即可查看各作者尚未确认的记录。管理接口不返回作者 ticket 或确认摘要，不能确认、重试、恢复、取消或删除；查看管理快照不授予作者 Bearer ticket，也不会延长作者链接有效期。下述作者发布与确认协议保持。
 
 `GET /api/publications/{id}` 使用 `Authorization: Bearer <ticket>` 查询。作者网页确认使用 `POST /api/publications/{id}/confirm`，请求体为 `{ "revision": <预览修订>, "digest": "<预览摘要>" }`，同样使用 ticket。此处记录接口用于理解系统边界，**Agent 不调用确认接口，也不代作者点击确认**。确认时服务器再次核验权限和固定来源。
 

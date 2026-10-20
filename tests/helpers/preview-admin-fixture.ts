@@ -3,9 +3,8 @@ import { startHarness } from './harness.js';
 import { SHA, TOKEN, DEFAULT_TAG, manifest } from './gitlab-fixture.js';
 
 // Explicitly synthetic, loopback-only fixture. Not a deployment configuration.
-export const ADMIN_FIXTURE_PASSWORD = 'fixture-only-preview-admin-password-53';
 export async function startPreviewAdminFixture() {
-  const h = await startHarness(2, 'memory://', { previewAdmin: { password: ADMIN_FIXTURE_PASSWORD } });
+  const h = await startHarness(2, 'memory://', { previewAdmin: {} });
   try {
     const data = { ...manifest(), name: '本地验证：待确认应用 A', maintainers: [{ name: '验证作者甲', nameEn: 'Fixture A' }] };
     h.gitlab.state.files.set('ai-app.json', JSON.stringify(data));

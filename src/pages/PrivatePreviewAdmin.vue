@@ -4,15 +4,8 @@ import AppPublicContent from '../components/AppPublicContent.vue'
 import plazaMark from '../assets/plaza-mark.svg'
 import { apiRequest } from '../lib/api.js'
 
-const sessionState = ref('loading')
-const authenticated = ref(false)
-const sessionLoading = ref(false)
-const sessionError = ref('')
-const password = ref('')
-const loginLoading = ref(false)
-const loginError = ref('')
-const logoutLoading = ref(false)
-const logoutError = ref('')
+const pageState = ref('loading')
+const pageError = ref('')
 
 const query = ref('')
 const status = ref('all')
@@ -38,34 +31,12 @@ const detailChangedFields = computed(() => {
   return []
 })
 
-let sessionSequence = 0
 let listSequence = 0
 let detailSequence = 0
-let loginSequence = 0
-let logoutSequence = 0
-let sessionExpiryTimer
-
-function cancelSessionExpiry() {
-  window.clearTimeout(sessionExpiryTimer)
-  sessionExpiryTimer = undefined
-}
-
-function armSessionExpiry(result, requestStartedAt) {
-  cancelSessionExpiry()
-  const duration = Number(result?.expiresInMs)
-  const remaining = Math.min(duration, 30 * 60 * 1000) - Math.max(0, performance.now() - requestStartedAt)
-  if (!Number.isFinite(remaining) || remaining <= 0) {
-    handleExpiredSession()
-    return false
-  }
-  sessionExpiryTimer = window.setTimeout(() => handleExpiredSession(), remaining)
-  return true
-}
 
 function requestError(error, action) {
-  if (error?.status === 403) return '当前管理会话无权执行此操作，请重新登录后再访问。'
+  if (error?.status === 403) return '当前访问来源不可用，请从配置的门户地址访问。'
   if (error?.status === 429) return '访问过于频繁，请稍后再试。'
-  if (error?.status === 404 && action === 'session') return '私有预览管理功能尚未启用。'
   if (error?.status === 404 && action === 'detail') return '这条发布记录已不存在或当前无法读取。'
   return error?.message || '服务暂时无法完成请求，请稍后再试。'
 }
@@ -86,89 +57,17 @@ function clearPrivateState() {
   selectedId.value = ''
 }
 
-function handleExpiredSession(message = '管理员会话已失效，请重新登录。') {
-  cancelSessionExpiry()
-  sessionSequence += 1
-  sessionLoading.value = false
+function handleUnavailable(error) {
   clearPrivateState()
-  authenticated.value = false
-  sessionState.value = 'ready'
-  sessionError.value = message
-}
-
-async function checkSession() {
-  const sequence = ++sessionSequence
-  const requestStartedAt = performance.now()
-  cancelSessionExpiry()
-  clearPrivateState()
-  authenticated.value = false
-  sessionLoading.value = true
-  sessionState.value = 'loading'
-  sessionError.value = ''
-  try {
-    const result = await apiRequest('/api/preview-admin/session')
-    if (sequence !== sessionSequence) return
-    sessionState.value = 'ready'
-    authenticated.value = result?.authenticated === true && armSessionExpiry(result, requestStartedAt)
-    if (authenticated.value) void loadList(1)
-  } catch (error) {
-    if (sequence !== sessionSequence) return
-    authenticated.value = false
-    if (error?.status === 401) {
-      sessionState.value = 'ready'
-      sessionError.value = ''
-    } else if (error?.status === 404) {
-      sessionState.value = 'disabled'
-      sessionError.value = requestError(error, 'session')
-    } else {
-      sessionState.value = 'error'
-      sessionError.value = requestError(error, 'session')
-    }
-  } finally {
-    if (sequence === sessionSequence) sessionLoading.value = false
-  }
-}
-
-async function submitLogin() {
-  if (loginLoading.value || logoutLoading.value || !password.value) return
-  const sequence = ++loginSequence
-  const requestStartedAt = performance.now()
-  sessionSequence += 1
-  cancelSessionExpiry()
-  loginLoading.value = true
-  loginError.value = ''
-  const requestBody = { password: password.value }
-  password.value = ''
-  try {
-    const result = await apiRequest('/api/preview-admin/session', { method: 'POST', body: requestBody })
-    if (sequence !== loginSequence) return
-    if (result?.authenticated !== true) {
-      loginError.value = '登录未完成，请检查管理员口令后重试。'
-      return
-    }
-    if (!armSessionExpiry(result, requestStartedAt)) return
-    authenticated.value = true
-    sessionState.value = 'ready'
-    sessionError.value = ''
-    logoutError.value = ''
-    clearPrivateState()
-    void loadList(1)
-  } catch (error) {
-    if (sequence !== loginSequence) return
-    if (error?.status === 401) loginError.value = '管理员口令不正确，请检查后重试。'
-    else if (error?.status === 404) {
-      sessionState.value = 'disabled'
-      sessionError.value = requestError(error, 'session')
-    } else loginError.value = requestError(error, 'login')
-  } finally {
-    requestBody.password = ''
-    if (sequence === loginSequence) loginLoading.value = false
-  }
+  pageState.value = 'error'
+  pageError.value = requestError(error, 'list')
 }
 
 async function loadList(nextPage = page.value) {
-  if (!authenticated.value || listLoading.value) return
+  if (listLoading.value) return
   const sequence = ++listSequence
+  if (pageState.value !== 'ready') pageState.value = 'loading'
+  pageError.value = ''
   listLoading.value = true
   listError.value = ''
   const params = new URLSearchParams({
@@ -179,6 +78,7 @@ async function loadList(nextPage = page.value) {
   try {
     const result = await apiRequest(`/api/preview-admin/publications?${params.toString()}`)
     if (sequence !== listSequence) return
+    pageState.value = 'ready'
     items.value = Array.isArray(result?.items) ? result.items : []
     total.value = Number.isFinite(Number(result?.total)) ? Number(result.total) : 0
     page.value = Number.isFinite(Number(result?.page)) && Number(result.page) > 0 ? Number(result.page) : nextPage
@@ -191,8 +91,8 @@ async function loadList(nextPage = page.value) {
     }
   } catch (error) {
     if (sequence !== listSequence) return
-    if (error?.status === 401 || error?.status === 403) {
-      handleExpiredSession(error?.status === 403 ? '当前管理权限不可用，请重新验证管理员身份。' : undefined)
+    if (error?.status === 401 || error?.status === 403 || pageState.value === 'loading') {
+      handleUnavailable(error)
       return
     }
     items.value = []
@@ -235,7 +135,7 @@ async function openDetail(item) {
   } catch (error) {
     if (sequence !== detailSequence) return
     if (error?.status === 401 || error?.status === 403) {
-      handleExpiredSession(error?.status === 403 ? '当前管理权限不可用，请重新验证管理员身份。' : undefined)
+      handleUnavailable(error)
       return
     }
     selectedPublication.value = null
@@ -252,29 +152,6 @@ function closeDetail() {
   detailError.value = ''
   selectedPublication.value = null
   selectedId.value = ''
-}
-
-async function logout() {
-  if (logoutLoading.value) return
-  const sequence = ++logoutSequence
-  logoutLoading.value = true
-  logoutError.value = ''
-  try {
-    await apiRequest('/api/preview-admin/session', { method: 'DELETE' })
-    if (sequence !== logoutSequence) return
-    cancelSessionExpiry()
-    clearPrivateState()
-    authenticated.value = false
-    sessionState.value = 'ready'
-    sessionError.value = ''
-    password.value = ''
-  } catch (error) {
-    if (sequence !== logoutSequence) return
-    if (error?.status === 401 || error?.status === 403) handleExpiredSession()
-    else logoutError.value = requestError(error, 'logout')
-  } finally {
-    if (sequence === logoutSequence) logoutLoading.value = false
-  }
 }
 
 function displayName(item) {
@@ -348,25 +225,13 @@ function updateDrawerSize() {
   drawerSize.value = window.innerWidth <= 700 ? '100%' : '76%'
 }
 
-function recheckOnReturn() {
-  if (authenticated.value && document.visibilityState === 'visible' && !sessionLoading.value && !logoutLoading.value) void checkSession()
-}
-
 onMounted(() => {
   window.addEventListener('resize', updateDrawerSize)
-  window.addEventListener('focus', recheckOnReturn)
-  document.addEventListener('visibilitychange', recheckOnReturn)
-  void checkSession()
+  void loadList(1)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateDrawerSize)
-  window.removeEventListener('focus', recheckOnReturn)
-  document.removeEventListener('visibilitychange', recheckOnReturn)
-  cancelSessionExpiry()
-  sessionSequence += 1
-  loginSequence += 1
-  logoutSequence += 1
   clearPrivateState()
 })
 </script>
@@ -383,73 +248,20 @@ onUnmounted(() => {
         私有预览管理
       </div>
       <el-button class="return-button" plain @click="returnToPlaza">返回广场</el-button>
-      <el-button
-        v-if="authenticated"
-        class="logout-button"
-        plain
-        :loading="logoutLoading"
-        :disabled="logoutLoading"
-        @click="logout"
-      >
-        退出管理
-      </el-button>
     </header>
 
     <main class="admin-main">
-      <section v-if="sessionState === 'loading'" class="state-card" aria-live="polite">
+      <section v-if="pageState === 'loading'" class="state-card" aria-live="polite">
         <span class="state-icon loading-spinner" aria-hidden="true" />
-        <h1>正在验证管理员会话</h1>
-        <p>请稍候，系统正在读取受保护的管理状态。</p>
+        <h1>正在读取发布记录</h1>
+        <p>请稍候，系统正在读取尚未确认的发布记录。</p>
       </section>
 
-      <section v-else-if="sessionState === 'disabled'" class="state-card state-card-error" role="status">
+      <section v-else-if="pageState === 'error'" class="state-card state-card-error" role="alert">
         <span class="state-icon warning-mark" aria-hidden="true">!</span>
-        <h1>管理入口不可用</h1>
-        <p>{{ sessionError }}</p>
-        <el-button type="primary" @click="returnToPlaza">返回应用广场</el-button>
-      </section>
-
-      <section v-else-if="sessionState === 'error'" class="state-card state-card-error" role="alert">
-        <span class="state-icon warning-mark" aria-hidden="true">!</span>
-        <h1>暂时无法验证管理会话</h1>
-        <p>{{ sessionError }}</p>
-        <p class="state-hint">请检查服务连接后刷新此页面。</p>
-      </section>
-
-      <section v-else-if="!authenticated" class="login-layout">
-        <div class="login-intro">
-          <p class="eyebrow">PRIVATE PREVIEW ADMIN</p>
-          <h1>私有预览管理</h1>
-          <p>登录后查看作者尚未确认的发布记录。此页面只提供受保护的只读查看，作者仍通过原私有预览链接完成确认。</p>
-        </div>
-        <el-card class="login-card" shadow="never">
-          <div class="login-heading">
-            <span class="login-lock" aria-hidden="true">▣</span>
-            <div>
-              <h2>管理员登录</h2>
-              <p>使用已配置的管理员口令</p>
-            </div>
-          </div>
-          <el-alert v-if="sessionError" class="session-alert" :title="sessionError" type="warning" :closable="false" show-icon />
-          <form class="login-form" @submit.prevent="submitLogin">
-            <label class="field-label" for="admin-password">管理员口令</label>
-            <el-input
-              id="admin-password"
-              v-model="password"
-              type="password"
-              autocomplete="current-password"
-              placeholder="请输入管理员口令"
-              show-password
-              :disabled="loginLoading || logoutLoading"
-              @keyup.enter="submitLogin"
-            />
-            <p v-if="loginError" class="inline-error" role="alert">{{ loginError }}</p>
-            <el-button class="login-submit" type="primary" native-type="submit" :loading="loginLoading" :disabled="loginLoading || logoutLoading || !password">
-              {{ loginLoading ? '正在验证…' : '安全登录' }}
-            </el-button>
-          </form>
-          <p class="login-note">管理员会话有效期为30分钟。</p>
-        </el-card>
+        <h1>暂时无法读取发布记录</h1>
+        <p>{{ pageError }}</p>
+        <el-button type="primary" @click="loadList(1)">重新加载</el-button>
       </section>
 
       <section v-else class="workspace" aria-labelledby="admin-heading">
@@ -461,8 +273,6 @@ onUnmounted(() => {
           </div>
           <span class="readonly-badge"><span class="readonly-mark" aria-hidden="true">R</span> 只读管理</span>
         </div>
-
-        <p v-if="logoutError" class="inline-error page-error" role="alert">{{ logoutError }}</p>
 
         <div class="summary-grid" aria-label="发布记录数量">
           <article class="summary-card summary-all"><span>全部记录</span><strong>{{ counts.all }}</strong><small>作者尚未确认</small></article>
@@ -560,7 +370,7 @@ onUnmounted(() => {
             />
           </div>
         </section>
-        <p class="privacy-note"><span aria-hidden="true">▣</span> 仅管理员会话可查看。此页面不执行收录、确认或发布操作。</p>
+        <p class="privacy-note"><span aria-hidden="true">▣</span> 此页面仅供只读查看，不执行收录、确认或发布操作。</p>
       </section>
     </main>
 
@@ -663,12 +473,11 @@ onUnmounted(() => {
 .topbar-context { display: flex; align-items: center; gap: 8px; color: #617086; font-size: 12px; }
 .context-dot { width: 6px; height: 6px; border-radius: 50%; background: #6a8fd6; }
 .return-button { margin-left: auto; }
-.logout-button { margin-left: 0; }
 .admin-main { width: min(1440px, 100%); min-height: calc(100vh - 62px); margin: 0 auto; padding: 32px clamp(16px, 3.3vw, 48px) 30px; }
 .workspace { min-width: 0; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin: 4px 0 22px; }
 .eyebrow { margin: 0 0 6px; color: #8290a3; font-size: 10px; font-weight: 650; letter-spacing: 1px; }
-.page-heading h1, .login-intro h1 { margin: 0; color: #203148; font-size: 24px; font-weight: 650; line-height: 1.35; letter-spacing: -.4px; }
+.page-heading h1 { margin: 0; color: #203148; font-size: 24px; font-weight: 650; line-height: 1.35; letter-spacing: -.4px; }
 .page-subtitle { margin: 7px 0 0; color: #6e7d91; font-size: 13px; }
 .readonly-badge { display: inline-flex; flex: none; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #dce5f2; border-radius: 6px; background: #edf3fb; color: #496891; font-size: 12px; }
 .readonly-mark { display: grid; width: 15px; height: 15px; place-items: center; border: 1px solid #8da6c7; border-radius: 3px; font-size: 8px; font-weight: 700; }
@@ -701,23 +510,6 @@ onUnmounted(() => {
 .list-alert { margin: 0 17px 10px; }
 .table-footer { display: flex; min-height: 53px; align-items: center; justify-content: space-between; gap: 15px; padding: 9px 17px; border-top: 1px solid #edf0f4; color: #8a96a6; font-size: 11px; }
 .privacy-note { display: flex; align-items: center; gap: 6px; margin: 13px 2px 0; color: #8491a2; font-size: 11px; }
-.login-layout { display: grid; width: min(980px, 100%); min-height: min(660px, calc(100vh - 124px)); grid-template-columns: minmax(0, 1fr) minmax(320px, 410px); align-items: center; gap: clamp(34px, 6vw, 82px); margin: 0 auto; }
-.login-intro { max-width: 470px; }
-.login-intro h1 { font-size: 29px; }
-.login-intro > p:last-child { max-width: 440px; margin: 13px 0 0; color: #68788d; font-size: 14px; line-height: 1.8; }
-.login-card { border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; box-shadow: 0 12px 34px rgb(37 57 83 / 7%); }
-.login-card :deep(.el-card__body) { padding: 25px; }
-.login-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 23px; }
-.login-lock { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 9px; background: #eff4fc; color: #416db8; font-size: 18px; }
-.login-heading h2 { margin: 0; color: #2b3c53; font-size: 16px; font-weight: 650; }
-.login-heading p { margin: 4px 0 0; color: #8995a5; font-size: 11px; }
-.login-form { display: grid; gap: 9px; }
-.field-label { color: #536278; font-size: 12px; font-weight: 600; }
-.login-submit { width: 100%; margin-top: 5px; }
-.login-note { display: flex; align-items: flex-start; gap: 6px; margin: 17px 0 0; color: #8995a5; font-size: 10px; line-height: 1.6; }
-.session-alert { margin: 0 0 14px; }
-.inline-error { margin: 0; color: #b4424a; font-size: 12px; line-height: 1.5; }
-.page-error { margin: -8px 0 16px; }
 .state-card { display: flex; min-height: 300px; flex-direction: column; align-items: center; justify-content: center; padding: 30px; text-align: center; }
 .state-card h1 { margin: 12px 0 5px; color: #293a52; font-size: 19px; }
 .state-card p { max-width: 460px; margin: 5px 0 13px; color: #748398; font-size: 13px; line-height: 1.7; }
@@ -765,7 +557,6 @@ onUnmounted(() => {
 @keyframes admin-spin { to { transform: rotate(360deg); } }
 @media (max-width: 980px) {
   .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .login-layout { width: min(760px, 100%); grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); gap: 30px; }
 }
 @media (max-width: 700px) {
   .admin-topbar { height: 56px; gap: 12px; padding: 0 14px; }
@@ -773,7 +564,7 @@ onUnmounted(() => {
   .return-button { padding: 7px 9px; font-size: 11px; }
   .admin-main { min-height: calc(100vh - 56px); padding: 22px 13px 24px; }
   .page-heading { align-items: flex-start; margin-bottom: 16px; }
-  .page-heading h1, .login-intro h1 { font-size: 21px; }
+  .page-heading h1 { font-size: 21px; }
   .page-subtitle { font-size: 11px; }
   .readonly-badge { padding: 6px 7px; font-size: 10px; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -785,12 +576,8 @@ onUnmounted(() => {
   .filter-control :deep(.el-select) { width: min(220px, 72%); }
   .table-footer { align-items: flex-start; flex-direction: column; }
   .table-footer :deep(.el-pagination) { align-self: center; }
-  .login-layout { min-height: auto; grid-template-columns: 1fr; gap: 23px; padding: 28px 1px; }
-  .login-intro > p:last-child { font-size: 12px; }
-  .login-card :deep(.el-card__body) { padding: 20px; }
   .detail-meta-grid { grid-template-columns: 1fr; }
   .detail-meta-grid .meta-wide { grid-column: auto; }
   .section-heading { align-items: flex-start; flex-direction: column; }
-  .logout-button { padding: 7px 9px; font-size: 11px; }
 }
 </style>
