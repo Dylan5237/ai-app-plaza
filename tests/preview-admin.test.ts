@@ -63,6 +63,59 @@ test('unconfigured, unauthenticated and cross-origin callers cannot enumerate or
   assert.equal(host.statusCode, 403);
 });
 
+test('intranet HTTP administration requires both explicit switches and the exact private listener', async () => {
+  const base = { HOST: '192.168.2.145', PORT: '16090', PUBLIC_ORIGIN: 'http://192.168.2.145:16090', GITLAB_URL: 'https://gitlab.example.invalid', DATABASE_URL: 'postgresql://unused', PLAZA_SECRET: 'fixture-only-publication-secret-at-least-32', PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD, ALLOW_INSECURE_PORTAL: '1', ALLOW_INSECURE_PREVIEW_ADMIN: '1' };
+  assert.equal((await loadConfig(base)).previewAdmin?.allowInsecureIntranet, true);
+  for (const key of ['ALLOW_INSECURE_PORTAL', 'ALLOW_INSECURE_PREVIEW_ADMIN']) {
+    for (const value of ['', '0', 'true']) await assert.rejects(loadConfig({ ...base, [key]: value }), /HTTPS/);
+  }
+  for (const ip of ['10.0.0.2', '172.16.0.1', '172.31.255.254', '192.168.0.1']) {
+    assert.equal((await loadConfig({ ...base, HOST: ip, PUBLIC_ORIGIN: `http://${ip}:16090` })).previewAdmin?.allowInsecureIntranet, true);
+  }
+  for (const ip of ['example.invalid', 'localhost', '127.0.0.1', '0.0.0.0', '169.254.1.1', '100.64.0.1', '172.15.0.1', '172.32.0.1', '192.169.0.1', '8.8.8.8', '3232236177', '0xc0a80291', '192.168.002.145', '[::1]']) {
+    await assert.rejects(loadConfig({ ...base, HOST: ip, PUBLIC_ORIGIN: `http://${ip}:16090` }), /HTTPS/);
+  }
+  for (const host of ['0.0.0.0', '127.0.0.1', '192.168.2.146', '::']) await assert.rejects(loadConfig({ ...base, HOST: host }), /HTTPS/);
+  await assert.rejects(loadConfig({ ...base, PORT: '16091' }), /HTTPS/);
+  await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PROXY_IP: '192.168.2.1' }), /直连模式不能配置/);
+  const secure = { ...base, PUBLIC_ORIGIN: 'https://plaza.example.invalid' };
+  await assert.rejects(loadConfig(secure), /PLAZA_PREVIEW_ADMIN_PROXY_IP/);
+  assert.equal((await loadConfig({ ...secure, PLAZA_PREVIEW_ADMIN_PROXY_IP: '127.0.0.1' })).previewAdmin?.allowInsecureIntranet, undefined);
+});
+
+test('direct intranet HTTP keeps authentication and uses socket identity despite spoofed forwarding headers', async t => {
+  const h = await startHarness(); t.after(() => h.close());
+  const { createApp } = await import('../server/app.js');
+  const origin = 'http://192.168.2.145:16090';
+  const config = { ...h.config, local: false, host: '192.168.2.145', port: 16090, publicOrigin: origin, rateLimit: true, previewAdmin: { password: PASSWORD, allowInsecureIntranet: true } };
+  for (const invalid of [
+    { publicOrigin: 'http://8.8.8.8:16090', host: '8.8.8.8' },
+    { publicOrigin: 'http://192.168.002.145:16090' },
+    { host: '0.0.0.0' }, { port: 16091 },
+    { publicOrigin: 'https://plaza.example.invalid' }
+  ]) await assert.rejects(createApp({ ...config, ...invalid }, h.db), /HTTPS|PLAZA_PREVIEW_ADMIN_PROXY_IP/);
+  await assert.rejects(createApp({ ...config, previewAdmin: { ...config.previewAdmin, trustedProxyIp: '192.168.2.1' } }, h.db), /直连模式不能配置/);
+  const direct = await createApp(config, h.db); t.after(() => direct.app.close());
+  const reqHeaders = { host: new URL(origin).host, origin };
+  const post = (ip: string, password: string, suffix: number) => direct.app.inject({ method: 'POST', url: `${BASE}/session`, remoteAddress: ip, headers: { ...reqHeaders, 'x-real-ip': `192.0.2.${suffix}`, 'x-forwarded-for': `192.0.2.${suffix}` }, payload: { password } });
+  assert.equal((await direct.app.inject({ url: `${BASE}/publications`, headers: reqHeaders })).statusCode, 401);
+  for (let i = 0; i < 5; i++) assert.equal((await post('192.168.2.10', 'wrong', i + 1)).statusCode, 401);
+  assert.equal((await post('192.168.2.10', PASSWORD, 99)).statusCode, 429, 'forwarded identity cannot evade the socket login lock');
+  const response = await post('192.168.2.20', PASSWORD, 1);
+  assert.equal(response.statusCode, 200, 'different socket client remains usable');
+  assert.match(String(response.headers['set-cookie']), /HttpOnly; SameSite=Strict; Max-Age=1800/);
+  assert.doesNotMatch(String(response.headers['set-cookie']), /; Secure/);
+  assert.equal(response.headers['cache-control'], 'no-store');
+  const cookie = cookieFrom(response);
+  assert.equal((await direct.app.inject({ url: `${BASE}/publications`, headers: { ...reqHeaders, cookie }, remoteAddress: '192.168.2.20' })).statusCode, 200);
+  assert.equal((await direct.app.inject({ method: 'POST', url: `${BASE}/session`, headers: { ...reqHeaders, origin: 'http://attacker.invalid' }, payload: { password: PASSWORD } })).statusCode, 403);
+  assert.equal((await direct.app.inject({ url: `${BASE}/session`, headers: { ...reqHeaders, host: 'attacker.invalid', cookie } })).statusCode, 403);
+  for (let i = 0; i < 120; i++) assert.equal((await direct.app.inject({ url: `${BASE}/session`, remoteAddress: '192.168.2.30', headers: { ...reqHeaders, 'x-real-ip': `192.0.2.${i + 1}` } })).statusCode, 401);
+  assert.equal((await direct.app.inject({ url: `${BASE}/session`, remoteAddress: '192.168.2.30', headers: { ...reqHeaders, 'x-real-ip': '192.0.2.200' } })).statusCode, 429);
+  assert.equal((await direct.app.inject({ method: 'DELETE', url: `${BASE}/session`, headers: { ...reqHeaders, cookie }, remoteAddress: '192.168.2.20' })).statusCode, 200);
+  assert.equal((await direct.app.inject({ url: `${BASE}/publications`, headers: { ...reqHeaders, cookie }, remoteAddress: '192.168.2.20' })).statusCode, 401);
+});
+
 test('admin sessions are HttpOnly, expire, rotate and revoke on logout without granting author-ticket powers', async t => {
   const h = await startHarness(1, 'memory://', { previewAdmin: { password: PASSWORD } }); t.after(() => h.close());
   const response = await h.app.inject({ method: 'POST', url: `${BASE}/session`, headers: headers(h), payload: { password: PASSWORD } });

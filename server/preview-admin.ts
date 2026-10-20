@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import type { Config } from './config.js';
+import { isBoundIntranetHttpOrigin, type Config } from './config.js';
 import type { Database } from './domain/database.js';
 import { DomainError } from './domain/errors.js';
 import { createPreviewAdministration } from './domain/preview-administration.js';
@@ -15,11 +15,13 @@ const hash = (value: string) => createHash('sha256').update(value).digest();
 export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: Database) {
   const adminOrigin = new URL(config.publicOrigin);
   const localLoopback = config.local && config.host === '127.0.0.1' && adminOrigin.hostname === '127.0.0.1';
-  if (config.previewAdmin && adminOrigin.protocol !== 'https:' && !localLoopback) {
-    throw new Error('私有预览管理员功能需要 HTTPS；仅本地回环验证允许 HTTP');
+  const intranetHttp = config.previewAdmin?.allowInsecureIntranet === true && isBoundIntranetHttpOrigin(config.publicOrigin, config.host, config.port);
+  if (config.previewAdmin && adminOrigin.protocol !== 'https:' && !localLoopback && !intranetHttp) {
+    throw new Error('私有预览管理员功能需要 HTTPS；HTTP 仅允许本地回环验证或显式启用的 RFC1918 IPv4 绑定');
   }
   const proxyIp = config.previewAdmin?.trustedProxyIp;
-  if (config.previewAdmin && ((!localLoopback && !proxyIp) || (proxyIp && (!isIP(proxyIp) || proxyIp.includes('%'))))) {
+  if (intranetHttp && proxyIp) throw new Error('内网 HTTP 直连模式不能配置 PLAZA_PREVIEW_ADMIN_PROXY_IP');
+  if (config.previewAdmin && ((!localLoopback && !intranetHttp && !proxyIp) || (proxyIp && (!isIP(proxyIp) || proxyIp.includes('%'))))) {
     throw new Error('非本地私有预览管理需配置有效的 PLAZA_PREVIEW_ADMIN_PROXY_IP');
   }
   const normalizeIp = (value: string) => {
