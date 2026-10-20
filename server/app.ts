@@ -195,7 +195,7 @@ export async function createApp(config: Config, db: Database) {
   app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
   app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
-  registerManagement(app, config, db, service);
+  registerManagement(app, config, db, service, managed);
   registerPreviewAdmin(app, config, db);
   try {
     await access(config.staticDir);

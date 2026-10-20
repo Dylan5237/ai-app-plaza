@@ -1,5 +1,6 @@
 import { DomainError } from './errors.js';
 import type { Queryable } from './database.js';
+import type { AppLifecycleStatus } from './app-lifecycle.js';
 
 export const MAX_APP_TAGS = 3;
 export const TAG_OVERRIDE_JOIN = 'LEFT JOIN catalog_tag_overrides o ON o.snapshot_id = s.id';
@@ -24,13 +25,17 @@ export function validateCapabilityTags(value: unknown): asserts value is string[
   }
 }
 
-export async function catalogTags(db: Queryable, audience: string): Promise<string[]> {
+export async function catalogTags(db: Queryable, audience: string, statuses: readonly AppLifecycleStatus[] = ['published']): Promise<string[]> {
+  if (statuses.length === 0) return [];
+  const placeholders = statuses.map((_, index) => `$${index + 2}`);
   const result = await db.query<{ tag: string }>(
     `SELECT DISTINCT tag.value AS tag
        FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id
+       LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
        ${TAG_OVERRIDE_JOIN}
        CROSS JOIN LATERAL jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
-      WHERE s.audience = $1 ORDER BY tag.value`, [audience],
+      WHERE s.audience = $1 AND COALESCE(l.status, 'published') IN (${placeholders.join(', ')})
+      ORDER BY tag.value`, [audience, ...statuses],
   );
   return result.rows.map(row => row.tag);
 }

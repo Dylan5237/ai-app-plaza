@@ -11,6 +11,15 @@ import { isDeepStrictEqual } from "node:util";
 import { DomainError } from "./errors.js";
 import type { Database, Queryable } from "./database.js";
 import {
+  changeAppLifecycle,
+  ALL_APP_LIFECYCLE_STATUSES,
+  type AppLifecycle,
+  type AppLifecycleAction,
+  type AppLifecycleStatus,
+  type AppLifecycleChange,
+} from './app-lifecycle.js';
+export type { AppLifecycle, AppLifecycleAction, AppLifecycleStatus, AppLifecycleChange } from './app-lifecycle.js';
+import {
   GitLabSourceReader,
   validateProjectId,
   type AppSource,
@@ -19,9 +28,6 @@ import {
 } from "./gitlab-source.js";
 import { compareProjectVersions, type AgentEntry, type AppManifest, type StoredAppManifest } from "./manifest.js";
 import { catalogTags, EFFECTIVE_TAGS, TAG_OVERRIDE_JOIN, validateTagReuse } from './tags.js';
-
-export type AppLifecycleStatus = 'published' | 'offline' | 'deleted';
-export interface AppLifecycle { status: AppLifecycleStatus; revision: number; updatedAt?: string }
 
 export interface AppView {
   id: string;
@@ -88,7 +94,8 @@ export interface PlazaService {
   managementPublication(id: string): Promise<PublicationView>;
   managementConfirm(id: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   managementRetry(id: string): Promise<PublicationView>;
-  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[] }>;
+  changeLifecycle(id: string, action: AppLifecycleAction, expectedAppRevision: number, expectedLifecycleRevision: number): Promise<AppLifecycleChange>;
+  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all' }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[] }>;
   app(id: string, options?: { includeHidden?: boolean }): Promise<AppView>;
   instructions(id: string, entryId: string, options?: { includeHidden?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string }>;
 }
@@ -139,6 +146,9 @@ interface AppRecord {
   project_url: string | null;
   source_created_at: Date | string | null;
   effective_tags: string[] | string | null;
+  lifecycle_status: AppLifecycleStatus | null;
+  lifecycle_revision: number | null;
+  lifecycle_updated_at: Date | string | null;
 }
 
 interface EncryptedToken {
@@ -153,9 +163,11 @@ const APP_SELECT = `
   SELECT a.id, a.instance_id, a.project_id, a.app_key, a.current_snapshot_id, a.revision,
          a.created_at, a.updated_at, s.id AS snap_id, s.commit_sha, s.manifest_path, s.tag,
          s.digest, s.audience, s.version, s.manifest, s.documents, s.project_url, s.source_created_at,
-         ${EFFECTIVE_TAGS} AS effective_tags
+         ${EFFECTIVE_TAGS} AS effective_tags,
+         l.status AS lifecycle_status, l.revision AS lifecycle_revision, l.updated_at AS lifecycle_updated_at
     FROM catalog_apps a
     LEFT JOIN published_snapshots s ON s.id = a.current_snapshot_id
+    LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
     ${TAG_OVERRIDE_JOIN}`;
 
 export function createService(config: ServiceConfig): PlazaService {
@@ -286,8 +298,9 @@ export function createService(config: ServiceConfig): PlazaService {
     return result.rows[0];
   }
 
-  async function findAppById(id: string, queryable: Queryable = config.db): Promise<AppRecord | undefined> {
-    const result = await queryable.query<AppRecord>(`${APP_SELECT} WHERE a.id = $1 AND s.audience = $2`, [id, config.audience]);
+  async function findAppById(id: string, queryable: Queryable = config.db, includeHidden = false): Promise<AppRecord | undefined> {
+    const visibility = includeHidden ? '' : " AND COALESCE(l.status, 'published') = 'published'";
+    const result = await queryable.query<AppRecord>(`${APP_SELECT} WHERE a.id = $1 AND s.audience = $2${visibility}`, [id, config.audience]);
     return result.rows[0];
   }
 
@@ -312,6 +325,11 @@ export function createService(config: ServiceConfig): PlazaService {
       updatedAt: asIso(record.updated_at),
       source,
       documents: docs ? parseJsonValue<Record<string, string>>(record.documents ?? {}) : {},
+      lifecycle: {
+        status: record.lifecycle_status ?? 'published',
+        revision: record.lifecycle_revision ?? 1,
+        ...(record.lifecycle_updated_at ? { updatedAt: asIso(record.lifecycle_updated_at) } : {}),
+      },
     };
   }
 
@@ -322,6 +340,7 @@ export function createService(config: ServiceConfig): PlazaService {
     source: LoadedSource,
   ): PublicationPreview {
     const now = new Date().toISOString();
+    const previous = existing ? appView(existing, true) : undefined;
     return {
       id: existing?.id ?? candidateAppId,
       revision: (existing?.revision ?? 0) + 1,
@@ -332,10 +351,11 @@ export function createService(config: ServiceConfig): PlazaService {
       updatedAt: now,
       source: source.source,
       documents: source.documents,
+      lifecycle: previous?.lifecycle ?? { status: 'published', revision: 1 },
       change: existing ? {
         kind: "update",
         previousVersion: existing.version!,
-        changedFields: changedPublicFields(appView(existing, true), source),
+        changedFields: changedPublicFields(previous!, source),
       } : { kind: "create", changedFields: [] },
     };
   }
@@ -393,7 +413,7 @@ export function createService(config: ServiceConfig): PlazaService {
   }
 
   async function preparePreview(record: PublicationRecord, source: LoadedSource): Promise<PublicationRecord> {
-    validateTagReuse(source.manifest.tags, await catalogTags(config.db, config.audience));
+    validateTagReuse(source.manifest.tags, await catalogTags(config.db, config.audience, ALL_APP_LIFECYCLE_STATUSES));
     const input = getInput(record);
     const projectId = validateProjectId(input.projectId);
     return config.db.transaction(async (tx) => {
@@ -401,6 +421,9 @@ export function createService(config: ServiceConfig): PlazaService {
       if (!locked) throw notFound();
       if (locked.status === "registered") return locked;
       const existing = await findAppByKey(tx, projectId, input.appKey, true);
+      if (existing?.lifecycle_status === 'deleted') {
+        throw new DomainError(409, 'APP_RESTORE_REQUIRED', '应用已删除，请先在本地管理后台恢复后再提交新版本。');
+      }
       const currentRevision = existing?.revision ?? 0;
       if (input.expectedAppRevision !== undefined && input.expectedAppRevision !== currentRevision) {
         throw new DomainError(409, "REVISION_CONFLICT", "应用修订已变化，请重新提交候选并查看新预览。");
@@ -466,6 +489,9 @@ export function createService(config: ServiceConfig): PlazaService {
       // current canonical names; the preview may predate another registration.
       await tx.query("LOCK TABLE catalog_apps IN SHARE ROW EXCLUSIVE MODE");
       let app = await findAppByKey(tx, projectId, input.appKey, true);
+      if (app?.lifecycle_status === 'deleted') {
+        throw new DomainError(409, 'APP_RESTORE_REQUIRED', '应用已删除，请先在本地管理后台恢复后再完成收录。');
+      }
       if (
         app?.digest === source.digest &&
         app.commit_sha === source.source.commitSha &&
@@ -483,7 +509,7 @@ export function createService(config: ServiceConfig): PlazaService {
         return updated.rows[0]!;
       }
 
-      validateTagReuse(source.manifest.tags, await catalogTags(tx, config.audience));
+      validateTagReuse(source.manifest.tags, await catalogTags(tx, config.audience, ALL_APP_LIFECYCLE_STATUSES));
       const currentRevision = app?.revision ?? 0;
       if (lockedPublication.expected_app_revision !== currentRevision) {
         throw new DomainError(409, "REVISION_CONFLICT", "应用修订已变化，旧预览不能覆盖新版本，请重新提交候选。");
@@ -750,6 +776,16 @@ export function createService(config: ServiceConfig): PlazaService {
       return retryPublication(await loadManagementPublication(id, true));
     },
 
+    changeLifecycle(id, action, expectedAppRevision, expectedLifecycleRevision) {
+      return changeAppLifecycle(config.db, {
+        appId: id,
+        audience: config.audience,
+        action,
+        expectedAppRevision,
+        expectedLifecycleRevision,
+      });
+    },
+
     async list(options = {}) {
       await cleanupExpiredTokens();
       const page = options.page ?? 1;
@@ -766,6 +802,16 @@ export function createService(config: ServiceConfig): PlazaService {
       if (requestedTags.length > 12) throw new DomainError(400, "VALIDATION_FAILED", "一次最多筛选 12 个标签。");
       const filters: string[] = ["s.audience = $1"];
       const params: unknown[] = [config.audience];
+      const lifecycleStatuses: AppLifecycleStatus[] = !options.includeHidden
+        ? ['published']
+        : options.lifecycleStatus && options.lifecycleStatus !== 'all'
+          ? [options.lifecycleStatus]
+          : ['published', 'offline'];
+      const lifecycleStatusParameters = lifecycleStatuses.map(status => {
+        params.push(status);
+        return `$${params.length}`;
+      });
+      filters.push(`COALESCE(l.status, 'published') IN (${lifecycleStatusParameters.join(', ')})`);
       for (const group of tokens) {
         const alternatives: string[] = [];
         for (const token of group) {
@@ -788,11 +834,12 @@ export function createService(config: ServiceConfig): PlazaService {
       }
       const where = filters.join(" AND ");
       const totalResult = await config.db.query<{ total: string | number }>(
-        `SELECT count(*) AS total FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id ${TAG_OVERRIDE_JOIN} WHERE ${where}`,
+        `SELECT count(*) AS total FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id
+         LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id ${TAG_OVERRIDE_JOIN} WHERE ${where}`,
         params,
       );
       const total = Number(totalResult.rows[0]?.total ?? 0);
-      const tags = await catalogTags(config.db, config.audience);
+      const tags = await catalogTags(config.db, config.audience, lifecycleStatuses);
       const itemParams = [...params, pageSize, (page - 1) * pageSize];
       const limitParam = `$${itemParams.length - 1}`;
       const offsetParam = `$${itemParams.length}`;
@@ -811,16 +858,16 @@ export function createService(config: ServiceConfig): PlazaService {
 
     tags: () => catalogTags(config.db, config.audience),
 
-    async app(id) {
+    async app(id, options = {}) {
       await cleanupExpiredTokens();
-      const record = await findAppById(id);
+      const record = await findAppById(id, config.db, options.includeHidden === true);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       return appView(record, true);
     },
 
-    async instructions(id, entryId) {
+    async instructions(id, entryId, options = {}) {
       await cleanupExpiredTokens();
-      const record = await findAppById(id);
+      const record = await findAppById(id, config.db, options.includeHidden === true);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
       const entry = view.manifest.entries.find((item): item is AgentEntry => item.id === entryId && item.kind === "agent");

@@ -2,8 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Database } from './domain/database.js';
+import type { ManagedPublisher } from './domain/managed-publisher.js';
 import { createPreviewAdministration } from './domain/preview-administration.js';
 import type { PlazaService } from './domain/service.js';
+import { registerManagementLifecycle } from './management-lifecycle.js';
 
 interface UploadRow {
   id: string;
@@ -21,8 +23,9 @@ function searchParam(query: string, params: unknown[]): string {
   return `$${params.length}`;
 }
 
-export function registerManagement(app: FastifyInstance, config: Config, db: Database, service: PlazaService) {
+export function registerManagement(app: FastifyInstance, config: Config, db: Database, service: PlazaService, managed?: ManagedPublisher) {
   if (!config.localManagement) return;
+  registerManagementLifecycle(app, config, db, service, managed);
   const publications = createPreviewAdministration(db, { includeConfirmed: true });
 
   app.get('/api/management/publications', async request => {
