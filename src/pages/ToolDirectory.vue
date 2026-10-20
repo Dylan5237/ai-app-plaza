@@ -960,8 +960,8 @@ onUnmounted(() => {
 .brand-mark img { display: block; width: 100%; height: 100%; }
 .brand-block h1 { margin: 0; color: #1e2b3c; font-size: 21px; font-weight: 650; line-height: 1.35; }
 .brand-block p { margin: 3px 0 0; color: #8993a2; font-size: 12px; }
-.share-button, .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 14px; border: 1px solid #315fbd; border-radius: 6px; background: #315fbd; color: #fff; font: inherit; font-size: 13px; font-weight: 550; text-decoration: none; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
-.share-button:hover, .primary-button:hover { border-color: #244f9f; background: #244f9f; }
+.share-button, .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 14px; border: 1px solid var(--plaza-primary-button); border-radius: 6px; background: var(--plaza-primary-button); color: #fff; font: inherit; font-size: 13px; font-weight: 550; text-decoration: none; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.share-button:hover, .primary-button:hover { border-color: #4080ff; background: #4080ff; }
 .share-button:focus-visible, .primary-button:focus-visible, .secondary-button:focus-visible, .app-title:focus-visible, .filter-chip:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
 .primary-button:disabled, .secondary-button:disabled, .share-button:disabled { opacity: .55; cursor: not-allowed; }
 .secondary-button { border-color: #d6dde7; background: #fff; color: #46566d; }
