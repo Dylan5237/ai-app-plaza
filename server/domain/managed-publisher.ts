@@ -16,6 +16,14 @@ const MAX_DOCUMENT_BYTES = 512 * 1024;
 const MAX_COMMIT_ACTIONS = 100;
 const API_TIMEOUT_MS = 30_000;
 const API_RESPONSE_BYTES = 8 * 1024 * 1024;
+const EDITOR_CONTEXT_REASONS = {
+  notManaged: "当前应用没有对应的托管 GitLab 绑定，无法在这里修改资料。",
+  managedKeyMissing: "托管应用缺少可验证的服务端密钥，无法修改资料。",
+  bindingMismatch: "托管绑定与当前应用目录记录不一致，无法修改资料。",
+  deleted: "应用已删除，不能修改资料；请先由维护者恢复应用。",
+  unsupportedManifest: "当前 Manifest 版本不支持管理编辑器修订。",
+} as const;
+type ManagedEditorReason = typeof EDITOR_CONTEXT_REASONS[keyof typeof EDITOR_CONTEXT_REASONS];
 
 interface BindingRecord {
   id: string;
@@ -122,7 +130,7 @@ export interface ManagedSubmitInput {
 export interface ManagedEditorContext {
   app: AppView;
   editable: boolean;
-  reason?: "not_managed" | "managed_key_missing" | "binding_mismatch" | "deleted" | "unsupported_manifest";
+  reason?: ManagedEditorReason;
   suggestedVersion?: string;
 }
 
@@ -377,16 +385,21 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     if (!isUuid(appId)) throw new DomainError(400, "VALIDATION_FAILED", "应用 ID 格式无效。");
     const app = await config.service.app(appId, { includeHidden: true });
     const binding = (await config.db.query<BindingRecord>(
-      "SELECT * FROM managed_app_bindings WHERE public_app_id = $1",
-      [app.id],
+      `SELECT binding.*
+         FROM managed_app_bindings AS binding
+         JOIN catalog_apps AS catalog
+           ON catalog.project_id = binding.project_id AND catalog.app_key = binding.app_key
+        WHERE catalog.id = $1 AND catalog.instance_id = $2`,
+      [app.id, instanceId],
     )).rows[0];
-    if (!binding) return { context: { app, editable: false, reason: "not_managed" } };
-    if (!binding.publish_key_digest) return { context: { app, editable: false, reason: "managed_key_missing" } };
-    if (binding.public_app_id !== app.id || !binding.project_id || binding.project_id !== app.source.projectId || binding.app_key !== app.manifest.appKey) {
-      return { context: { app, editable: false, reason: "binding_mismatch" } };
+    if (!binding) return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.notManaged } };
+    if (!binding.publish_key_digest) return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.managedKeyMissing } };
+    if (!binding.project_id || binding.project_id !== app.source.projectId || binding.app_key !== app.manifest.appKey ||
+        await findCatalogAppId(binding) !== app.id) {
+      return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.bindingMismatch } };
     }
-    if (app.lifecycle?.status === "deleted") return { context: { app, editable: false, reason: "deleted" }, binding };
-    if (app.manifest.schemaVersion !== "2") return { context: { app, editable: false, reason: "unsupported_manifest" }, binding };
+    if (app.lifecycle?.status === "deleted") return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.deleted }, binding };
+    if (app.manifest.schemaVersion !== "2") return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.unsupportedManifest }, binding };
     const operations = await config.db.query<{ tag: string }>(
       "SELECT tag FROM managed_publish_operations WHERE binding_id = $1",
       [binding.id],
@@ -1297,11 +1310,11 @@ function suggestNextPatchVersion(values: string[]): string {
 }
 
 function editorUnavailable(reason?: ManagedEditorContext["reason"]): DomainError {
-  if (reason === "deleted") return new DomainError(409, "APP_DELETED", "已删除的应用不能通过管理编辑器修订。");
-  if (reason === "not_managed") return new DomainError(409, "MANAGED_EDITOR_UNAVAILABLE", "该应用不属于服务端托管的 GitLab 项目。");
-  if (reason === "managed_key_missing") return new DomainError(409, "MANAGED_KEY_MISSING", "该托管应用缺少可验证的服务端绑定，无法编辑。");
-  if (reason === "unsupported_manifest") return new DomainError(409, "EDITOR_MANIFEST_UNSUPPORTED", "当前 Manifest 版本不支持管理编辑器修订。");
-  return new DomainError(409, "MANAGED_BINDING_MISMATCH", "托管应用绑定与当前目录记录不一致，已停止编辑。");
+  if (reason === EDITOR_CONTEXT_REASONS.deleted) return new DomainError(409, "APP_DELETED", reason);
+  if (reason === EDITOR_CONTEXT_REASONS.notManaged) return new DomainError(409, "MANAGED_EDITOR_UNAVAILABLE", reason);
+  if (reason === EDITOR_CONTEXT_REASONS.managedKeyMissing) return new DomainError(409, "MANAGED_KEY_MISSING", reason);
+  if (reason === EDITOR_CONTEXT_REASONS.unsupportedManifest) return new DomainError(409, "EDITOR_MANIFEST_UNSUPPORTED", reason);
+  return new DomainError(409, "MANAGED_BINDING_MISMATCH", reason ?? EDITOR_CONTEXT_REASONS.bindingMismatch);
 }
 
 function applyActions(previous: Map<string, TreeValue>, actions: GitAction[]): Map<string, TreeValue> {

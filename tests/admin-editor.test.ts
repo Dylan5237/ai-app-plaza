@@ -195,6 +195,45 @@ test('local editor overlays only current metadata, preserves source history, and
 }
 );
 
+test('editor follows the canonical catalog app when the first managed preview was never confirmed', async t => {
+  const h = await harness();
+  t.after(() => h.close());
+
+  const publishKey = randomBytes(32).toString('base64url');
+  const first = await h.managed.submit(makeBundle('1.0.0'), publishKey, randomUUID());
+  const firstCandidateId = first.preview!.id;
+  const registeredCandidate = await h.managed.submit({
+    ...makeBundle('1.0.1'),
+    managedAppId: first.managedAppId,
+    expectedAppRevision: 0,
+  }, publishKey, randomUUID());
+  assert.notEqual(registeredCandidate.preview!.id, firstCandidateId);
+  const confirmed = await h.service.managementConfirm(registeredCandidate.id, {
+    revision: registeredCandidate.revision,
+    digest: registeredCandidate.digest!,
+  });
+  assert.equal(confirmed.status, 'registered');
+
+  const current = await h.service.app(registeredCandidate.preview!.id, { includeHidden: true });
+  const binding = (await h.db.query<{ public_app_id: string }>(
+    'SELECT public_app_id FROM managed_app_bindings WHERE id = $1', [first.managedAppId],
+  )).rows[0]!;
+  assert.equal(binding.public_app_id, firstCandidateId, 'binding retains its first candidate id');
+  assert.equal(current.id, registeredCandidate.preview!.id, 'catalog identity follows the confirmed later candidate');
+
+  const contextResponse = await h.app.inject({ method: 'GET', url: `/api/management/apps/${current.id}/editor` });
+  assert.equal(contextResponse.statusCode, 200);
+  assert.equal(contextResponse.json().editable, true);
+  assert.equal(contextResponse.json().app.id, current.id);
+  const body = postBody(contextResponse.json().app, current.revision, contextResponse.json().suggestedVersion);
+  const edit = await h.app.inject({
+    method: 'POST', url: `/api/management/apps/${current.id}/editor`,
+    headers: { 'idempotency-key': randomUUID() }, payload: body,
+  });
+  assert.equal(edit.statusCode, 200, edit.body);
+  assert.equal(edit.json().managementPublication.status, 'preview_ready');
+});
+
 test('editor explains non-managed and missing-key records, allows offline updates, and rejects deleted apps', async t => {
   const h = await harness();
   t.after(() => h.close());
@@ -203,7 +242,7 @@ test('editor explains non-managed and missing-key records, allows offline update
   const noBinding = await h.app.inject({ method: 'GET', url: `/api/management/apps/${nonManaged.appId}/editor` });
   assert.equal(noBinding.statusCode, 200);
   assert.equal(noBinding.json().editable, false);
-  assert.equal(noBinding.json().reason, 'not_managed');
+  assert.match(noBinding.json().reason, /没有对应的托管 GitLab 绑定/);
   const nonManagedPost = await h.app.inject({
     method: 'POST', url: `/api/management/apps/${nonManaged.appId}/editor`, headers: { 'idempotency-key': randomUUID() },
     payload: { expectedAppRevision: 1, manifest: nonManaged.source, documents: { [nonManaged.source.docs.readme]: '# readme' } },
@@ -212,6 +251,7 @@ test('editor explains non-managed and missing-key records, allows offline update
   assert.equal(nonManagedPost.json().error.code, 'MANAGED_EDITOR_UNAVAILABLE');
 
   const missingKey = await seedTagCatalog(h.db, AUDIENCE, ['文档处理'], 9);
+  await h.db.query('UPDATE catalog_apps SET instance_id = $1 WHERE id = $2', [h.gitlab.url, missingKey.appId]);
   await h.db.query(
     `INSERT INTO managed_app_bindings (id, app_key, publish_key_digest, project_id, public_app_id, created_at, updated_at)
      VALUES ($1, $2, '', $3, $4, now(), now())`,
@@ -220,7 +260,7 @@ test('editor explains non-managed and missing-key records, allows offline update
   const missingKeyGet = await h.app.inject({ method: 'GET', url: `/api/management/apps/${missingKey.appId}/editor` });
   assert.equal(missingKeyGet.statusCode, 200);
   assert.equal(missingKeyGet.json().editable, false);
-  assert.equal(missingKeyGet.json().reason, 'managed_key_missing');
+  assert.match(missingKeyGet.json().reason, /缺少可验证的服务端密钥/);
   const missingKeyPost = await h.app.inject({
     method: 'POST', url: `/api/management/apps/${missingKey.appId}/editor`, headers: { 'idempotency-key': randomUUID() },
     payload: { expectedAppRevision: 1, manifest: missingKey.source, documents: { [missingKey.source.docs.readme]: '# readme' } },
@@ -252,7 +292,7 @@ test('editor explains non-managed and missing-key records, allows offline update
   const deletedContext = await h.app.inject({ method: 'GET', url: `/api/management/apps/${appId}/editor` });
   assert.equal(deletedContext.statusCode, 200);
   assert.equal(deletedContext.json().editable, false);
-  assert.equal(deletedContext.json().reason, 'deleted');
+  assert.match(deletedContext.json().reason, /应用已删除/);
   const writesBeforeDeletePost = h.gitlab.state.writes.length;
   const deletedPost = await h.app.inject({
     method: 'POST', url: `/api/management/apps/${appId}/editor`, headers: { 'idempotency-key': randomUUID() },
