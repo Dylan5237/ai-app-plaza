@@ -96,7 +96,7 @@ npm run test:prototype
 
 `npm run test:docs` 使用运行时资料校验器检查 v2 示例，解析旧 Schema 到服务端 Schema 的引用，并检查接入规范及相关文档的本地链接和 Markdown 标题。GitHub Actions 的 `Publishing documentation / publishing-docs` 在相关 PR 和 main 更新时执行同一检查，不访问真实广场或 GitLab，不证明业务运行或部署通过。
 
-`npm test` 最多并发运行 4 个测试文件，为测试中的 PGlite/WASM 实例和服务启动子进程保留资源。测试仍并发执行，启动就绪上限保持 15 秒；失败时记录子进程状态和最后一次健康探测。排查资源争用时可用 `node --import tsx --test tests/*.test.ts` 对照 Node 默认并发，或用 `node --import tsx --test --test-concurrency=1 tests/*.test.ts` 作串行对比。
+`npm test` 最多并发运行 4 个测试文件，为测试中的 PGlite/WASM 实例和服务启动子进程保留资源。测试仍并发执行；启动探活有 30 秒总截止，为 Windows 并发测试中的 PGlite 冷启动留出调度余量，不代表产品服务 SLA。每次探测都受剩余预算约束，且必须同时满足被测子进程的启动标记和完整健康响应；子进程提前退出会立即失败。失败时记录脱敏后的子进程状态和最后一次健康探测。排查资源争用时可用 `node --import tsx --test tests/*.test.ts` 对照 Node 默认并发，或用 `node --import tsx --test --test-concurrency=1 tests/*.test.ts` 作串行对比。
 
 ## 代码与项目约定
 
