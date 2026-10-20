@@ -84,8 +84,8 @@ export async function loadConfig(env = process.env): Promise<Config> {
     if (publicOriginUrl.protocol !== 'https:' && !localLoopback && !allowInsecureIntranet) {
       throw new Error('私有预览管理员功能需要 HTTPS；HTTP 仅允许本地回环验证，或同时显式启用两个内网开关并绑定 PUBLIC_ORIGIN 的 RFC1918 IPv4');
     }
-    if ([...adminPassword].length < 32 || Buffer.byteLength(adminPassword, 'utf8') > 512 || /[\r\n\u0000]/.test(adminPassword)) {
-      throw new Error('PLAZA_PREVIEW_ADMIN_PASSWORD 需为至少32字符且不超过512字节的独立管理员口令');
+    if ([...adminPassword].length < 8 || Buffer.byteLength(adminPassword, 'utf8') > 512 || /[\r\n\u0000]/.test(adminPassword)) {
+      throw new Error('PLAZA_PREVIEW_ADMIN_PASSWORD 需为至少8字符且不超过512字节的独立管理员口令');
     }
     if (adminPassword === secret || adminPassword === managedPublishing?.token) throw new Error('管理员口令必须独立于发布或GitLab凭据');
     const trustedProxyIp = env.PLAZA_PREVIEW_ADMIN_PROXY_IP;

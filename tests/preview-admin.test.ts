@@ -6,7 +6,7 @@ import { loadConfig } from '../server/config.js';
 import { startHarness } from './helpers/harness.js';
 import { SHA, TOKEN, DEFAULT_TAG } from './helpers/gitlab-fixture.js';
 
-const PASSWORD = 'fixture-only-preview-admin-password-53';
+const PASSWORD = 'test@123';
 const BASE = '/api/preview-admin';
 const tables = ['catalog_apps', 'published_snapshots', 'publications', 'catalog_tag_overrides', 'catalog_tag_cleanup_operations', 'managed_app_bindings', 'managed_publish_operations'];
 const cookieFrom = (response: any) => String(response.headers['set-cookie']).split(';')[0];
@@ -23,10 +23,10 @@ async function snapshot(h: any) {
   return rows;
 }
 
-test('preview administration is opt-in and requires an independent strong configured password', async () => {
+test('preview administration is opt-in and accepts an independent fixed configured password', async () => {
   const base = { PUBLIC_ORIGIN: 'https://plaza.example.invalid', GITLAB_URL: 'https://gitlab.example.invalid', DATABASE_URL: 'postgresql://unused', PLAZA_SECRET: 'fixture-only-publication-secret-at-least-32', PLAZA_PREVIEW_ADMIN_PROXY_IP: '127.0.0.1' };
   assert.equal((await loadConfig(base)).previewAdmin, undefined);
-  for (const password of ['short', '中'.repeat(16), 'x'.repeat(513), 'x'.repeat(32) + '\n', base.PLAZA_SECRET]) {
+  for (const password of ['x'.repeat(7), '中'.repeat(7), 'x'.repeat(513), 'x'.repeat(8) + '\n', 'x'.repeat(8) + '\u0000', base.PLAZA_SECRET]) {
     await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: password }), /管理员口令|PLAZA_PREVIEW_ADMIN_PASSWORD/);
   }
   assert.equal((await loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD })).previewAdmin?.password, PASSWORD);
