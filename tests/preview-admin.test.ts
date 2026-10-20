@@ -26,12 +26,15 @@ async function snapshot(h: any) {
 test('preview administration is opt-in and accepts an independent fixed configured password', async () => {
   const base = { PUBLIC_ORIGIN: 'https://plaza.example.invalid', GITLAB_URL: 'https://gitlab.example.invalid', DATABASE_URL: 'postgresql://unused', PLAZA_SECRET: 'fixture-only-publication-secret-at-least-32', PLAZA_PREVIEW_ADMIN_PROXY_IP: '127.0.0.1' };
   assert.equal((await loadConfig(base)).previewAdmin, undefined);
+  const local = { ...base, PLAZA_LOCAL: '1', HOST: '127.0.0.1', PUBLIC_ORIGIN: 'http://127.0.0.1:4173' };
   for (const password of ['x'.repeat(7), '中'.repeat(7), 'x'.repeat(513), 'x'.repeat(8) + '\n', 'x'.repeat(8) + '\u0000', base.PLAZA_SECRET]) {
-    await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: password }), /管理员口令|PLAZA_PREVIEW_ADMIN_PASSWORD/);
+    await assert.rejects(loadConfig({ ...local, PLAZA_PREVIEW_ADMIN_PASSWORD: password }), /管理员口令|PLAZA_PREVIEW_ADMIN_PASSWORD/);
   }
-  assert.equal((await loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD })).previewAdmin?.password, PASSWORD);
+  await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD }), /至少32字符/);
+  const strongPassword = 'fixture-only-independent-admin-at-least-32';
+  assert.equal((await loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: strongPassword })).previewAdmin?.password, strongPassword);
   for (const proxy of ['', '127.0.0.1, 192.0.2.1', 'localhost', '0.0.0.0/0', 'fe80::1%eth0']) {
-    await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD, PLAZA_PREVIEW_ADMIN_PROXY_IP: proxy }), /PLAZA_PREVIEW_ADMIN_PROXY_IP/);
+    await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: strongPassword, PLAZA_PREVIEW_ADMIN_PROXY_IP: proxy }), /PLAZA_PREVIEW_ADMIN_PROXY_IP/);
   }
   await assert.rejects(loadConfig({ ...base, PUBLIC_ORIGIN: 'http://192.168.2.145:16090', ALLOW_INSECURE_PORTAL: '1', PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD }), /需要 HTTPS/);
   assert.equal((await loadConfig({ PLAZA_LOCAL: '1', HOST: '127.0.0.1', PUBLIC_ORIGIN: 'http://127.0.0.1:4173', GITLAB_URL: base.GITLAB_URL, PLAZA_SECRET: base.PLAZA_SECRET, PLAZA_PREVIEW_ADMIN_PASSWORD: PASSWORD })).previewAdmin?.password, PASSWORD);
@@ -78,7 +81,7 @@ test('intranet HTTP administration requires both explicit switches and the exact
   for (const host of ['0.0.0.0', '127.0.0.1', '192.168.2.146', '::']) await assert.rejects(loadConfig({ ...base, HOST: host }), /HTTPS/);
   await assert.rejects(loadConfig({ ...base, PORT: '16091' }), /HTTPS/);
   await assert.rejects(loadConfig({ ...base, PLAZA_PREVIEW_ADMIN_PROXY_IP: '192.168.2.1' }), /直连模式不能配置/);
-  const secure = { ...base, PUBLIC_ORIGIN: 'https://plaza.example.invalid' };
+  const secure = { ...base, PLAZA_PREVIEW_ADMIN_PASSWORD: 'fixture-only-independent-admin-at-least-32', PUBLIC_ORIGIN: 'https://plaza.example.invalid' };
   await assert.rejects(loadConfig(secure), /PLAZA_PREVIEW_ADMIN_PROXY_IP/);
   assert.equal((await loadConfig({ ...secure, PLAZA_PREVIEW_ADMIN_PROXY_IP: '127.0.0.1' })).previewAdmin?.allowInsecureIntranet, undefined);
 });
