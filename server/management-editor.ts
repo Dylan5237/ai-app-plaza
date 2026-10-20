@@ -18,18 +18,20 @@ export function registerManagementEditor(
   config: Config,
   db: Database,
   service: PlazaService,
-  managed: ManagedPublisher,
+  managed?: ManagedPublisher,
 ) {
   if (!config.localManagement) return;
   void db;
 
   app.get('/api/management/apps/:id/editor', async request => {
     const id = appId.parse((request.params as { id?: unknown }).id);
+    if (!managed) return { app: await service.app(id, { includeHidden: true }), editable: false, reason: '当前服务未启用统一托管发布，请使用原发布新版本流程。' };
     return managed.editorContext(id);
   });
 
   app.post('/api/management/apps/:id/editor', { bodyLimit: 1024 * 1024 }, async request => {
     const id = appId.parse((request.params as { id?: unknown }).id);
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务未启用统一托管发布，请使用原发布新版本流程。');
     const idempotencyKey = z.string().uuid().parse(request.headers['idempotency-key']);
     const input = editRequest.parse(request.body);
     const result = await managed.editMetadata(id, input, idempotencyKey);

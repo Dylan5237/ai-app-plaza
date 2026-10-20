@@ -96,7 +96,7 @@ onMounted(load)
         <el-table-column v-if="view !== 'uploads'" label="作者" min-width="150"><template #default="{ row }">{{ authors(row) }}</template></el-table-column>
         <el-table-column label="状态" min-width="130"><template #default="{ row }"><el-tag :type="row.expired || row.status === 'failed' ? 'warning' : 'info'" effect="light">{{ stateLabel(row) }}</el-tag></template></el-table-column>
         <el-table-column label="更新时间" min-width="180"><template #default="{ row }">{{ date(row.updatedAt || row.createdAt) }}</template></el-table-column>
-        <el-table-column label="操作" :width="isApps ? 360 : 190" fixed="right"><template #default="{ row }"><div class="management-actions">
+        <el-table-column label="操作" :width="isApps ? 360 : 190"><template #default="{ row }"><div class="management-actions">
           <template v-if="isApps">
             <el-button link type="primary" :data-testid="`management-detail-${row.id}`" @click="emit('open-app', row.id)">详情</el-button>
             <template v-if="view !== 'trash'">

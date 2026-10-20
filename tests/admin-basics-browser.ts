@@ -27,6 +27,7 @@ async function confirmDialog(label: string) { await page.locator('.el-message-bo
 try {
   await page.goto(h.origin + '/admin');
   await page.getByTestId(`management-edit-${appId}`).waitFor();
+  assert.equal(await page.getByTestId('management-table').locator('.el-tag').first().innerText(), '已上架');
   await page.getByTestId('management-create').click();
   await page.getByTestId('copy-publish-prompt').waitFor();
   assert.equal(await page.getByTestId('update-target').count(), 0);
@@ -118,17 +119,17 @@ try {
   await page.unroute(`**/api/management/apps/${appId}/editor`);
   report.checks.push('lost editor response locks the draft and retries the same key/payload, recovering the same preview with zero extra GitLab writes');
   await page.getByTestId('return-management').click(); await page.waitForURL(h.origin + '/admin');
-  await page.screenshot({ path: 'artifacts/admin-basics-browser/desktop.png', fullPage: true });
+  await page.screenshot({ path: 'artifacts/admin-basics-browser/desktop.png', fullPage: true, animations: 'disabled' });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.getByTestId(`management-edit-${appId}`).click(); await page.getByTestId('editor-summary').waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  await page.screenshot({ path: 'artifacts/admin-basics-browser/mobile-editor.png', fullPage: true });
+  await page.screenshot({ path: 'artifacts/admin-basics-browser/mobile-editor.png', fullPage: true, animations: 'disabled' });
   assert.deepEqual(report.errors, []); assert.deepEqual(report.externalRequests, []);
   report.status = 'PASS';
 } catch (error: any) {
   report.status = 'FAIL'; report.error = error.stack; process.exitCode = 1;
-  await page.screenshot({ path: 'artifacts/admin-basics-browser/failure.png', fullPage: true }).catch(() => {});
+  await page.screenshot({ path: 'artifacts/admin-basics-browser/failure.png', fullPage: true, animations: 'disabled' }).catch(() => {});
 } finally {
   await context.close(); await browser.close(); await h.close();
   await writeFile('artifacts/admin-basics-browser/report.json', JSON.stringify(report, null, 2));

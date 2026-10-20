@@ -13,7 +13,7 @@ page.on('pageerror', e => report.errors.push(e.message));
 page.on('request', r => report.requests.push({ method: r.method(), path: new URL(r.url()).pathname }));
 const snapshot = async () => {
   const result: any = {};
-  for (const table of ['catalog_apps', 'published_snapshots', 'publications', 'catalog_tag_overrides', 'catalog_tag_cleanup_operations', 'managed_app_bindings', 'managed_publish_operations']) result[table] = (await h.db.query(`SELECT to_jsonb(t) AS row FROM ${table} t ORDER BY to_jsonb(t)::text`)).rows;
+  for (const table of ['catalog_apps', 'published_snapshots', 'publications', 'catalog_tag_overrides', 'catalog_tag_cleanup_operations', 'managed_app_bindings', 'managed_publish_operations', 'catalog_app_lifecycle']) result[table] = (await h.db.query(`SELECT to_jsonb(t) AS row FROM ${table} t ORDER BY to_jsonb(t)::text`)).rows;
   return result;
 };
 try {
@@ -47,6 +47,6 @@ try {
   report.checks.push('old private-preview address redirects to admin; mobile has no page overflow');
   assert.deepEqual(await snapshot(), before);
   assert.deepEqual(report.errors, []); assert.equal(report.requests.every((r: any) => r.method === 'GET'), true);
-  report.checks.push('all observed requests are GET and all seven business tables are unchanged'); report.status = 'PASS';
+  report.checks.push('all observed requests are GET and all eight business tables are unchanged'); report.status = 'PASS';
 } catch (error: any) { report.status = 'FAIL'; report.error = error.stack; process.exitCode = 1; await page.screenshot({ path: 'artifacts/preview-admin-browser/failure.png', fullPage: true }).catch(() => {}); }
 finally { await browser.close(); await h.close(); await writeFile('artifacts/preview-admin-browser/report.json', JSON.stringify(report, null, 2)); console.log(JSON.stringify(report)); }
