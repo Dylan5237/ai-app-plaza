@@ -130,6 +130,13 @@ test('local editor overlays only current metadata, preserves source history, and
   });
   assert.equal(pathRejected.statusCode, 400);
   assert.equal(pathRejected.json().error.code, 'EDITOR_IDENTITY_IMMUTABLE');
+  const malformedEntry = structuredClone(body);
+  malformedEntry.manifest.entries = [null];
+  const malformedRejected = await h.app.inject({
+    method: 'POST', url: editorUrl, headers: { 'idempotency-key': randomUUID() }, payload: malformedEntry,
+  });
+  assert.equal(malformedRejected.statusCode, 400);
+  assert.equal(malformedRejected.json().error.code, 'VALIDATION_FAILED');
   assert.equal(h.gitlab.state.writes.length, writesBeforeRejectedEdits, 'invalid version, secret, and path edits fail before any GitLab write');
 
   const idempotencyKey = randomUUID();

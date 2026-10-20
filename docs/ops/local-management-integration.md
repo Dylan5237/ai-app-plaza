@@ -47,7 +47,7 @@ npm run dev:management-local
 - 仅统一托管且受服务器群组授权覆盖的来源可直接编辑；其余来源明确显示原因，可继续用原发布新版本流程。服务器令牌和作者发布凭证不会返回网页。
 - 保存响应不确定时锁定草稿，使用原 UUID 和原内容恢复；同键重放不重复写 GitLab。
 
-管理 API 增加 `GET /api/management/apps?status=all|published|offline|deleted`、应用详情/说明/发布规范、`POST /api/management/apps/:id/lifecycle` 及 `GET/POST /api/management/apps/:id/editor`。生命周期请求包含 action、expectedAppRevision 和 expectedLifecycleRevision；编辑请求包含 expectedAppRevision、manifest、documents，使用 Idempotency-Key。所有管理 API 仍受上述本地门禁限制。
+管理 API 增加 `GET /api/management/apps?status=all|published|offline|deleted`、应用详情/说明/发布规范、`POST /api/management/apps/:id/lifecycle` 及 `GET/POST /api/management/apps/:id/editor`。`status=all` 指应用管理中的上架与下架记录；删除记录仅由回收站的 `status=deleted` 查询返回。生命周期请求包含 action、expectedAppRevision 和 expectedLifecycleRevision；编辑请求包含 expectedAppRevision、manifest、documents，使用 Idempotency-Key。所有管理 API 仍受上述本地门禁限制。
 
 ## 验证边界
 

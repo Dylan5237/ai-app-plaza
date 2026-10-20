@@ -82,7 +82,7 @@ async function save() {
   } catch (e) {
     error.value = e.message || '保存未完成。'
     // Deterministic validation failures have no partial GitLab write; uncertain failures retain the exact request.
-    if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && e.code === 'REVISION_CONFLICT')) { pendingRequests.delete(operation.appId); pending.value = null }
+    if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER'].includes(e.code))) { pendingRequests.delete(operation.appId); pending.value = null }
   } finally { saving.value = false }
 }
 </script>

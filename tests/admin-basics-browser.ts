@@ -59,6 +59,13 @@ try {
   await page.getByTestId(`management-edit-${appId}`).click();
   await page.getByTestId('editor-summary').fill('在后台修改资料，并保留原有源码与版本历史。');
   assert.equal(await page.getByTestId('editor-version').inputValue(), '1.1.1');
+  await page.getByTestId('editor-version').fill('1.0.1');
+  await page.getByTestId('editor-save').click();
+  await page.getByText('同一托管应用的新预览必须使用高于此前候选的 projectVersion；GitLab tag 和 Release 不会移动或覆盖。', { exact: true }).waitFor();
+  assert.equal(await page.getByTestId('editor-version').isDisabled(), false);
+  assert.equal(h.gitlab.state.writes.length, writesBefore);
+  await page.getByTestId('editor-version').fill('1.1.1');
+
   await page.getByRole('tab', { name: '入口与完整说明' }).click();
   await page.getByTestId('editor-doc-README.md').fill('# 后台修改的完整介绍\n\n保留源码，确认后更新广场。');
   await page.getByTestId('editor-save').click();
