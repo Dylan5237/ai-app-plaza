@@ -48,6 +48,12 @@ Agent 返回本次专属预览链接，作者检查内容后确认。**任何持
 
 使用者升级仍从“接入我的Agent”进入。提示词要求 Agent 先核对广场已确认版本及本地状态，按未安装、旧版或已是目标版本分别处理，保留配置与本地修改，并执行最小验证。广场不记录本地安装情况、不执行升级、不自动追踪未收录的 GitLab Release。
 
+## 私有预览管理
+
+管理员可连续点击广场 Logo 三次进入独立页面 `/private-previews`，输入管理员口令后查看全部作者尚未确认的发布。页面支持按应用名称、标识或维护人搜索、状态筛选、分页和完整只读预览，并可返回广场；隐藏入口不替代服务端鉴权。
+
+此能力默认关闭。部署者需在服务器私有配置中设置独立的 `PLAZA_PREVIEW_ADMIN_PASSWORD`（内网直连HTTP或本地回环至少8字符、HTTPS至少32字符，最多512字节的固定密码，不能复用发布密钥或 GitLab 授权）。默认要求 HTTPS；可信内网直连 HTTP 需同时显式设置 `ALLOW_INSECURE_PORTAL=1` 和 `ALLOW_INSECURE_PREVIEW_ADMIN=1`，并将 HOST、PORT 绑定到 PUBLIC_ORIGIN 的同一数值 RFC1918 IPv4 和端口。管理会话30分钟后或退出/服务重启时失效。管理页只读，不提供确认、重试、恢复、取消或删除，也不返回作者票据；作者仍在原私有链接中确认收录。配置、访问边界和验证说明见 [管理说明](docs/ops/private-preview-administration.md)。
+
 ## Agent 接口
 
 HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的直接入口，无须先安装 MCP。现有 MCP 的提交工具只提交 GitLab 固定来源，托管文件上传使用契约下发的官方 CLI；完整字段与状态见[统一接入规范](docs/integration/publishing.md#7-http-与-mcp-对照)。
@@ -65,7 +71,7 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 | 查询私有预览/结果 | `GET /api/publications/:id`，Bearer 本次凭证 |
 | 作者确认收录 | `POST /api/publications/:id/confirm`，本次凭证及预览 revision/digest |
 | 恢复核验/已确认收录 | `POST /api/publications/:id/retry`，本次凭证 |
-| 发现与作者标签 | `GET /api/apps?query=...&tags=...&page=1`，多标签为交集，每页 8 项 |
+| 发现与作者标签 | `GET /api/apps?query=...&tags=...&page=1&pageSize=12`，多标签为交集；`pageSize` 可选，1–100，默认 8；网页按可用高度选择完整卡片行数 |
 | 已有能力标签 | `GET /api/tags`，返回已有名称及单应用最多 3 个的上限；发布规范也返回 `tagPolicy` |
 | 详情与接入说明 | `GET /api/apps/:id`、`GET /api/apps/:id/instructions/:entryId` |
 

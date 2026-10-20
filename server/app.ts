@@ -11,6 +11,7 @@ import type { Config } from './config.js';
 import { publishContract } from './publish-contract.js';
 import { publisherScript } from './managed-publish-contract.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
+import { registerPreviewAdmin } from './preview-admin.js';
 
 const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
@@ -127,10 +128,10 @@ export async function createApp(config: Config, db: Database) {
     return reply.type('text/x-python; charset=utf-8').header('X-Content-SHA256', script.sha256).send(script.text);
   });
   app.get('/api/apps', async (request) => {
-    const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1) }).parse(request.query);
+    const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(8) }).parse(request.query);
     const tags = typeof search.tags === 'string' ? [search.tags] : search.tags || [];
     if (tags.length > 12 || tags.some(t => [...t].length > 32)) throw new DomainError(400, 'INVALID_REQUEST', '标签筛选超出限制');
-    return service.list({ query: search.query, tags, page: search.page });
+    return service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize });
   });
   app.get('/api/tags', async () => ({ tags: await service.tags(), maxTagsPerApp: 3 }));
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
@@ -184,9 +185,12 @@ export async function createApp(config: Config, db: Database) {
   app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
   app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
+  registerPreviewAdmin(app, config, db);
   try {
     await access(config.staticDir);
     await app.register(staticPlugin, { root: config.staticDir, index: ['index.html'], dotfiles: 'deny' });
+    app.get('/private-previews', (_request, reply) => reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow').sendFile('index.html'));
+    app.get('/private-previews/', (_request, reply) => reply.redirect('/private-previews'));
   } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
   return { app, service, managed };
 }
