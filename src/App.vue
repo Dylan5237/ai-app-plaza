@@ -2,14 +2,14 @@
 import { computed } from 'vue'
 import ToolDirectory from './pages/ToolDirectory.vue'
 import PortalFrame from './components/PortalFrame.vue'
-import PrivatePreviewAdmin from './pages/PrivatePreviewAdmin.vue'
+import AppManagement from './pages/AppManagement.vue'
 
 const showPrototype = computed(() => new URLSearchParams(window.location.search).get('prototype') === '1')
-const showPrivatePreviewAdmin = computed(() => window.location.pathname === '/private-previews')
+const showManagement = computed(() => ['/admin', '/private-previews'].includes(window.location.pathname.replace(/\/$/, '')))
 </script>
 
 <template>
   <PortalFrame v-if="showPrototype" />
-  <PrivatePreviewAdmin v-else-if="showPrivatePreviewAdmin" />
+  <AppManagement v-else-if="showManagement" />
   <ToolDirectory v-else />
 </template>

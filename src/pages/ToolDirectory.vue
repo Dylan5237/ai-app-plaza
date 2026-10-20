@@ -8,6 +8,8 @@ import AppExamples from '../components/AppExamples.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 
+const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false } })
+
 const query = ref('')
 const selectedTags = ref([])
 const apps = ref([])
@@ -60,6 +62,7 @@ const copyFallbackText = ref('')
 const copyFallbackTextarea = ref(null)
 
 const publicationId = ref('')
+let publicationRequestSequence = 0
 const publication = ref(null)
 const publicationLoading = ref(false)
 const publicationBusy = ref(false)
@@ -74,6 +77,7 @@ const selectedAppEntries = computed(() => {
   const primaryId = manifest.primaryEntry
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
+const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= Date.now())
 const isUpdate = computed(() => publication.value?.change?.kind === 'update')
 const isUnchanged = computed(() => publication.value?.change?.kind === 'unchanged')
 const publicationStatusText = computed(() => ({
@@ -141,7 +145,7 @@ function handleBrandClick() {
   if (brandClickCount >= 3) {
     brandClickCount = 0
     brandClickTimer = 0
-    window.location.assign('/private-previews')
+    window.location.assign('/admin')
     return
   }
   brandClickTimer = window.setTimeout(() => {
@@ -403,9 +407,10 @@ function preparePublicationRoute() {
   if (!id) return false
 
   publicationId.value = id
+  publicationBusy.value = false
   detailVisible.value = false
   shareVisible.value = false
-  const ticket = fragment.get('key')
+  const ticket = props.management ? '' : fragment.get('key')
   if (ticket) {
     try {
       window.sessionStorage.setItem(`ai-app-plaza:publication:${id}`, ticket)
@@ -428,87 +433,99 @@ function preparePublicationRoute() {
 async function handleHashChange() {
   if (preparePublicationRoute()) return
   if (!publicationId.value) return
+  publicationRequestSequence += 1
   publicationId.value = ''
   publication.value = null
   publicationError.value = ''
   publicationLoading.value = false
+  if (props.management) return
   await nextTick()
   updateCatalogPageSize(false)
   catalogReady = true
   await loadCatalog()
 }
 
+function publicationPath(id) {
+  return `${props.management ? '/api/management' : '/api'}/publications/${encodeURIComponent(id)}`
+}
+
+function openPublication(id) {
+  if (!id) return
+  window.location.hash = new URLSearchParams({ publish: id }).toString()
+  window.history.replaceState({ ...window.history.state, plazaManagementPreview: true }, '', window.location.href)
+}
+
 async function loadPublication(id = publicationId.value) {
   if (!id) return
+  const sequence = ++publicationRequestSequence
+  const current = () => sequence === publicationRequestSequence && publicationId.value === id
   publicationLoading.value = true
   publicationError.value = ''
   publication.value = null
-  const token = publicationToken(id)
-  if (!token) {
+  const token = props.management ? '' : publicationToken(id)
+  if (!props.management && !token) {
     publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
     publicationLoading.value = false
     return
   }
   try {
-    publication.value = await apiRequest(`/api/publications/${encodeURIComponent(id)}`, { token })
+    const result = await apiRequest(publicationPath(id), token ? { token } : {})
+    if (current()) publication.value = result
   } catch (error) {
-    publicationError.value = errorText(error)
+    if (current()) publicationError.value = errorText(error)
   } finally {
-    publicationLoading.value = false
+    if (current()) publicationLoading.value = false
   }
 }
 
 async function mutatePublication(action) {
   const current = publication.value
-  if (!publicationId.value || !current) return
-  const token = publicationToken(publicationId.value)
-  if (!token) {
+  const id = publicationId.value
+  if (!id || !current || publicationBusy.value) return
+  if (props.management && !props.managementEnabled) { publicationError.value = '本地管理写入尚未启用。'; return }
+  const token = props.management ? '' : publicationToken(id)
+  if (!props.management && !token) {
     publicationError.value = '此私有预览链接的临时授权已不可用，请重新打开作者提供的完整链接。'
     return
   }
+  const sequence = ++publicationRequestSequence
+  const isCurrent = () => sequence === publicationRequestSequence && publicationId.value === id
   publicationBusy.value = true
   publicationError.value = ''
   try {
-    if (action === 'confirm') {
-      publication.value = await apiRequest(
-        `/api/publications/${encodeURIComponent(publicationId.value)}/confirm`,
-        {
-          method: 'POST',
-          token,
-          body: { revision: current.revision, digest: current.digest },
-        },
-      )
-    } else {
-      publication.value = await apiRequest(
-        `/api/publications/${encodeURIComponent(publicationId.value)}/retry`,
-        { method: 'POST', token, body: {} },
-      )
-    }
+    const result = await apiRequest(`${publicationPath(id)}/${action === 'confirm' ? 'confirm' : 'retry'}`, {
+      method: 'POST',
+      ...(token ? { token } : {}),
+      body: action === 'confirm' ? { revision: current.revision, digest: current.digest } : {},
+    })
+    if (isCurrent()) publication.value = result
   } catch (error) {
+    if (!isCurrent()) return
     publicationError.value = errorText(error)
     try {
-      publication.value = await apiRequest(`/api/publications/${encodeURIComponent(publicationId.value)}`, { token })
-      publicationError.value = errorText(error)
-    } catch {
-      // Keep the original action error visible if the status refresh also fails.
-    }
+      const result = await apiRequest(publicationPath(id), token ? { token } : {})
+      if (isCurrent()) { publication.value = result; publicationError.value = errorText(error) }
+    } catch { /* Keep the original action error when status refresh also fails. */ }
   } finally {
-    publicationBusy.value = false
+    if (isCurrent()) publicationBusy.value = false
   }
 }
 
 function applicationUrl(appId) {
-  const url = new URL(window.location.pathname, window.location.origin)
+  const url = new URL(props.management ? '/' : window.location.pathname, window.location.origin)
   url.searchParams.set('app', appId)
   return url.href
 }
 
 async function returnToCatalog() {
+  if (props.management && window.history.state?.plazaManagementPreview) { window.history.back(); return }
   const appId = publication.value?.appId
+  publicationRequestSequence += 1
   publicationId.value = ''
   publication.value = null
   publicationError.value = ''
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`)
+  if (props.management) return
   query.value = ''
   selectedTags.value = []
   page.value = 1
@@ -526,6 +543,7 @@ onMounted(async () => {
   window.addEventListener('hashchange', handleHashChange)
   window.addEventListener('resize', scheduleCatalogLayout)
   if (preparePublicationRoute()) return
+  if (props.management) return
 
   const appId = new URLSearchParams(window.location.search).get('app')
   await nextTick()
@@ -536,6 +554,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  publicationRequestSequence += 1
   window.removeEventListener('hashchange', handleHashChange)
   window.removeEventListener('resize', scheduleCatalogLayout)
   layoutObserver?.disconnect()
@@ -546,11 +565,12 @@ onUnmounted(() => {
 
 <template>
   <div v-if="publicationId" class="publication-shell">
-    <header class="publication-topbar">
+    <header v-if="!props.management" class="publication-topbar">
       <a class="publication-brand" href="/">AI应用广场</a>
       <span class="publication-private-label">私有预览</span>
     </header>
     <main class="publication-main">
+      <button v-if="props.management" type="button" class="secondary-button management-return" data-testid="return-management" :disabled="publicationBusy" @click="returnToCatalog">返回后台列表</button>
       <section class="publication-status-card" data-testid="publication-status" aria-live="polite">
         <div class="publication-status-heading">
           <div>
@@ -563,6 +583,7 @@ onUnmounted(() => {
         </div>
         <p class="publication-audience">确认收录后，应用目录对所有能访问本门户的人开放。</p>
         <p v-if="publication?.expiresAt" class="publication-expiry">预览有效期至 {{ formatDate(publication.expiresAt) }}</p>
+        <p v-if="publicationExpired" class="publication-action-error" role="alert">此预览已过期，不能确认或重试；当前仅展示已保存的资料。</p>
         <div v-if="publicationLoading" class="publication-message" role="status">正在读取服务端发布状态…</div>
         <div v-else-if="publicationError && !publication" class="publication-message is-error" role="alert">{{ publicationError }}</div>
         <div v-else-if="publication?.status === 'checking'" class="publication-message" role="status">
@@ -594,7 +615,7 @@ onUnmounted(() => {
             v-if="publication?.status === 'preview_ready'"
             class="primary-button"
             data-testid="confirm-publication"
-            :disabled="publicationBusy || !publication.digest"
+            :disabled="publicationBusy || publicationExpired || !publication.digest || (props.management && !props.managementEnabled)"
             @click="mutatePublication('confirm')"
           >
             {{ publicationBusy ? '正在确认…' : isUpdate ? '确认更新' : '确认收录' }}
@@ -603,7 +624,7 @@ onUnmounted(() => {
             v-if="publication?.status === 'failed' && publication.nextAction !== 'submit_again'"
             class="primary-button"
             data-testid="retry-publication"
-            :disabled="publicationBusy"
+            :disabled="publicationBusy || publicationExpired || (props.management && !props.managementEnabled)"
             @click="mutatePublication('retry')"
           >
             {{ publicationBusy ? '正在重试…' : isUpdate ? '重试更新' : '重试收录' }}
@@ -615,7 +636,7 @@ onUnmounted(() => {
             :disabled="catalogLoading"
             @click="returnToCatalog"
           >
-            {{ catalogLoading ? '正在刷新目录…' : '刷新目录并查看应用' }}
+            {{ props.management ? '返回后台列表' : catalogLoading ? '正在刷新目录…' : '刷新目录并查看应用' }}
           </button>
           <a
             v-if="publication?.status === 'registered' && publication.appId"
@@ -653,7 +674,8 @@ onUnmounted(() => {
   </div>
 
   <div v-else class="directory-shell">
-    <main ref="directoryMain" class="directory-main">
+    <slot v-if="props.management" name="management" :open-app="openApp" :open-update="openShareDialog" :open-publication="openPublication" />
+    <main v-else ref="directoryMain" class="directory-main">
       <header class="directory-header">
         <div class="brand-block">
           <button class="brand-mark" type="button" aria-label="AI应用广场" @click="handleBrandClick">
@@ -772,7 +794,7 @@ onUnmounted(() => {
       <template #header>
         <div class="detail-dialog-heading">
           <span>应用详情</span>
-          <button v-if="selectedApp && !detailLoading" type="button" class="detail-update-link" data-testid="publish-update" @click="openShareDialog(selectedApp.id)">发布新版本</button>
+          <button v-if="props.management && selectedApp && !detailLoading" type="button" class="detail-update-link" data-testid="publish-update" :disabled="!props.managementEnabled" @click="openShareDialog(selectedApp.id)">发布新版本</button>
         </div>
       </template>
       <div v-if="detailLoading" class="dialog-state" role="status">正在读取应用详情…</div>
@@ -1121,4 +1143,8 @@ onUnmounted(() => {
   .app-card-footer { padding-top: 6px; }
   .app-dates { font-size: 9px; }
 }
+</style>
+
+<style scoped>
+.management-return { margin-bottom: 14px; }
 </style>

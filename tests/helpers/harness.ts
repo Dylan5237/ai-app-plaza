@@ -6,7 +6,7 @@ import { openDatabase } from '../../server/domain/database.js';
 import { startGitLabFixture } from './gitlab-fixture.js';
 import type { Config } from '../../server/config.js';
 
-export async function startHarness(count = 1, path = 'memory://', options: Pick<Config, 'previewAdmin'> = {}) {
+export async function startHarness(count = 1, path = 'memory://', options: Pick<Config, 'previewAdmin' | 'localManagement'> = {}) {
   const probe = createServer();
   await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = (probe.address() as AddressInfo).port;
