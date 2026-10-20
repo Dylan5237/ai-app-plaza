@@ -85,6 +85,7 @@ HTTP 与 MCP 使用同一套服务逻辑。HTTP 是复制发布提示词后的�
 
 ```powershell
 npm run typecheck
+npm run test:docs
 npm test
 npm run build
 npm run test:e2e
@@ -92,6 +93,8 @@ npm run test:prototype
 ```
 
 浏览器测试需要 Playwright Chromium，或设置 `PLAYWRIGHT_CHANNEL=chrome` / `PLAYWRIGHT_EXECUTABLE_PATH` 指向已安装浏览器。本地主流程测试使用受控 GitLab 协议服务与真实 PostgreSQL 引擎，不向公司仓库写入。测试代码区分这些替身与实际服务；结果和截图位于忽略的 `artifacts/`。
+
+`npm run test:docs` 使用运行时资料校验器检查 v2 示例，解析旧 Schema 到服务端 Schema 的引用，并检查接入规范及相关文档的本地链接和 Markdown 标题。GitHub Actions 的 `Publishing documentation / publishing-docs` 在相关 PR 和 main 更新时执行同一检查，不访问真实广场或 GitLab，不证明业务运行或部署通过。
 
 `npm test` 最多并发运行 4 个测试文件，为测试中的 PGlite/WASM 实例和服务启动子进程保留资源。测试仍并发执行，启动就绪上限保持 15 秒；失败时记录子进程状态和最后一次健康探测。排查资源争用时可用 `node --import tsx --test tests/*.test.ts` 对照 Node 默认并发，或用 `node --import tsx --test --test-concurrency=1 tests/*.test.ts` 作串行对比。
 
