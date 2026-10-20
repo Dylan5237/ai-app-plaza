@@ -9,6 +9,7 @@ export interface Config {
   audience: string; staticDir: string; rateLimit: boolean;
   managedPublishing?: { groupId: string; groupPath: string; token: string };
   previewAdmin?: { trustedProxyIp?: string };
+  localManagement?: boolean;
 }
 
 function origin(value: string, name: string) {
@@ -28,9 +29,28 @@ function isRfc1918IPv4(hostname: string, originValue: string) {
   return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
 }
 
+function effectivePort(url: URL): number {
+  if (url.port) return Number(url.port);
+  return url.protocol === 'https:' ? 443 : 80;
+}
+
+export function assertLocalManagementConfig(config: Pick<Config, 'local' | 'host' | 'port' | 'publicOrigin' | 'localManagement'>) {
+  if (!config.localManagement) return;
+  let url: URL;
+  try { url = new URL(config.publicOrigin); }
+  catch { throw new Error('PLAZA_LOCAL_MANAGEMENT 仅允许本地回环配置'); }
+  if (process.env.NODE_ENV === 'production' || config.local !== true || config.host !== '127.0.0.1' ||
+    url.hostname !== '127.0.0.1' || effectivePort(url) !== config.port) {
+    throw new Error('PLAZA_LOCAL_MANAGEMENT 仅允许 PLAZA_LOCAL=1 且 HOST/PUBLIC_ORIGIN 均为 127.0.0.1、端口一致的本地环境');
+  }
+}
+
 export async function loadConfig(env = process.env): Promise<Config> {
   const local = env.PLAZA_LOCAL === '1';
   if (local && env.NODE_ENV === 'production') throw new Error('生产环境不能启用 PLAZA_LOCAL');
+  if (env.PLAZA_LOCAL_MANAGEMENT !== undefined && env.PLAZA_LOCAL_MANAGEMENT !== '' && env.PLAZA_LOCAL_MANAGEMENT !== '1') {
+    throw new Error('PLAZA_LOCAL_MANAGEMENT 仅接受显式值 1');
+  }
   const port = Number(env.PORT || 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT 无效');
   const host = env.HOST || '127.0.0.1';
@@ -40,6 +60,9 @@ export async function loadConfig(env = process.env): Promise<Config> {
   const publicOriginUrl = new URL(publicOrigin);
   if (!local && publicOriginUrl.protocol !== 'https:' && !(env.ALLOW_INSECURE_PORTAL === '1' && isRfc1918IPv4(publicOriginUrl.hostname, publicOriginValue))) {
     throw new Error('非本地运行需要 HTTPS PUBLIC_ORIGIN；仅可通过 ALLOW_INSECURE_PORTAL=1 为 RFC1918 私网 IPv4 开启 HTTP 内网试用');
+  }
+  if (env.PLAZA_LOCAL_MANAGEMENT === '1') {
+    assertLocalManagementConfig({ local, host, port, publicOrigin, localManagement: true });
   }
   if (!env.GITLAB_URL) throw new Error('请配置 GITLAB_URL；门户不会自动使用 Mock 数据');
   const gitlabUrl = origin(env.GITLAB_URL, 'GITLAB_URL');
@@ -76,6 +99,10 @@ export async function loadConfig(env = process.env): Promise<Config> {
     throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
   }
   const previewAdmin = trustedProxyIp ? { trustedProxyIp } : undefined;
-  return { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
-    dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true, ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}) };
+  const config: Config = { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
+    dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true,
+    ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}),
+    ...(env.PLAZA_LOCAL_MANAGEMENT === '1' ? { localManagement: true } : {}) };
+  assertLocalManagementConfig(config);
+  return config;
 }

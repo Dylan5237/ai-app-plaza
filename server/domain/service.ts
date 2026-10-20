@@ -81,6 +81,9 @@ export interface PlazaService {
   managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   retry(id: string, ticket: string): Promise<PublicationView>;
+  managementPublication(id: string): Promise<PublicationView>;
+  managementConfirm(id: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
+  managementRetry(id: string): Promise<PublicationView>;
   list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[] }>;
   app(id: string): Promise<AppView>;
   instructions(id: string, entryId: string): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string }>;
@@ -198,6 +201,15 @@ export function createService(config: ServiceConfig): PlazaService {
       );
       throw notFound();
     }
+    return record;
+  }
+
+  async function loadManagementPublication(id: string, forWrite = false): Promise<PublicationRecord> {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound();
+    const result = await config.db.query<PublicationRecord>('SELECT * FROM publications WHERE id = $1', [id]);
+    const record = result.rows[0];
+    if (!record) throw notFound();
+    if (forWrite && new Date(record.expires_at).getTime() <= Date.now()) throw notFound();
     return record;
   }
 
@@ -567,6 +579,46 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
+  async function confirmPublication(record: PublicationRecord, confirmation: { revision: number; digest: string }): Promise<PublicationView> {
+    if (record.status === 'registered') return recordView(record);
+    if (!Number.isInteger(confirmation?.revision) || confirmation.revision < 1 || !/^[a-f0-9]{64}$/.test(confirmation?.digest ?? '')) {
+      throw new DomainError(400, 'VALIDATION_FAILED', '确认必须包含预览修订号和摘要。');
+    }
+    const confirmed = await updateConfirmed(record.id, confirmation.revision, confirmation.digest);
+    if (confirmed.status === 'registered') return recordView(confirmed);
+    try {
+      const source = await assertAuthorAndSource(confirmed);
+      if (source.digest !== confirmation.digest) {
+        throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
+      }
+      const registered = await register(confirmed, source);
+      return recordView(registered);
+    } catch (error) {
+      return recordView(await markFailed(record.id, error));
+    }
+  }
+
+  async function retryPublication(record: PublicationRecord): Promise<PublicationView> {
+    if (record.status === 'registered') return recordView(record);
+    if (record.status === 'preview_ready') return recordView(record);
+    if (record.status === 'cancelled') throw new DomainError(409, 'PUBLICATION_CANCELLED', '该发布候选已取消。');
+    if (record.next_action === 'submit_again') {
+      throw new DomainError(409, record.error_code ?? 'SOURCE_MISMATCH', record.error_message ?? '当前候选需要重新提交并生成新的预览。');
+    }
+    try {
+      const source = await assertAuthorAndSource(record);
+      if (record.confirmed_at) {
+        if (!record.digest || source.digest !== record.digest) {
+          throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
+        }
+        return recordView(await register(record, source));
+      }
+      return recordView(await preparePreview(record, source));
+    } catch (error) {
+      return recordView(await markFailed(record.id, error));
+    }
+  }
+
   const service: PlazaService = {
     cleanupExpiredTokens,
 
@@ -671,45 +723,27 @@ export function createService(config: ServiceConfig): PlazaService {
     async confirm(id, ticket, confirmation) {
       await cleanupExpiredTokens();
       const record = await loadPublication(id, ticket);
-      if (record.status === "registered") return recordView(record);
-      if (!Number.isInteger(confirmation?.revision) || confirmation.revision < 1 || !/^[a-f0-9]{64}$/.test(confirmation?.digest ?? "")) {
-        throw new DomainError(400, "VALIDATION_FAILED", "确认必须包含预览修订号和摘要。");
-      }
-      const confirmed = await updateConfirmed(id, confirmation.revision, confirmation.digest);
-      if (confirmed.status === "registered") return recordView(confirmed);
-      try {
-        const source = await assertAuthorAndSource(confirmed);
-        if (source.digest !== confirmation.digest) {
-          throw new DomainError(409, "SOURCE_MISMATCH", "固定来源内容已变化，请重新提交并确认新的预览。");
-        }
-        const registered = await register(confirmed, source);
-        return recordView(registered);
-      } catch (error) {
-        return recordView(await markFailed(id, error));
-      }
+      return confirmPublication(record, confirmation);
     },
 
     async retry(id, ticket) {
       await cleanupExpiredTokens();
       const record = await loadPublication(id, ticket);
-      if (record.status === "registered") return recordView(record);
-      if (record.status === "preview_ready") return recordView(record);
-      if (record.status === "cancelled") throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
-      if (record.next_action === "submit_again") {
-        throw new DomainError(409, record.error_code ?? "SOURCE_MISMATCH", record.error_message ?? "当前候选需要重新提交并生成新的预览。");
-      }
-      try {
-        const source = await assertAuthorAndSource(record);
-        if (record.confirmed_at) {
-          if (!record.digest || source.digest !== record.digest) {
-            throw new DomainError(409, "SOURCE_MISMATCH", "固定来源内容已变化，请重新提交并确认新的预览。");
-          }
-          return recordView(await register(record, source));
-        }
-        return recordView(await preparePreview(record, source));
-      } catch (error) {
-        return recordView(await markFailed(id, error));
-      }
+      return retryPublication(record);
+    },
+
+    async managementPublication(id) {
+      return recordView(await loadManagementPublication(id));
+    },
+
+    async managementConfirm(id, confirmation) {
+      await cleanupExpiredTokens();
+      return confirmPublication(await loadManagementPublication(id, true), confirmation);
+    },
+
+    async managementRetry(id) {
+      await cleanupExpiredTokens();
+      return retryPublication(await loadManagementPublication(id, true));
     },
 
     async list(options = {}) {

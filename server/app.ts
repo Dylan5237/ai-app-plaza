@@ -7,11 +7,12 @@ import { createService } from './domain/service.js';
 import { normalizeProjectVersion } from './domain/manifest.js';
 import { DomainError, type DomainDiagnostic } from './domain/errors.js';
 import type { Database } from './domain/database.js';
-import type { Config } from './config.js';
+import { assertLocalManagementConfig, type Config } from './config.js';
 import { publishContract } from './publish-contract.js';
 import { publisherScript } from './managed-publish-contract.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
 import { registerPreviewAdmin } from './preview-admin.js';
+import { registerManagement } from './management.js';
 
 const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
@@ -55,6 +56,7 @@ function parseManagedCandidate(value: unknown) {
 }
 
 export async function createApp(config: Config, db: Database) {
+  assertLocalManagementConfig(config);
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
@@ -90,6 +92,14 @@ export async function createApp(config: Config, db: Database) {
     if (request.headers.host !== new URL(config.publicOrigin).host) {
       return reply.code(403).send({ error: { code: 'HOST_DENIED', message: '访问地址与 PUBLIC_ORIGIN 不一致' } });
     }
+    const path = request.url.split('?')[0];
+    if (config.localManagement && /^\/api\/management(?:\/|$)/.test(path)) {
+      const fetchSite = request.headers['sec-fetch-site'];
+      const values = Array.isArray(fetchSite) ? fetchSite : fetchSite === undefined ? [] : [fetchSite];
+      if (values.some(value => value.toLowerCase() === 'cross-site')) {
+        return reply.code(403).send({ error: { code: 'CROSS_SITE_DENIED', message: '本地管理请求不接受跨站来源' } });
+      }
+    }
     const managedPostPath = request.url.split('?')[0];
     if (managed && request.method === 'POST' && ['/api/managed-publications', '/api/managed-publications/validate'].includes(managedPostPath)) {
       if (managedActive >= 2) return reply.code(429).send({ error: { code: 'UPLOAD_BUSY', message: '正在处理其他上传，请保留本次记录后稍后重试' } });
@@ -117,7 +127,7 @@ export async function createApp(config: Config, db: Database) {
     return header.slice(7);
   };
   const publicationId = (params: unknown) => idValue.parse((params as any).id);
-  app.get('/api/health', async () => ({ status: 'ok', mode: config.local ? 'local' : 'configured', loginRequired: false }));
+  app.get('/api/health', async () => ({ status: 'ok', mode: config.local ? 'local' : 'configured', loginRequired: false, managementEnabled: config.localManagement === true }));
   app.get('/api/publish-contract', async (request) => {
     const query = z.object({ mode: z.enum(['managed', 'gitlab']).optional() }).parse(request.query);
     return publishContract(config, undefined, undefined, query.mode === 'gitlab', await service.tags());
@@ -185,12 +195,15 @@ export async function createApp(config: Config, db: Database) {
   app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
   app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
+  registerManagement(app, config, db, service);
   registerPreviewAdmin(app, config, db);
   try {
     await access(config.staticDir);
     await app.register(staticPlugin, { root: config.staticDir, index: ['index.html'], dotfiles: 'deny' });
-    app.get('/private-previews', (_request, reply) => reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow').sendFile('index.html'));
-    app.get('/private-previews/', (_request, reply) => reply.redirect('/private-previews'));
+    app.get('/admin', (_request, reply) => reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow').sendFile('index.html'));
+    app.get('/admin/', (_request, reply) => reply.redirect('/admin'));
+    app.get('/private-previews', (_request, reply) => reply.redirect('/admin'));
+    app.get('/private-previews/', (_request, reply) => reply.redirect('/admin'));
   } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
   return { app, service, managed };
 }
