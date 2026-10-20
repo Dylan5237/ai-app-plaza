@@ -81,7 +81,8 @@ async function makeProject(parent: string) {
   return root;
 }
 
-type CliInjection = 'post-response-save-failure' | 'receipt-open-permission' | 'receipt-recovery-url-tamper';
+type CliInjection = 'post-response-save-failure' | 'receipt-open-permission' | 'receipt-recovery-url-tamper' |
+  'recover-receipt-save-failure';
 
 function runCli(args: string[], injectionMode: CliInjection | false = false) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
@@ -102,6 +103,9 @@ elif os.environ['PLAZA_TEST_INJECTION'] == 'receipt-recovery-url-tamper':
    receipt['recoveryUrl']=receipt['identity']['origin'] + '/#publish=' + receipt['publicationId'] + '&key=' + ('B'*43)
   return receipt
  module.ReceiptStore.open=tamper_recovery_url
+elif os.environ['PLAZA_TEST_INJECTION'] == 'recover-receipt-save-failure':
+ def fail_recovery_save(self, receipt): raise module.CliError('injected receipt save failure')
+ module.ReceiptStore.save=fail_recovery_save
 else:
  original=module.ReceiptStore.save
  count=0
@@ -1454,8 +1458,13 @@ test('--recover clears saved author retry URLs for malformed or non-retry receip
         'the initial fully bound failed retry has a recovery link');
 
       const recovered = await runCli([...args, '--recover']);
-      assert.equal(recovered.code, 1);
+      assert.equal(recovered.code, malformed === 'registered' ? 0 : 1);
       const output = JSON.parse(recovered.stdout) as Record<string, unknown>;
+      if (malformed === 'registered') {
+        assert.equal(output.status, 'registered');
+        assert.equal(output.handoffState, 'registered');
+        assert.equal(output.sourceUploaded, true);
+      }
       assert.ok(!Object.hasOwn(output, 'recoveryUrl'), 'invalid author recovery capability is never delivered');
       assert.ok(!recovered.stdout.includes(PREVIEW_TICKET));
 
@@ -1775,6 +1784,223 @@ test('registered publications are reported separately and do not claim preview h
   assert.equal(output.sourceUploaded, true);
   assert.ok(!Object.hasOwn(output, 'previewUrl'));
   assert.equal(requestCount, 1, 'the CLI does not make a confirm or follow-up request');
+});
+
+test('--recover succeeds for a verified registered receipt and keeps unresolved outcomes nonzero', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-recover-registered-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let recoveryResponse: unknown;
+  let recoveryRaw: string | null = null;
+  let portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'POST') {
+      respondJson(response, publicationResponse(portal.origin));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/api/managed-publications/receipt') {
+      if (recoveryRaw !== null) {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(recoveryRaw);
+      } else {
+        respondJson(response, recoveryResponse);
+      }
+      return;
+    }
+    response.writeHead(405);
+    response.end();
+  });
+  t.after(() => portal.close());
+  const args = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  const submitted = await runCli(args);
+  assert.equal(submitted.code, 0, submitted.stderr);
+  assert.deepEqual(requests.map((request) => request.method), ['POST']);
+  const originalPost = requests[0]!;
+  const receiptName = (await readdir(stateDir)).find((name) => name.endsWith('.receipt'));
+  assert.ok(receiptName);
+  const receiptPath = path.join(stateDir, receiptName);
+
+  const scenarios: Array<{
+    name: string;
+    response?: (origin: string) => unknown;
+    raw?: string;
+    injection?: CliInjection;
+    code: number;
+    status: string;
+    handoffState: string;
+    savedPublicationStatus: string;
+    savedHandoffState: string;
+    preserveReceipt?: boolean;
+  }> = [
+    {
+      name: 'registered',
+      response: (origin: string) => publicationResponse(origin, { status: 'registered', nextAction: 'complete' }),
+      code: 0,
+      status: 'registered',
+      handoffState: 'registered',
+      savedPublicationStatus: 'registered',
+      savedHandoffState: 'registered',
+    },
+    {
+      name: 'preview_ready',
+      response: (origin: string) => publicationResponse(origin),
+      code: 0,
+      status: 'preview_ready',
+      handoffState: 'complete',
+      savedPublicationStatus: 'preview_ready',
+      savedHandoffState: 'complete',
+    },
+    {
+      name: 'checking',
+      response: (origin: string) => publicationResponse(origin, { status: 'checking', nextAction: 'none' }),
+      code: 1,
+      status: 'checking',
+      handoffState: 'pending',
+      savedPublicationStatus: 'checking',
+      savedHandoffState: 'pending',
+    },
+    {
+      name: 'failed',
+      response: (origin: string) => publicationResponse(origin, { status: 'failed', nextAction: 'none' }),
+      code: 1,
+      status: 'failed',
+      handoffState: 'recovery_required',
+      savedPublicationStatus: 'failed',
+      savedHandoffState: 'recovery_required',
+    },
+    {
+      name: 'registered_without_source_confirmation',
+      response: (origin: string) => publicationResponse(origin, { status: 'registered', sourceUploaded: false }),
+      code: 1,
+      status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required',
+      savedPublicationStatus: 'registered',
+      savedHandoffState: 'recovery_required',
+    },
+    {
+      name: 'registered_identity_mismatch',
+      response: (origin: string) => publicationResponse(origin, {
+        status: 'registered', managedAppId: WRONG_MANAGED_ID,
+      }),
+      code: 1,
+      status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required',
+      savedPublicationStatus: 'registered',
+      savedHandoffState: 'recovery_required',
+      preserveReceipt: true,
+    },
+    {
+      name: 'registered_receipt_save_failure',
+      response: (origin: string) => publicationResponse(origin, { status: 'registered' }),
+      injection: 'recover-receipt-save-failure',
+      code: 1,
+      status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required',
+      savedPublicationStatus: 'registered',
+      savedHandoffState: 'recovery_required',
+      preserveReceipt: true,
+    },
+    {
+      name: 'unknown_status',
+      response: (origin: string) => publicationResponse(origin, { status: 'unknown' }),
+      code: 1,
+      status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required',
+      savedPublicationStatus: 'unknown',
+      savedHandoffState: 'recovery_required',
+    },
+    {
+      name: 'malformed_response',
+      raw: '{"status":',
+      code: 1,
+      status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required',
+      savedPublicationStatus: 'unknown',
+      savedHandoffState: 'recovery_required',
+      preserveReceipt: true,
+    },
+  ];
+  const outcomes: Array<{
+    name: string;
+    code: number;
+    status: unknown;
+    handoffState: unknown;
+    savedPublicationStatus: unknown;
+    savedHandoffState: unknown;
+    previewUrl: boolean;
+    failedWarning: boolean;
+  }> = [];
+
+  for (const scenario of scenarios) {
+    recoveryResponse = scenario.response?.(portal.origin);
+    recoveryRaw = scenario.raw ?? null;
+    const receiptBefore = await readFile(receiptPath);
+    const recovered = await runCli([...args, '--recover'], scenario.injection ?? false);
+    const output = JSON.parse(recovered.stdout) as Record<string, unknown>;
+    const recoveryRequest = requests[requests.length - 1]!;
+    assert.equal(recoveryRequest.method, 'GET', `${scenario.name} uses a read-only recovery request`);
+    assert.equal(recoveryRequest.url, '/api/managed-publications/receipt');
+    assert.equal(recoveryRequest.body.length, 0);
+    assert.equal(recoveryRequest.headers['idempotency-key'], originalPost.headers['idempotency-key']);
+    assert.equal(recoveryRequest.headers['x-plaza-publish-key'], originalPost.headers['x-plaza-publish-key']);
+    assert.ok(!recovered.stdout.includes(String(originalPost.headers['idempotency-key'])));
+    assert.ok(!recovered.stdout.includes(String(originalPost.headers['x-plaza-publish-key'])));
+    assert.ok(!recovered.stderr.includes(String(originalPost.headers['idempotency-key'])));
+    assert.ok(!recovered.stderr.includes(String(originalPost.headers['x-plaza-publish-key'])));
+
+    const receiptAfter = await readFile(receiptPath);
+    if (scenario.preserveReceipt) {
+      assert.deepEqual(receiptAfter, receiptBefore, `${scenario.name} preserves the durable receipt`);
+    }
+    const requestCountBeforeStatus = requests.length;
+    const savedStatus = await runCli([...args, '--status']);
+    assert.equal(savedStatus.code, 0, savedStatus.stderr);
+    assert.equal(requests.length, requestCountBeforeStatus, '--status remains local and read-only');
+    const saved = JSON.parse(savedStatus.stdout) as Record<string, unknown>;
+    outcomes.push({
+      name: scenario.name,
+      code: recovered.code,
+      status: output.status,
+      handoffState: output.handoffState,
+      savedPublicationStatus: saved.publicationStatus,
+      savedHandoffState: saved.handoffState,
+      previewUrl: Object.hasOwn(output, 'previewUrl'),
+      failedWarning: recovered.stderr.includes('广场收录失败'),
+    });
+  }
+
+  assert.deepEqual(outcomes, [
+    { name: 'registered', code: 0, status: 'registered', handoffState: 'registered',
+      savedPublicationStatus: 'registered', savedHandoffState: 'registered', previewUrl: false, failedWarning: false },
+    { name: 'preview_ready', code: 0, status: 'preview_ready', handoffState: 'complete',
+      savedPublicationStatus: 'preview_ready', savedHandoffState: 'complete', previewUrl: true, failedWarning: false },
+    { name: 'checking', code: 1, status: 'checking', handoffState: 'pending',
+      savedPublicationStatus: 'checking', savedHandoffState: 'pending', previewUrl: false, failedWarning: false },
+    { name: 'failed', code: 1, status: 'failed', handoffState: 'recovery_required',
+      savedPublicationStatus: 'failed', savedHandoffState: 'recovery_required', previewUrl: false, failedWarning: true },
+    { name: 'registered_without_source_confirmation', code: 1, status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required', savedPublicationStatus: 'registered',
+      savedHandoffState: 'recovery_required', previewUrl: false, failedWarning: false },
+    { name: 'registered_identity_mismatch', code: 1, status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required', savedPublicationStatus: 'registered',
+      savedHandoffState: 'recovery_required', previewUrl: false, failedWarning: false },
+    { name: 'registered_receipt_save_failure', code: 1, status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required', savedPublicationStatus: 'registered',
+      savedHandoffState: 'recovery_required', previewUrl: false, failedWarning: false },
+    { name: 'unknown_status', code: 1, status: 'HANDOFF_RECOVERY_REQUIRED', handoffState: 'recovery_required',
+      savedPublicationStatus: 'unknown', savedHandoffState: 'recovery_required', previewUrl: false, failedWarning: false },
+    { name: 'malformed_response', code: 1, status: 'HANDOFF_RECOVERY_REQUIRED',
+      handoffState: 'recovery_required', savedPublicationStatus: 'unknown',
+      savedHandoffState: 'recovery_required', previewUrl: false, failedWarning: false },
+  ], 'captured CLI status, saved receipt, and stderr outcomes must match each recovery scenario');
+  assert.deepEqual(requests.map((request) => request.method), ['POST', ...scenarios.map(() => 'GET')]);
+  assert.equal(requests.filter((request) => request.method === 'POST').length, 1,
+    'recover never resends source or confirms the publication');
+  assert.ok(requests.slice(1).every((request) => request.url === '/api/managed-publications/receipt'),
+    'recover uses only the read-only receipt endpoint');
 });
 
 test('--recover reports MANAGED_OPERATION_NOT_FOUND without changing owner or retrying the POST', async (t) => {

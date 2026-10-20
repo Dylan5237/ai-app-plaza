@@ -2016,7 +2016,14 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
     _print_json(_publish_output(details, complete))
     if details.get("status") == "failed":
         print("源文件已上传，广场收录失败；请按返回状态处理，不能视为发布成功。", file=sys.stderr)
-    return 0 if complete else 1
+    registered_recovery_complete = (
+        details.get("status") == "registered"
+        and details.get("handoffState") == "registered"
+        and details.get("sourceUploaded") is True
+        and isinstance(details.get("managedAppId"), str)
+        and isinstance(details.get("publicationId"), str)
+    )
+    return 0 if complete or registered_recovery_complete else 1
 
 
 def _run(args: argparse.Namespace) -> int:
