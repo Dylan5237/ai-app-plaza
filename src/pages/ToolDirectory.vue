@@ -673,7 +673,6 @@ onUnmounted(() => {
             v-model="query"
             class="search-input"
             data-testid="search-input"
-            size="large"
             clearable
             placeholder="搜索应用名称、用途或能力"
             aria-label="搜索应用名称、用途或能力"
@@ -681,7 +680,7 @@ onUnmounted(() => {
           >
             <template #prefix><span class="search-symbol" aria-hidden="true">⌕</span></template>
           </el-input>
-          <el-button class="search-submit" type="primary" size="large" data-testid="search-button" @click="searchCatalog">搜索</el-button>
+          <el-button class="search-submit" type="primary" data-testid="search-button" @click="searchCatalog">搜索</el-button>
         </div>
         <div v-if="authorTags.length" class="tag-filter-row" aria-label="按作者标签筛选">
           <span class="tag-filter-label">能力标签</span>
@@ -960,15 +959,15 @@ onUnmounted(() => {
 .brand-mark img { display: block; width: 100%; height: 100%; }
 .brand-block h1 { margin: 0; color: #1e2b3c; font-size: 21px; font-weight: 650; line-height: 1.35; }
 .brand-block p { margin: 3px 0 0; color: #8993a2; font-size: 12px; }
-.share-button, .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 14px; border: 1px solid var(--plaza-primary-button); border-radius: 6px; background: var(--plaza-primary-button); color: #fff; font: inherit; font-size: 13px; font-weight: 550; text-decoration: none; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.share-button, .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: var(--plaza-control-height); padding: 0 14px; border: 1px solid var(--plaza-primary-button); border-radius: 6px; background: var(--plaza-primary-button); color: #fff; font: inherit; font-size: 13px; font-weight: 550; text-decoration: none; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
 .share-button:hover, .primary-button:hover { border-color: #4080ff; background: #4080ff; }
 .share-button:focus-visible, .primary-button:focus-visible, .secondary-button:focus-visible, .app-title:focus-visible, .filter-chip:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
 .primary-button:disabled, .secondary-button:disabled, .share-button:disabled { opacity: .55; cursor: not-allowed; }
 .secondary-button { border-color: #d6dde7; background: #fff; color: #46566d; }
 .secondary-button:hover { border-color: #bac8db; background: #f8fafc; }
-.search-section { margin: 18px 0 18px; padding: 12px 14px 10px; border: 1px solid #e8ebf0; border-radius: 9px; background: #fff; }
+.search-section { margin: 18px 0 18px; padding: 10px 14px; border: 1px solid #e8ebf0; border-radius: 9px; background: #fff; }
 .search-row { display: flex; gap: 10px; max-width: 820px; }
-.search-input { max-width: 690px; }
+.search-input { --el-input-height: var(--plaza-control-height); max-width: 690px; }
 .search-input :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px #dfe4ec inset; }
 .search-input :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px #7ea1df inset; }
 .search-symbol { color: #8a95a5; font-size: 22px; line-height: 1; }
@@ -1100,7 +1099,7 @@ onUnmounted(() => {
   .brand-mark { width: 36px; height: 36px; }
   .brand-block h1 { font-size: 18px; }
   .brand-block p { font-size: 11px; }
-  .share-button { min-height: 34px; padding: 0 9px; font-size: 11px; }
+  .share-button { padding: 0 9px; font-size: 11px; }
   .search-section { margin: 20px 0 23px; padding: 14px; }
   .search-row { gap: 7px; }
   .search-submit { min-width: 62px; padding: 0 10px; }
