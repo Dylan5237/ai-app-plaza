@@ -8,7 +8,7 @@ export interface Config {
   secret: string; databaseUrl?: string; dataDir: string; local: boolean;
   audience: string; staticDir: string; rateLimit: boolean;
   managedPublishing?: { groupId: string; groupPath: string; token: string };
-  previewAdmin?: { password: string; trustedProxyIp?: string };
+  previewAdmin?: { password: string; trustedProxyIp?: string; allowInsecureIntranet?: boolean };
 }
 
 function origin(value: string, name: string) {
@@ -26,6 +26,11 @@ function isRfc1918IPv4(hostname: string, originValue: string) {
   if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
   const [first, second] = octets;
   return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
+}
+
+export function isBoundIntranetHttpOrigin(value: string, host: string, port: number) {
+  const url = new URL(value);
+  return url.protocol === 'http:' && host === url.hostname && Number(url.port || 80) === port && isRfc1918IPv4(url.hostname, value);
 }
 
 export async function loadConfig(env = process.env): Promise<Config> {
@@ -74,19 +79,22 @@ export async function loadConfig(env = process.env): Promise<Config> {
   let previewAdmin: Config['previewAdmin'];
   const adminPassword = env.PLAZA_PREVIEW_ADMIN_PASSWORD;
   if (adminPassword) {
-    if (publicOriginUrl.protocol !== 'https:' && !(local && host === '127.0.0.1' && publicOriginUrl.hostname === '127.0.0.1')) {
-      throw new Error('私有预览管理员功能需要 HTTPS；仅本地回环验证允许 HTTP');
+    const localLoopback = local && host === '127.0.0.1' && publicOriginUrl.hostname === '127.0.0.1';
+    const allowInsecureIntranet = env.ALLOW_INSECURE_PORTAL === '1' && env.ALLOW_INSECURE_PREVIEW_ADMIN === '1' && isBoundIntranetHttpOrigin(publicOriginValue, host, port);
+    if (publicOriginUrl.protocol !== 'https:' && !localLoopback && !allowInsecureIntranet) {
+      throw new Error('私有预览管理员功能需要 HTTPS；HTTP 仅允许本地回环验证，或同时显式启用两个内网开关并绑定 PUBLIC_ORIGIN 的 RFC1918 IPv4');
     }
     if ([...adminPassword].length < 32 || Buffer.byteLength(adminPassword, 'utf8') > 512 || /[\r\n\u0000]/.test(adminPassword)) {
       throw new Error('PLAZA_PREVIEW_ADMIN_PASSWORD 需为至少32字符且不超过512字节的独立管理员口令');
     }
     if (adminPassword === secret || adminPassword === managedPublishing?.token) throw new Error('管理员口令必须独立于发布或GitLab凭据');
     const trustedProxyIp = env.PLAZA_PREVIEW_ADMIN_PROXY_IP;
+    if (allowInsecureIntranet && trustedProxyIp) throw new Error('内网 HTTP 直连模式不能配置 PLAZA_PREVIEW_ADMIN_PROXY_IP');
     if (trustedProxyIp && (!isIP(trustedProxyIp) || trustedProxyIp.includes('%'))) throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
-    if (!(local && host === '127.0.0.1' && publicOriginUrl.hostname === '127.0.0.1') && !trustedProxyIp) {
+    if (!localLoopback && !allowInsecureIntranet && !trustedProxyIp) {
       throw new Error('非本地私有预览管理需配置 PLAZA_PREVIEW_ADMIN_PROXY_IP，并由可信 HTTPS 代理覆盖 X-Real-IP');
     }
-    previewAdmin = { password: adminPassword, ...(trustedProxyIp ? { trustedProxyIp } : {}) };
+    previewAdmin = { password: adminPassword, ...(trustedProxyIp ? { trustedProxyIp } : {}), ...(allowInsecureIntranet ? { allowInsecureIntranet: true } : {}) };
   }
   return { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
     dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true, ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}) };
