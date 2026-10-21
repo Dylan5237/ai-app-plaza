@@ -52,7 +52,7 @@ Agent 返回本次专属预览链接，作者检查内容后确认。**任何持
 
 连续点击广场 Logo 三次进入 `/admin`；旧 `/private-previews` 自动跳转。应用管理、待收录与更新、上传占位及回收站集中在后台，支持上下架、可恢复删除和手动修改应用资料；应用详情、完整资料、来源、Agent 说明、更新提示词和发布预览确认继续使用原组件和服务。广场保留发现、使用和首次分享，详情不再开放作者更新入口。
 
-本地候选可执行 `npm run build`，再运行 `npm run dev:management-local`，打开 `http://127.0.0.1:9442/admin`。该启动脚本只连接隔离 PGlite 和本地 GitLab 协议 fixture，包含可确认的首次上传、待确认更新和一个固定的合成上传占位；重启后重新准备测试数据，不读取真实 `.env` 或 GitLab。详见[本地集成说明](docs/ops/local-management-integration.md)。
+本地候选可执行 `npm run build`，再运行 `npm run dev:management-local`，打开 `http://127.0.0.1:9442/admin`。该启动脚本只连接隔离 PGlite 和本地 GitLab 协议 fixture，包含可确认的首次上传、待确认更新和一个固定的合成上传占位；重启后重新准备测试数据，不读取真实 `.env` 或 GitLab。详见[本地集成说明](docs/ops/local-management-integration.md)。 使用 `npm run dev:management-local -- --pagination` 可为四个列表各增加 23 条合成记录，试用翻页与窗口大小变化。
 
 管理写入默认关闭。`PLAZA_LOCAL_MANAGEMENT=1` 仅用于 `PLAZA_LOCAL=1`、回环地址和同端口的本地集成；受信任内网可在移除 `PLAZA_LOCAL=1` 后设置 `PLAZA_INTRANET_MANAGEMENT=1`，并将 `PUBLIC_ORIGIN` 配为同端口的 RFC1918 IPv4 字面地址。内网模式沿用非本地服务所需的外部 PostgreSQL、持久密钥和服务端 GitLab 授权。该后台不设密码或账号，所有能访问门户的人都能管理；部署方必须通过内网边界控制访问范围。HTTP 仍需显式开启 `ALLOW_INSECURE_PORTAL=1`，HTTPS 私网地址可直接使用。默认不提供 `/api/management/*`，Host、Origin 和跨站校验继续生效。原作者专属预览协议和只读 `/api/preview-admin/*` 保持兼容，不导出作者票据。后者的代理校验、限频和读取边界见[只读接口说明](docs/ops/private-preview-administration.md)。完整配置见[本地集成与内网管理说明](docs/ops/local-management-integration.md)。
 

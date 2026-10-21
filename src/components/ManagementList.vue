@@ -1,12 +1,17 @@
 <script setup>
-import { computed, onMounted, ref, toRefs, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, toRefs, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
+import ListPagination from './ListPagination.vue'
 
 const emit = defineEmits(['open-app', 'open-update', 'open-publication', 'open-editor', 'open-create'])
 const props = defineProps({ state: { type: Object, required: true }, managementEnabled: { type: Boolean, default: false }, managementMode: { type: String, default: 'disabled' } })
-const { view, query, status, page } = toRefs(props.state)
-const pageSize = ref(20)
+const { view, query, status, page, pageSize } = toRefs(props.state)
+const records = ref(null)
+const table = ref(null)
+const footer = ref(null)
+let layoutObserver
+let layoutFrame = 0
 const rows = ref([])
 const total = ref(0)
 const loading = ref(false)
@@ -21,7 +26,6 @@ const description = computed(() => ({
   uploads: '展示尚未生成预览的托管上传；资料就绪后转入待收录列表。',
   trash: '删除的应用保留源码与历史版本，恢复后保持下架状态。',
 })[view.value])
-const pages = computed(() => Math.ceil(total.value / pageSize.value))
 const stageLabels = { prepared: '上传已占位', project_ready: '项目已准备', commit_ready: '源码已上传', tag_ready: '版本已创建', release_ready: '正在生成预览', submitted: '预览已生成' }
 function date(value) { if (!value) return '—'; const d = new Date(value); return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN', { hour12: false }) }
 function name(row) { return row.manifest?.name || row.name || row.appKey || '待核验应用' }
@@ -33,22 +37,39 @@ async function load() {
   const current = ++sequence
   loading.value = true
   error.value = ''
-  const params = new URLSearchParams({ query: query.value.trim(), page: String(page.value) })
-  if (isApps.value) { params.set('pageSize', '20'); params.set('status', view.value === 'trash' ? 'deleted' : status.value) }
+  const params = new URLSearchParams({ query: query.value.trim(), page: String(page.value), pageSize: String(pageSize.value) })
+  if (isApps.value) params.set('status', view.value === 'trash' ? 'deleted' : status.value)
   if (view.value === 'publications') params.set('status', status.value)
   const path = isApps.value ? (props.managementEnabled ? '/api/management/apps' : '/api/apps') : `/api/management/${view.value}`
   try {
     const response = await apiRequest(`${path}?${params}`)
     if (current !== sequence) return
-    rows.value = response.items || []
     total.value = Number(response.total) || 0
-    pageSize.value = Number(response.pageSize) || 20
+    const lastPage = Math.max(1, Math.ceil(total.value / pageSize.value))
+    if (page.value > lastPage) { page.value = lastPage; await load(); return }
+    rows.value = response.items || []
+    table.value?.setScrollTop(0)
   } catch (e) { if (current === sequence) { rows.value = []; total.value = 0; error.value = e.message || '暂时无法读取记录。' } }
   finally { if (current === sequence) loading.value = false }
 }
 function changeView(value) { view.value = value; query.value = ''; status.value = 'all'; page.value = 1; load() }
 function search() { page.value = 1; load() }
 function changePage(value) { page.value = value; load() }
+function updatePageSize(reload = true) {
+  if (!records.value || !footer.value) return
+  const header = records.value.querySelector('.el-table__header-wrapper')
+  // Reserve the horizontal scrollbar as well as the table heading and pager.
+  const available = records.value.clientHeight - footer.value.offsetHeight - (header?.offsetHeight || 40) - 14
+  const capacity = Math.max(1, Math.min(20, Math.floor(available / 64)))
+  if (capacity === pageSize.value) return
+  pageSize.value = capacity
+  page.value = 1
+  if (reload && !error.value) load()
+}
+function scheduleLayout() {
+  cancelAnimationFrame(layoutFrame)
+  layoutFrame = requestAnimationFrame(() => updatePageSize())
+}
 async function changeLifecycle(row, action) {
   const texts = {
     offline: ['下架应用', '下架后广场将隐藏此应用，后台仍可查看和修改。', '确认下架'],
@@ -69,7 +90,14 @@ async function changeLifecycle(row, action) {
 }
 defineExpose({ reload: load })
 watch(() => props.managementEnabled, load)
-onMounted(load)
+onMounted(async () => {
+  await nextTick()
+  updatePageSize(false)
+  layoutObserver = new ResizeObserver(scheduleLayout)
+  layoutObserver.observe(records.value)
+  load()
+})
+onUnmounted(() => { ++sequence; layoutObserver?.disconnect(); cancelAnimationFrame(layoutFrame) })
 
 </script>
 
@@ -89,13 +117,13 @@ onMounted(load)
       <el-button type="primary" native-type="submit" data-testid="management-search">查询</el-button><el-button :disabled="loading" @click="load">刷新</el-button>
     </form>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="management-alert" />
-    <section class="management-records" :aria-busy="loading">
-      <el-table :data="rows" row-key="id" v-loading="loading" empty-text="暂无符合条件的记录" data-testid="management-table">
-        <el-table-column label="应用" min-width="240"><template #default="{ row }"><div class="record-app"><button v-if="isApps" type="button" class="record-name" @click="emit('open-app', row.id)">{{ name(row) }}</button><strong v-else>{{ name(row) }}</strong><span>{{ key(row) }}</span></div></template></el-table-column>
-        <el-table-column label="版本" min-width="110"><template #default="{ row }">{{ version(row) }}</template></el-table-column>
-        <el-table-column v-if="view !== 'uploads'" label="作者" min-width="150"><template #default="{ row }">{{ authors(row) }}</template></el-table-column>
+    <section ref="records" class="management-records" :aria-busy="loading">
+      <el-table ref="table" :data="rows" row-key="id" height="100%" v-loading="loading" empty-text="暂无符合条件的记录" data-testid="management-table">
+        <el-table-column label="应用" min-width="240"><template #default="{ row }"><div class="record-app"><button v-if="isApps" type="button" :title="name(row)" class="record-name" @click="emit('open-app', row.id)">{{ name(row) }}</button><strong v-else :title="name(row)">{{ name(row) }}</strong><span :title="key(row)">{{ key(row) }}</span></div></template></el-table-column>
+        <el-table-column label="版本" min-width="110" show-overflow-tooltip><template #default="{ row }">{{ version(row) }}</template></el-table-column>
+        <el-table-column v-if="view !== 'uploads'" label="作者" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ authors(row) }}</template></el-table-column>
         <el-table-column label="状态" min-width="130"><template #default="{ row }"><el-tag :type="row.expired || row.status === 'failed' ? 'warning' : 'info'" effect="light">{{ stateLabel(row) }}</el-tag></template></el-table-column>
-        <el-table-column label="更新时间" min-width="180"><template #default="{ row }">{{ date(row.updatedAt || row.createdAt) }}</template></el-table-column>
+        <el-table-column label="更新时间" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ date(row.updatedAt || row.createdAt) }}</template></el-table-column>
         <el-table-column label="操作" :width="isApps ? 360 : 190"><template #default="{ row }"><div class="management-actions">
           <template v-if="isApps">
             <el-button link type="primary" :data-testid="`management-detail-${row.id}`" @click="emit('open-app', row.id)">详情</el-button>
@@ -111,14 +139,15 @@ onMounted(load)
           <el-button v-else link disabled title="上传资料尚未就绪，生成预览后可以收录">收录</el-button>
         </div></template></el-table-column>
       </el-table>
-      <footer class="management-footer"><span>共 {{ total }} 项</span><el-pagination v-if="pages > 1" :current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" background @current-change="changePage" /></footer>
+      <footer ref="footer" class="management-footer" data-testid="management-pagination"><span>共 {{ total }} 项</span><ListPagination :page="page" :page-size="pageSize" :total="total" @change="changePage" /></footer>
     </section>
     <p v-if="view === 'uploads'" class="management-note">上传占位尚无完整详情和作者资料，不能确认收录。上传完成后，在“待收录与更新”打开原预览流程核对。</p>
   </main>
 </template>
 
 <style scoped>
-.management-main { box-sizing: border-box; width: min(1480px, 100%); margin: 0 auto; padding: 28px 24px; color: #273449; }
+.management-main { box-sizing: border-box; display: flex; flex-direction: column; width: min(1480px, 100%); height: 100%; min-height: 360px; margin: 0 auto; padding: 28px 24px; color: #273449; }
+.management-heading, .management-tabs, .management-toolbar, .management-alert, .management-note { flex-shrink: 0; }
 .management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .management-heading h1 { margin: 0 0 7px; color: #1f2c3d; font-size: 22px; }
 .management-heading p { margin: 0; color: #7b8798; font-size: 13px; line-height: 1.6; }
@@ -132,15 +161,19 @@ onMounted(load)
 .management-toolbar :deep(.el-select) { width: 160px; }
 .management-toolbar :deep(.el-button + .el-button) { margin-left: 0; }
 .management-alert { margin-bottom: 16px; }
-.management-records { overflow: hidden; border: 1px solid #e3e8ef; border-radius: 7px; background: white; }
-.record-app { display: grid; gap: 3px; padding: 5px 0; }
+.management-records { display: flex; flex: 1; flex-direction: column; min-height: 118px; overflow: hidden; border: 1px solid #e3e8ef; border-radius: 7px; background: white; }
+.management-records :deep(.el-table) { flex: 1; min-height: 0; }
+.management-records :deep(.el-table__row) { height: 64px; }
+.management-records :deep(.cell) { white-space: nowrap; }
+.record-app > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-app { display: grid; gap: 3px; line-height: 20px; }
 .record-app strong, .record-name { color: #273449; font-size: 13px; font-weight: 600; }
-.record-name { width: fit-content; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.record-name { width: fit-content; padding: 0; border: 0; background: transparent; line-height: 20px; text-align: left; cursor: pointer; }
 .record-name:hover { color: #165dff; }
 .record-app span { color: #8a96a8; font-size: 12px; }
 .management-actions { display: flex; gap: 12px; align-items: center; }
 .management-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.management-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid #edf0f5; color: #7b8798; font-size: 12px; }
+.management-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid #edf0f5; color: #7b8798; font-size: 12px; }
 .management-note { color: #7b8798; font-size: 12px; line-height: 1.7; }
-@media (max-width: 650px) { .management-main { padding: 20px 14px; } .management-heading { align-items: flex-start; } .management-heading h1 { font-size: 20px; } .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px; } }
+@media (max-width: 650px) { .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 20px; } .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px; } }
 </style>

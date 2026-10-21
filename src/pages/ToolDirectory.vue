@@ -5,6 +5,7 @@ import plazaMark from '../assets/plaza-mark.svg'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
 import AppExamples from '../components/AppExamples.vue'
+import ListPagination from '../components/ListPagination.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, safeHttpUrl } from '../lib/catalog.ts'
@@ -78,7 +79,6 @@ const publicationError = ref('')
 let brandClickCount = 0
 let brandClickTimer = 0
 
-const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const catalogGroups = computed(() => [
   { value: 'platform', label: '平台类应用', description: '打开即用，常用平台的统一入口', apps: apps.value.filter(app => catalogUsage(app) === 'platform') },
   { value: 'agent', label: 'Agent能力', description: '查看详情，按说明接入你的 Agent', apps: apps.value.filter(app => catalogUsage(app) === 'agent') },
@@ -819,15 +819,12 @@ onUnmounted(() => {
           </section>
         </div>
         <div ref="paginationRow" class="pagination-row" data-testid="pagination">
-          <el-pagination
-            v-if="apps.length && pages > 1"
-            :current-page="page"
+          <ListPagination
+            v-if="apps.length"
+            :page="page"
             :page-size="pageSize"
             :total="total"
-            :pager-count="5"
-            layout="prev, pager, next"
-            background
-            @current-change="changePage"
+            @change="changePage"
           />
         </div>
       </section>
