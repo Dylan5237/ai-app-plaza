@@ -1,0 +1,14 @@
+/* Solid primary actions use Tiangong blue; other button variants keep their roles. */
+:root {
+  --plaza-primary-button: #165dff;
+  --plaza-control-height: var(--el-component-size);
+}
+
+.el-button--primary:not(.is-link):not(.is-plain):not(.is-text) {
+  --el-button-bg-color: var(--plaza-primary-button);
+  --el-button-border-color: var(--plaza-primary-button);
+  --el-button-hover-bg-color: #4080ff;
+  --el-button-hover-border-color: #4080ff;
+  --el-button-active-bg-color: #0e42d2;
+  --el-button-active-border-color: #0e42d2;
+}

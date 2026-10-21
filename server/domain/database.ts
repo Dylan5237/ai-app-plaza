@@ -119,6 +119,13 @@ const MIGRATIONS = [
     UNIQUE (binding_id, idempotency_digest)
   )`,
   `ALTER TABLE managed_publish_operations ADD COLUMN IF NOT EXISTS publication_id uuid REFERENCES publications(id)`,
+  `ALTER TABLE managed_publish_operations ADD COLUMN IF NOT EXISTS operation_kind text NOT NULL DEFAULT 'full_source' CHECK (operation_kind IN ('full_source', 'metadata_patch'))`,
+  `CREATE TABLE IF NOT EXISTS catalog_app_lifecycle (
+    app_id uuid PRIMARY KEY REFERENCES catalog_apps(id),
+    status text NOT NULL CHECK (status IN ('published', 'offline', 'deleted')),
+    revision integer NOT NULL CHECK (revision >= 1),
+    updated_at timestamptz NOT NULL
+  )`,
   `CREATE INDEX IF NOT EXISTS published_snapshots_audience_idx ON published_snapshots (audience, app_id)`,
   `CREATE INDEX IF NOT EXISTS publications_expiry_idx ON publications (expires_at)`,
   `CREATE INDEX IF NOT EXISTS managed_publish_operations_binding_idx ON managed_publish_operations (binding_id, created_at DESC)`,

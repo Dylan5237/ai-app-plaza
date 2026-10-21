@@ -4,5 +4,5 @@
     "strict": true, "esModuleInterop": true, "skipLibCheck": true,
     "noEmit": true, "types": ["node"], "resolveJsonModule": true
   },
-  "include": ["server/**/*.ts", "tests/**/*.ts", "scripts/clean-catalog-tags.ts"]
+  "include": ["server/**/*.ts", "tests/**/*.ts", "scripts/clean-catalog-tags.ts", "scripts/preview-management-local.ts"]
 }

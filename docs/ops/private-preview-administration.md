@@ -1,37 +1,33 @@
-# 私有预览只读管理
+# 私有预览只读接口兼容
 
-本功能供受授权的运维管理员查看全部作者未确认的发布，不代替发布者身份与应用归属体系。对应 Phase #53；#37 的登录、归属、认领和恢复仍按其原门禁推进。
+按用户于2026-10-20的明确决定，管理预览改为直接启用、免密码查看，变更见 #64；#53 的原验收记录保留为历史。这些接口不建立发布者身份与应用归属体系，#37 仍按原门禁推进；页面迁移及本地集成见下文。
 
-## 启用与访问
+## 页面迁移与接口兼容
 
-在服务器的私有环境配置中提供 `PLAZA_PREVIEW_ADMIN_PASSWORD`：独立固定密码：显式内网直连HTTP或本地回环至少8字符，其他部署至少32字符，最多512字节，不含换行，不复用 `PLAZA_SECRET` 或托管 GitLab 令牌。该值不写入代码、普通日志、提示词、URL或公开部署清单。未设置时管理 API 返回禁用状态，公开目录与作者私有链接继续按原契约工作。
+管理界面已迁入 `/admin`，旧 `/private-previews` 跳转同一后台，不再维护第二套详情页。后台本地候选及其显式启用条件见[本地集成说明](local-management-integration.md)。本文只说明兼容保留的 `/api/preview-admin/*` 只读接口，不描述新本地管理写接口。
 
-服务器更新及配置切换属于部署操作，需要单独授权；本地实现完成不表示已启用线上管理功能。默认要求 HTTPS；`PLAZA_LOCAL=1` 且监听及入口均为 `127.0.0.1` 的本地验证允许 HTTP。可信内网直连 HTTP 需同时显式设置 `ALLOW_INSECURE_PORTAL=1` 和 `ALLOW_INSECURE_PREVIEW_ADMIN=1`，PUBLIC_ORIGIN 必须为数值 RFC1918 IPv4（10/8、172.16/12、192.168/16），且 HOST、PORT 与入口的 IP、端口完全一致；不接受域名、通配绑定、回环、IPv6 或非标准数值写法。此模式不要求反向代理，按直连 socket IP 限频，忽略客户端提供的转发头；口令和会话通过 HTTP 传输，入口只用于可信内网。单独设置门户 HTTP 开关不启用管理员 HTTP。
+原只读接口不需要密码、登录会话或启用开关。`PLAZA_PREVIEW_ADMIN_PASSWORD` 和 `ALLOW_INSECURE_PREVIEW_ADMIN` 不再使用；部署环境的网络范围、门户 HTTPS/显式可信内网 HTTP、Host、Origin 校验继续适用。
 
-连续点击广场 Logo 三次（相邻两击间隔不超过1.5秒），或访问 `/private-previews`。管理员在页面输入口令；通过后建立30分钟的独立管理会话，Cookie 为 HttpOnly、SameSite=Strict，HTTPS 时带 Secure，且限定 `/api/preview-admin`。页面不把口令写入浏览器持久存储，提交后清空输入。退出、会话过期、服务重启或同一浏览器重新登录都会使旧会话失效。连续5次口令错误后，该来源5分钟内不能继续登录。
+## 读取与限频
 
-页面按服务器返回的剩余会话时长自动清除列表、统计和详情，不会因刷新页面延长服务端会话。窗口重新获得焦点或标签页重新可见时，先移除已显示的私有内容并复核会话；验证通过后重新读取列表。退出、过期和组件卸载时取消计时器，并丢弃已失效请求的迟到结果。退出请求尚未完成时暂不接受再次登录，避免迟到的退出响应清除新会话。
+每条管理读取 API 按客户端每分钟最多120次限频，与公共默认桶分开。默认使用直连 socket IP，忽略客户端转发头。
 
-非本地 HTTPS 管理员部署还必须配置 `PLAZA_PREVIEW_ADMIN_PROXY_IP` 为反向代理的单一数值IP，并由代理用 `X-Real-IP` **覆盖**客户端输入（如 Nginx `proxy_set_header X-Real-IP $remote_addr`）。配置了该代理时，管理 API 只接受来自该代理连接、带单一有效IP的请求；缺失或直接伪造请求均拒绝。按该真实来源分别限频，避免一名访客的错误口令锁住所有管理员。后端必须绑定隔离地址或由防火墙限制直连；代理保持与 `PUBLIC_ORIGIN` 一致的 Host。既有公共/作者 API 继续 `trustProxy:false`，不全局信任转发头。本地回环验证和显式内网 HTTP 直连模式不要求代理；HTTP 开关不能绕过 HTTPS 的代理门禁。
+若设置 `PLAZA_PREVIEW_ADMIN_PROXY_IP`，必须是代理的单一数值IP；该代理须覆盖客户端输入的 `X-Real-IP`。管理 API 只接受来自该代理连接、带单个有效IP头的请求，并按该IP限频；缺失、重复或伪造来源均拒绝。此配置只校验代理来源和限频身份，不是用户登录或员工访问白名单。
 
-内网 HTTP 直连模式不能同时配置 `PLAZA_PREVIEW_ADMIN_PROXY_IP`，避免混用代理与直连身份策略。
+## 内容与只读边界
 
-启用服务限流时，每条管理 API 的请求桶也以该已校验的客户端IP计数，每分钟最多120次，且与公共接口的默认桶隔离；公共流量打满代理IP的默认桶不会锁住管理员。上述请求限流与登录五次错误锁定同时生效。
+列表覆盖 `checking`、`preview_ready`、`failed` 且 `confirmed_at IS NULL` 的发布，包含所有作者；已收录、已取消及已经确认的记录不进入列表。过期状态单独显示，不延长作者原链接有效期。
 
-## 能看到什么
+可按应用名称、appKey、维护人搜索，按状态筛选，按上传时间倒序分页，每页20项。详情读取已有预览快照中的 manifest、共享文档与固定来源信息，不重新访问 GitLab，不清除过期授权。
 
-列表覆盖 `checking`、`preview_ready`、`failed` 且 `confirmed_at IS NULL` 的发布，包含所有作者；已收录、已取消及已经确认的记录不进入列表。已过期单独显示，不能因能查看历史快照而认为旧链接重新有效。未完成来源核验的记录可能没有完整预览，界面需展示真实进度或错误。
-
-按应用名称、appKey、维护人搜索，状态筛选，按上传时间倒序分页，每页20项。详情读取已有预览快照中的 manifest、共享文档与固定来源信息；它不重新访问 GitLab、不清除过期授权，也不延长原预览有效期。
-
-管理 API 只执行 SELECT，不返回作者 ticket、确认摘要、actor/idempotency 信息或加密 GitLab 凭据；管理会话不能充当原作者 Bearer ticket。页面不提供确认、重试、恢复、取消、删除或批量操作。确认收录仍由作者打开原有效私有链接逐项完成。
+管理 API 只执行 SELECT，不返回作者 ticket、确认摘要、actor/idempotency 信息或加密 GitLab 凭据。这些只读接口不提供确认、重试、恢复、取消、删除或批量操作。原作者确认协议仍使用有效私有链接及作者凭证。
 
 ## 接口与验证
 
-- `GET /api/preview-admin/session`：检查会话；`POST` 用口令登录；`DELETE` 退出。登录和退出要求同源 Origin。
-- `GET /api/preview-admin/publications`：query、status、page；status 为 all / preview_ready / expired / checking / failed，返回分页列表与计数。
-- `GET /api/preview-admin/publications/:id`：当前尚未确认记录的完整只读预览。
+- `GET /api/preview-admin/publications`：query、status、page；返回列表与计数。
+- `GET /api/preview-admin/publications/:id`：未确认发布的完整只读预览。
+- 原 `/api/preview-admin/session` 已移除；GET、POST、DELETE 均不再提供管理会话。
 
-所有数据接口在查询前校验管理员会话，并设置 no-store。复用既有 Host/Origin 校验；路径可直接访问，权限不能依赖 Logo 的隐藏方式。
+管理响应使用 no-store、same-origin 资源策略和 noindex。只读响应不附加任何管理写入能力。
 
-本地回归使用显式受控 GitLab 协议服务和 PGlite，不连接公司 GitLab 或读取生产私有发布。核验禁用、未登录、错误口令、跨源、退出/过期、分页/筛选、完整资料、安全字段投影及七张业务表行级前后相等；浏览器覆盖三击入口、登录、查看与返回。真实部署和管理员业务试用分别记录，不能用本地测试替代。
+本地回归使用受控 GitLab 协议服务和 PGlite，不读取生产私有发布。验证免Cookie访问、移除会话端点、Host/Origin和代理来源、限频、分页筛选、字段投影与七张业务表前后相等；浏览器另验证旧址跳转、默认写入禁用及天宫蓝主按钮。真实部署和人工验收分别记录。

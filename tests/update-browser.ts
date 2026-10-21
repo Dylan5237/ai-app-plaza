@@ -10,7 +10,7 @@ const report: any = { status: 'RUNNING', boundary: 'Local Chrome + real portal s
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 try {
   for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }]) {
-    const h = await startHarness();
+    const h = await startHarness(1, 'memory://', { localManagement: true });
     const context = await browser.newContext({ viewport });
     try {
       await context.addInitScript({ content: "Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { window.copiedText = text; } } });" });
@@ -27,6 +27,10 @@ try {
       const saved = await h.service.confirm(first.id, first.ticket, { revision: first.revision, digest: first.digest! });
       const appUrl = `${h.origin}/?app=${saved.appId}`;
       await page.goto(appUrl);
+      await page.getByTestId('app-detail').waitFor();
+      assert.equal(await page.getByTestId('publish-update').count(), 0, 'public detail does not expose author updates');
+      await page.goto(h.origin + '/admin');
+      await page.getByTestId(`management-detail-${saved.appId}`).click();
       await page.getByTestId('publish-update').click();
       await page.getByTestId('update-target').waitFor();
       assert.match(await page.getByTestId('update-target').innerText(), /当前 v1\.0\.0/);
@@ -49,7 +53,7 @@ try {
       h.gitlab.state.tagName = 'v1.1.0'; h.gitlab.state.tagSha = SHA2; h.gitlab.state.releaseSha = SHA2;
       const update = await h.service.submit({ ...base, commitSha: SHA2, tag: 'v1.1.0', expectedAppRevision: 1 }, TOKEN, randomUUID());
       assert.equal(update.status, 'preview_ready');
-      await page.goto(update.previewUrl);
+      await page.goto(`${h.origin}/admin#publish=${update.id}`);
       await page.getByTestId('update-preview').waitFor();
       const preview = await page.getByTestId('update-preview').innerText();
       assert.match(preview, /v1\.0\.0\s*→\s*v1\.1\.0/);
@@ -80,6 +84,8 @@ try {
       assert.ok(latestGuide.includes(SHA2) && latestGuide.includes('# 新版升级说明') && !latestGuide.includes(SHA));
       await page.keyboard.press('Escape');
       await page.getByTestId('agent-instruction-content').waitFor({ state: 'hidden' });
+      await page.goto(h.origin + '/admin');
+      await page.getByTestId(`management-detail-${saved.appId}`).click();
       await page.getByTestId('publish-update').click();
       await page.getByTestId('update-target').waitFor();
       assert.match(await page.getByTestId('update-target').innerText(), /当前 v1\.1\.0/);
@@ -87,6 +93,7 @@ try {
       await page.getByTestId('publish-contract-dialog').waitFor({ state: 'hidden' });
       await page.keyboard.press('Escape');
       await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
+      await page.goto(h.origin);
       await page.getByTestId('share-button').click();
       await page.getByTestId('copy-publish-prompt').waitFor();
       assert.equal(await page.getByTestId('update-target').count(), 0, 'first publication does not retain a previously selected update target');

@@ -3,8 +3,8 @@ import { DomainError } from "./errors.js";
 import { gitlabConcurrency } from "./gitlab-concurrency.js";
 import type { DomainDiagnostic } from "./errors.js";
 import type { Database } from "./database.js";
-import type { PlazaService, SubmitInput, SubmitResult } from "./service.js";
-import { compareProjectVersions, decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath } from "./manifest.js";
+import type { AppView, PlazaService, SubmitInput, SubmitResult } from "./service.js";
+import { compareProjectVersions, decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath, type StoredAppManifest } from "./manifest.js";
 import { validateTagReuse } from './tags.js';
 import { parseTree, type ParseError } from "jsonc-parser";
 
@@ -16,11 +16,19 @@ const MAX_DOCUMENT_BYTES = 512 * 1024;
 const MAX_COMMIT_ACTIONS = 100;
 const API_TIMEOUT_MS = 30_000;
 const API_RESPONSE_BYTES = 8 * 1024 * 1024;
+const EDITOR_CONTEXT_REASONS = {
+  notManaged: "当前应用没有对应的托管 GitLab 绑定，无法在这里修改资料。",
+  managedKeyMissing: "托管应用缺少可验证的服务端密钥，无法修改资料。",
+  bindingMismatch: "托管绑定与当前应用目录记录不一致，无法修改资料。",
+  deleted: "应用已删除，不能修改资料；请先由维护者恢复应用。",
+  unsupportedManifest: "当前 Manifest 版本不支持管理编辑器修订。",
+} as const;
+type ManagedEditorReason = typeof EDITOR_CONTEXT_REASONS[keyof typeof EDITOR_CONTEXT_REASONS];
 
 interface BindingRecord {
   id: string;
   app_key: string;
-  publish_key_digest: string;
+  publish_key_digest: string | null;
   project_id: string | null;
   public_app_id: string | null;
 }
@@ -38,6 +46,7 @@ interface OperationRecord {
   commit_sha: string | null;
   publication_id: string | null;
   tag: string;
+  operation_kind: "full_source" | "metadata_patch";
   status: "prepared" | "project_ready" | "commit_ready" | "tag_ready" | "release_ready" | "submitted";
 }
 
@@ -118,6 +127,19 @@ export interface ManagedSubmitInput {
   expectedAppRevision?: number;
 }
 
+export interface ManagedEditorContext {
+  app: AppView;
+  editable: boolean;
+  reason?: ManagedEditorReason;
+  suggestedVersion?: string;
+}
+
+export interface ManagedMetadataEditInput {
+  expectedAppRevision: number;
+  manifest: unknown;
+  documents: Record<string, string>;
+}
+
 export interface ManagedPublisher {
   validate(input: ManagedSubmitInput): Promise<{ fileCount: number; totalBytes: number }>;
   submit(
@@ -138,6 +160,12 @@ export interface ManagedPublisher {
     version?: string;
   }>;
   findByAppId(appId: string): Promise<{ managedAppId: string; projectId: string; appKey: string } | undefined>;
+  editorContext(appId: string): Promise<ManagedEditorContext>;
+  editMetadata(
+    appId: string,
+    input: ManagedMetadataEditInput,
+    idempotencyKey: string,
+  ): Promise<SubmitResult & { operationId: string; managedAppId: string; sourceUploaded: true }>;
 }
 
 class GitLabApiError extends Error {
@@ -223,7 +251,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       if (!isUuid(input.managedAppId)) throw ownerError();
       const result = await config.db.query<BindingRecord>("SELECT * FROM managed_app_bindings WHERE id = $1", [input.managedAppId]);
       const binding = result.rows[0];
-      if (!binding || !constantEqual(binding.publish_key_digest, keyHash) || binding.app_key !== input.appKey) throw ownerError();
+      if (!binding?.publish_key_digest || !constantEqual(binding.publish_key_digest, keyHash) || binding.app_key !== input.appKey) throw ownerError();
       return { binding, isNew: false };
     }
 
@@ -232,7 +260,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       [keyHash],
     )).rows[0];
     if (found) {
-      if (found.app_key !== input.appKey) throw ownerError();
+      if (!found.publish_key_digest || found.app_key !== input.appKey) throw ownerError();
       return { binding: found, isNew: false };
     }
 
@@ -251,7 +279,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       "SELECT * FROM managed_app_bindings WHERE publish_key_digest = $1",
       [keyHash],
     )).rows[0];
-    if (!raced || raced.app_key !== input.appKey) throw ownerError();
+    if (!raced?.publish_key_digest || raced.app_key !== input.appKey) throw ownerError();
     return { binding: raced, isNew: false };
   }
 
@@ -318,13 +346,16 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     }
     let app;
     try {
-      app = await config.service.app(catalogAppId);
+      app = await config.service.app(catalogAppId, { includeHidden: true });
     } catch (error) {
       if (error instanceof DomainError) throw error;
       throw new DomainError(503, "SOURCE_UNAVAILABLE", "暂时无法读取广场应用状态，请稍后用相同幂等键重试。");
     }
     if (app.source.projectId !== binding.project_id || app.manifest.appKey !== binding.app_key) {
       throw ownerError();
+    }
+    if (app.lifecycle?.status === "deleted") {
+      throw new DomainError(409, "APP_DELETED", "已删除的应用不能提交更新。请先由维护者恢复应用状态。");
     }
     if (app.revision !== input.expectedAppRevision) {
       throw new DomainError(409, "REVISION_CONFLICT", "广场应用已更新。请重新读取当前 revision 和版本，再生成新的上传请求。");
@@ -347,12 +378,52 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     return result.rows[0]?.id;
   }
 
+  async function loadEditorContext(appId: string): Promise<{
+    context: ManagedEditorContext;
+    binding?: BindingRecord;
+  }> {
+    if (!isUuid(appId)) throw new DomainError(400, "VALIDATION_FAILED", "应用 ID 格式无效。");
+    const app = await config.service.app(appId, { includeHidden: true });
+    const binding = (await config.db.query<BindingRecord>(
+      `SELECT binding.*
+         FROM managed_app_bindings AS binding
+         JOIN catalog_apps AS catalog
+           ON catalog.project_id = binding.project_id AND catalog.app_key = binding.app_key
+        WHERE catalog.id = $1 AND catalog.instance_id = $2`,
+      [app.id, instanceId],
+    )).rows[0];
+    if (!binding) return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.notManaged } };
+    if (!binding.publish_key_digest) return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.managedKeyMissing } };
+    if (!binding.project_id || binding.project_id !== app.source.projectId || binding.app_key !== app.manifest.appKey ||
+        await findCatalogAppId(binding) !== app.id) {
+      return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.bindingMismatch } };
+    }
+    if (app.lifecycle?.status === "deleted") return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.deleted }, binding };
+    if (app.manifest.schemaVersion !== "2") return { context: { app, editable: false, reason: EDITOR_CONTEXT_REASONS.unsupportedManifest }, binding };
+    const operations = await config.db.query<{ tag: string }>(
+      "SELECT tag FROM managed_publish_operations WHERE binding_id = $1",
+      [binding.id],
+    );
+    return {
+      binding,
+      context: {
+        app,
+        editable: true,
+        suggestedVersion: suggestNextPatchVersion([
+          app.version,
+          ...operations.rows.map(({ tag }) => tag),
+        ]),
+      },
+    };
+  }
+
   async function createOperation(
     binding: BindingRecord,
     input: ManagedSubmitInput,
     bundle: ValidatedBundle,
     idemDigest: string,
     baseCommitSha: string | null,
+    operationKind: OperationRecord["operation_kind"],
   ): Promise<OperationRecord> {
     const id = randomUUID();
     const tag = `v${normalizeProjectVersion(bundle.manifest.projectVersion)!}`;
@@ -361,16 +432,44 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     const inserted = await config.db.query<OperationRecord>(
       `INSERT INTO managed_publish_operations (
          id, binding_id, idempotency_digest, request_digest, manifest_path,
-         expected_app_revision, base_commit_sha, branch, tag, status, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'prepared', $10, $10)
+         expected_app_revision, base_commit_sha, branch, tag, operation_kind, status, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'prepared', $11, $11)
        ON CONFLICT (binding_id, idempotency_digest) DO NOTHING RETURNING *`,
-      [id, binding.id, idemDigest, bundle.requestDigest, bundle.manifestPath, input.expectedAppRevision ?? null, baseCommitSha, branch, tag, now],
+      [id, binding.id, idemDigest, bundle.requestDigest, bundle.manifestPath, input.expectedAppRevision ?? null, baseCommitSha, branch, tag, operationKind, now],
     );
     if (inserted.rows[0]) return inserted.rows[0];
     const raced = await findOperation(binding.id, idemDigest);
     if (!raced) throw stateConflict();
-    if (raced.request_digest !== bundle.requestDigest) throw idempotencyConflict();
+    if (raced.request_digest !== bundle.requestDigest || raced.operation_kind !== operationKind) throw idempotencyConflict();
     return raced;
+  }
+
+  async function submitWithBinding(
+    input: ManagedSubmitInput,
+    bundle: ValidatedBundle,
+    binding: BindingRecord,
+    idempotencyKey: string,
+    operationKind: OperationRecord["operation_kind"],
+    isNewBinding = false,
+  ): Promise<{ result: SubmitResult & { managedAppId: string; sourceUploaded: true }; operationId: string }> {
+    const idemDigest = idempotencyDigest(binding.id, idempotencyKey);
+    let operation = await findOperation(binding.id, idemDigest);
+    if (operation && (operation.request_digest !== bundle.requestDigest || operation.operation_kind !== operationKind)) throw idempotencyConflict();
+    if (operation && operation.expected_app_revision !== null && input.managedAppId !== binding.id) throw ownerError();
+
+    if (!input.managedAppId && !isNewBinding && !operation && (binding.project_id || binding.public_app_id)) {
+      throw ownerError();
+    }
+
+    if (!operation) {
+      if (!isNewBinding) assertTagReuse(bundle.manifest.tags, await config.service.tags(), bundle.manifestPath);
+      const baseCommitSha = await ensureUpdateOwnership(binding, input, bundle);
+      if (isNewBinding && (input.managedAppId !== undefined || input.expectedAppRevision !== undefined)) throw ownerError();
+      await ensureVersionIsNewForBinding(binding, bundle);
+      operation = await createOperation(binding, input, bundle, idemDigest, baseCommitSha, operationKind);
+    }
+    const result = await processOperation(binding, operation, bundle);
+    return { result, operationId: operation.id };
   }
 
   async function ensureVersionIsNewForBinding(binding: BindingRecord, bundle: ValidatedBundle): Promise<void> {
@@ -551,7 +650,9 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     const baseEntries = operation.base_commit_sha
       ? await api.getTree(projectId, operation.base_commit_sha)
       : new Map<string, TreeValue>();
-    const actions = buildActions(baseEntries, bundle.files);
+    const actions = operation.operation_kind === "metadata_patch"
+      ? buildOverlayActions(baseEntries, bundle.files)
+      : buildActions(baseEntries, bundle.files);
     if (actions.length === 0) {
       if (!operation.base_commit_sha) throw stateConflict();
       return operation.base_commit_sha;
@@ -697,24 +798,47 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       const keyHash = keyDigest(publishKey);
       return withKeyLock(keyHash, async () => {
         const loaded = await loadOwnedBinding(input, keyHash, bundle.manifest.tags);
-        const binding = loaded.binding;
-        const idemDigest = idempotencyDigest(binding.id, idempotencyKey);
-        let operation = await findOperation(binding.id, idemDigest);
-        if (operation && operation.request_digest !== bundle.requestDigest) throw idempotencyConflict();
-        if (operation && operation.expected_app_revision !== null && input.managedAppId !== binding.id) throw ownerError();
+        const submitted = await submitWithBinding(input, bundle, loaded.binding, idempotencyKey, "full_source", loaded.isNew);
+        return submitted.result;
+      });
+    },
 
-        if (!input.managedAppId && loaded.isNew === false && !operation && (binding.project_id || binding.public_app_id)) {
-          throw ownerError();
-        }
+    async editorContext(appId) {
+      return (await loadEditorContext(appId)).context;
+    },
 
-        if (!operation) {
-          if (!loaded.isNew) assertTagReuse(bundle.manifest.tags, await config.service.tags(), bundle.manifestPath);
-          const baseCommitSha = await ensureUpdateOwnership(binding, input, bundle);
-          if (loaded.isNew && (input.managedAppId !== undefined || input.expectedAppRevision !== undefined)) throw ownerError();
-          await ensureVersionIsNewForBinding(binding, bundle);
-          operation = await createOperation(binding, input, bundle, idemDigest, baseCommitSha);
-        }
-        return processOperation(binding, operation, bundle);
+    async editMetadata(appId, input, idempotencyKey) {
+      validateIdempotencyKey(idempotencyKey);
+      if (!input || typeof input !== "object" || !Number.isInteger(input.expectedAppRevision) || input.expectedAppRevision < 0 ||
+          !input.documents || typeof input.documents !== "object" || Array.isArray(input.documents) ||
+          Object.values(input.documents).some(value => typeof value !== "string")) {
+        throw new DomainError(400, "VALIDATION_FAILED", "资料修订需要有效的 expectedAppRevision、Manifest 和共享文档。");
+      }
+      const initial = await loadEditorContext(appId);
+      if (!initial.binding || !initial.context.editable || !initial.binding.publish_key_digest) {
+        throw editorUnavailable(initial.context.reason);
+      }
+      return withKeyLock(initial.binding.publish_key_digest, async () => {
+        const current = await loadEditorContext(appId);
+        const binding = current.binding;
+        if (!binding || !current.context.editable || !binding.publish_key_digest) throw editorUnavailable(current.context.reason);
+        const app = current.context.app;
+        const files: InputFile[] = [
+          { path: app.source.manifestPath, content: Buffer.from(JSON.stringify(input.manifest), "utf8").toString("base64") },
+          ...Object.entries(input.documents).sort(([left], [right]) => compareStrings(left, right))
+            .map(([path, text]) => ({ path, content: Buffer.from(text, "utf8").toString("base64") })),
+        ];
+        const submitInput: ManagedSubmitInput = {
+          appKey: binding.app_key,
+          manifestPath: app.source.manifestPath,
+          managedAppId: binding.id,
+          expectedAppRevision: input.expectedAppRevision,
+          files,
+        };
+        const bundle = validateBundle(submitInput, config.gitlabToken, "metadata_patch");
+        assertMetadataIdentity(app.manifest, bundle.manifest, input.documents);
+        const submitted = await submitWithBinding(submitInput, bundle, binding, idempotencyKey, "metadata_patch");
+        return { ...submitted.result, operationId: submitted.operationId };
       });
     },
 
@@ -771,7 +895,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         "SELECT * FROM managed_app_bindings WHERE id = $1",
         [managedAppId],
       )).rows[0];
-      if (!binding || !constantEqual(binding.publish_key_digest, keyDigest(publishKey))) throw ownerError();
+      if (!binding?.publish_key_digest || !constantEqual(binding.publish_key_digest, keyDigest(publishKey))) throw ownerError();
 
       const base = {
         managedAppId: binding.id,
@@ -810,7 +934,11 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
   };
 }
 
-function validateBundle(input: ManagedSubmitInput, serverGitLabToken: string): ValidatedBundle {
+function validateBundle(
+  input: ManagedSubmitInput,
+  serverGitLabToken: string,
+  operationKind: OperationRecord["operation_kind"] = "full_source",
+): ValidatedBundle {
   if (!input || typeof input !== "object" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.appKey) || input.appKey.length > 64) {
     throw bundleFailure("APP_KEY_INVALID", "app_key", "appKey 格式无效。", "使用小写字母、数字和单个连字符组成 appKey。", { field: "appKey" }, serverGitLabToken);
   }
@@ -922,6 +1050,7 @@ function validateBundle(input: ManagedSubmitInput, serverGitLabToken: string): V
   }
   const digest = createHash("sha256");
   digest.update(JSON.stringify({ appKey: input.appKey, manifestPath, expectedAppRevision: input.expectedAppRevision ?? null }));
+  if (operationKind === "metadata_patch") digest.update("\0operation_kind=metadata_patch");
   for (const [filePath, bytes] of [...files.entries()].sort(([left], [right]) => compareStrings(left, right))) {
     digest.update("\0");
     digest.update(filePath, "utf8");
@@ -1113,6 +1242,79 @@ function buildActions(previous: Map<string, TreeValue>, files: Map<string, Uint8
     if (!previous.has(filePath)) actions.push({ action: "create", file_path: filePath, encoding: "base64", content: Buffer.from(bytes).toString("base64") });
   }
   return actions.sort((left, right) => compareStrings(left.file_path, right.file_path));
+}
+
+function buildOverlayActions(previous: Map<string, TreeValue>, files: Map<string, Uint8Array>): GitAction[] {
+  const actions: GitAction[] = [];
+  for (const [filePath, bytes] of files) {
+    const oldValue = previous.get(filePath);
+    if (!oldValue || oldValue.mode !== "100644") {
+      throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "待编辑的 Manifest 或共享说明不在当前固定版本中，已停止创建或覆盖文件。");
+    }
+    if (gitBlobId(bytes) !== oldValue.blobId) {
+      actions.push({ action: "update", file_path: filePath, encoding: "base64", content: Buffer.from(bytes).toString("base64") });
+    }
+  }
+  return actions.sort((left, right) => compareStrings(left.file_path, right.file_path));
+}
+
+function declaredDocumentPaths(manifest: Pick<StoredAppManifest, "docs" | "entries">): string[] {
+  const paths = new Set([manifest.docs.readme, manifest.docs.usage]);
+  for (const entry of manifest.entries) if (entry.kind === "agent") paths.add(entry.instructionsPath);
+  return [...paths].sort(compareStrings);
+}
+
+function assertMetadataIdentity(
+  current: StoredAppManifest,
+  candidateValue: unknown,
+  documents: Record<string, string>,
+): asserts candidateValue is StoredAppManifest {
+  if (!candidateValue || typeof candidateValue !== "object" || Array.isArray(candidateValue)) {
+    throw new DomainError(400, "VALIDATION_FAILED", "Manifest 必须是 JSON 对象。");
+  }
+  const candidate = candidateValue as Partial<StoredAppManifest>;
+  const currentPaths = declaredDocumentPaths(current);
+  const candidateDocs = candidate.docs as StoredAppManifest["docs"] | undefined;
+  const candidateEntries = candidate.entries;
+  const docsMatch = candidateDocs?.readme === current.docs.readme && candidateDocs?.usage === current.docs.usage;
+  const entriesMatch = Array.isArray(candidateEntries) && candidateEntries.length === current.entries.length &&
+    current.entries.every(previous => {
+      const next = candidateEntries.find(entry => entry.id === previous.id);
+      return next?.kind === previous.kind &&
+        (previous.kind !== "agent" || (next?.kind === "agent" && next.instructionsPath === previous.instructionsPath));
+    });
+  const submittedPaths = Object.keys(documents).sort(compareStrings);
+  const candidatePaths = candidateDocs && Array.isArray(candidateEntries)
+    ? declaredDocumentPaths({ docs: candidateDocs, entries: candidateEntries } as StoredAppManifest)
+    : [];
+  if (candidate.schemaVersion !== current.schemaVersion || candidate.appKey !== current.appKey || !docsMatch || !entriesMatch ||
+      !sameStrings(currentPaths, submittedPaths) || !sameStrings(currentPaths, candidatePaths)) {
+    throw new DomainError(400, "EDITOR_IDENTITY_IMMUTABLE", "资料修订不能更改 appKey、Manifest/共享文档路径或入口 ID 与类型。");
+  }
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function suggestNextPatchVersion(values: string[]): string {
+  let newest: string | undefined;
+  for (const value of values) {
+    const normalized = normalizeProjectVersion(value);
+    if (!normalized || (newest && compareProjectVersions(normalized, newest) !== 1)) continue;
+    newest = normalized;
+  }
+  const match = newest?.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) throw stateConflict();
+  return `${match[1]}.${match[2]}.${BigInt(match[3]!) + 1n}`;
+}
+
+function editorUnavailable(reason?: ManagedEditorContext["reason"]): DomainError {
+  if (reason === EDITOR_CONTEXT_REASONS.deleted) return new DomainError(409, "APP_DELETED", reason);
+  if (reason === EDITOR_CONTEXT_REASONS.notManaged) return new DomainError(409, "MANAGED_EDITOR_UNAVAILABLE", reason);
+  if (reason === EDITOR_CONTEXT_REASONS.managedKeyMissing) return new DomainError(409, "MANAGED_KEY_MISSING", reason);
+  if (reason === EDITOR_CONTEXT_REASONS.unsupportedManifest) return new DomainError(409, "EDITOR_MANIFEST_UNSUPPORTED", reason);
+  return new DomainError(409, "MANAGED_BINDING_MISMATCH", reason ?? EDITOR_CONTEXT_REASONS.bindingMismatch);
 }
 
 function applyActions(previous: Map<string, TreeValue>, actions: GitAction[]): Map<string, TreeValue> {

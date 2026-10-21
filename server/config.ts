@@ -8,7 +8,9 @@ export interface Config {
   secret: string; databaseUrl?: string; dataDir: string; local: boolean;
   audience: string; staticDir: string; rateLimit: boolean;
   managedPublishing?: { groupId: string; groupPath: string; token: string };
-  previewAdmin?: { password: string; trustedProxyIp?: string; allowInsecureIntranet?: boolean };
+  previewAdmin?: { trustedProxyIp?: string };
+  localManagement?: boolean;
+  intranetManagement?: true;
 }
 
 function origin(value: string, name: string) {
@@ -19,8 +21,8 @@ function origin(value: string, name: string) {
   return url.origin;
 }
 
-function isRfc1918IPv4(hostname: string, originValue: string) {
-  const match = /^http:\/\/(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\/?$/i.exec(originValue);
+function isRfc1918IPv4Literal(hostname: string, originValue: string) {
+  const match = /^https?:\/\/(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\/?$/i.exec(originValue);
   if (!match || match[1] !== hostname || isIP(hostname) !== 4) return false;
   const octets = hostname.split('.').map(Number);
   if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
@@ -28,14 +30,58 @@ function isRfc1918IPv4(hostname: string, originValue: string) {
   return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
 }
 
-export function isBoundIntranetHttpOrigin(value: string, host: string, port: number) {
-  const url = new URL(value);
-  return url.protocol === 'http:' && host === url.hostname && Number(url.port || 80) === port && isRfc1918IPv4(url.hostname, value);
+function effectivePort(url: URL): number {
+  if (url.port) return Number(url.port);
+  return url.protocol === 'https:' ? 443 : 80;
+}
+
+export function assertLocalManagementConfig(config: Pick<Config, 'local' | 'host' | 'port' | 'publicOrigin' | 'localManagement'>) {
+  if (!config.localManagement) return;
+  let url: URL;
+  try { url = new URL(config.publicOrigin); }
+  catch { throw new Error('PLAZA_LOCAL_MANAGEMENT 仅允许本地回环配置'); }
+  if (process.env.NODE_ENV === 'production' || config.local !== true || config.host !== '127.0.0.1' ||
+    url.hostname !== '127.0.0.1' || effectivePort(url) !== config.port) {
+    throw new Error('PLAZA_LOCAL_MANAGEMENT 仅允许 PLAZA_LOCAL=1 且 HOST/PUBLIC_ORIGIN 均为 127.0.0.1、端口一致的本地环境');
+  }
+}
+
+type ManagementConfig = Pick<Config, 'local' | 'host' | 'port' | 'publicOrigin' | 'localManagement' | 'intranetManagement'>;
+
+export function managementEnabled(config: Pick<Config, 'localManagement' | 'intranetManagement'>): boolean {
+  return config.localManagement === true || config.intranetManagement === true;
+}
+
+export function managementMode(config: Pick<Config, 'localManagement' | 'intranetManagement'>): 'local' | 'intranet' | 'disabled' {
+  if (config.localManagement === true) return 'local';
+  if (config.intranetManagement === true) return 'intranet';
+  return 'disabled';
+}
+
+export function assertManagementConfig(config: ManagementConfig) {
+  if (config.localManagement === true && config.intranetManagement === true) {
+    throw new Error('PLAZA_LOCAL_MANAGEMENT 与 PLAZA_INTRANET_MANAGEMENT 不能同时启用');
+  }
+  assertLocalManagementConfig(config);
+  if (!config.intranetManagement) return;
+
+  let url: URL;
+  try { url = new URL(config.publicOrigin); }
+  catch { throw new Error('PLAZA_INTRANET_MANAGEMENT 仅允许 RFC1918 私网 IPv4 PUBLIC_ORIGIN'); }
+  if (config.local !== false || !isRfc1918IPv4Literal(url.hostname, config.publicOrigin) || effectivePort(url) !== config.port) {
+    throw new Error('PLAZA_INTRANET_MANAGEMENT 仅允许非本地模式、RFC1918 私网 IPv4 PUBLIC_ORIGIN 且 PUBLIC_ORIGIN 端口与 PORT 一致');
+  }
 }
 
 export async function loadConfig(env = process.env): Promise<Config> {
   const local = env.PLAZA_LOCAL === '1';
   if (local && env.NODE_ENV === 'production') throw new Error('生产环境不能启用 PLAZA_LOCAL');
+  if (env.PLAZA_LOCAL_MANAGEMENT !== undefined && env.PLAZA_LOCAL_MANAGEMENT !== '' && env.PLAZA_LOCAL_MANAGEMENT !== '1') {
+    throw new Error('PLAZA_LOCAL_MANAGEMENT 仅接受显式值 1');
+  }
+  if (env.PLAZA_INTRANET_MANAGEMENT !== undefined && env.PLAZA_INTRANET_MANAGEMENT !== '' && env.PLAZA_INTRANET_MANAGEMENT !== '1') {
+    throw new Error('PLAZA_INTRANET_MANAGEMENT 仅接受显式值 1');
+  }
   const port = Number(env.PORT || 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT 无效');
   const host = env.HOST || '127.0.0.1';
@@ -43,8 +89,11 @@ export async function loadConfig(env = process.env): Promise<Config> {
   const publicOriginValue = env.PUBLIC_ORIGIN || `http://127.0.0.1:${port}`;
   const publicOrigin = origin(publicOriginValue, 'PUBLIC_ORIGIN');
   const publicOriginUrl = new URL(publicOrigin);
-  if (!local && publicOriginUrl.protocol !== 'https:' && !(env.ALLOW_INSECURE_PORTAL === '1' && isRfc1918IPv4(publicOriginUrl.hostname, publicOriginValue))) {
+  if (!local && publicOriginUrl.protocol !== 'https:' && !(env.ALLOW_INSECURE_PORTAL === '1' && publicOriginUrl.protocol === 'http:' && isRfc1918IPv4Literal(publicOriginUrl.hostname, publicOriginValue))) {
     throw new Error('非本地运行需要 HTTPS PUBLIC_ORIGIN；仅可通过 ALLOW_INSECURE_PORTAL=1 为 RFC1918 私网 IPv4 开启 HTTP 内网试用');
+  }
+  if (env.PLAZA_LOCAL_MANAGEMENT === '1') {
+    assertLocalManagementConfig({ local, host, port, publicOrigin, localManagement: true });
   }
   if (!env.GITLAB_URL) throw new Error('请配置 GITLAB_URL；门户不会自动使用 Mock 数据');
   const gitlabUrl = origin(env.GITLAB_URL, 'GITLAB_URL');
@@ -76,27 +125,16 @@ export async function loadConfig(env = process.env): Promise<Config> {
     if (managedToken.length > 8192 || /[\r\n\u0000]/.test(managedToken)) throw new Error('托管 GitLab 授权格式无效');
     managedPublishing = { groupId: env.PLAZA_MANAGED_GROUP_ID!, groupPath: env.PLAZA_MANAGED_GROUP_PATH!, token: managedToken };
   }
-  let previewAdmin: Config['previewAdmin'];
-  const adminPassword = env.PLAZA_PREVIEW_ADMIN_PASSWORD;
-  if (adminPassword) {
-    const localLoopback = local && host === '127.0.0.1' && publicOriginUrl.hostname === '127.0.0.1';
-    const allowInsecureIntranet = env.ALLOW_INSECURE_PORTAL === '1' && env.ALLOW_INSECURE_PREVIEW_ADMIN === '1' && isBoundIntranetHttpOrigin(publicOriginValue, host, port);
-    if (publicOriginUrl.protocol !== 'https:' && !localLoopback && !allowInsecureIntranet) {
-      throw new Error('私有预览管理员功能需要 HTTPS；HTTP 仅允许本地回环验证，或同时显式启用两个内网开关并绑定 PUBLIC_ORIGIN 的 RFC1918 IPv4');
-    }
-    const minimumAdminPasswordLength = localLoopback || allowInsecureIntranet ? 8 : 32;
-    if ([...adminPassword].length < minimumAdminPasswordLength || Buffer.byteLength(adminPassword, 'utf8') > 512 || /[\r\n\u0000]/.test(adminPassword)) {
-      throw new Error(`PLAZA_PREVIEW_ADMIN_PASSWORD 需为至少${minimumAdminPasswordLength}字符且不超过512字节的独立管理员口令`);
-    }
-    if (adminPassword === secret || adminPassword === managedPublishing?.token) throw new Error('管理员口令必须独立于发布或GitLab凭据');
-    const trustedProxyIp = env.PLAZA_PREVIEW_ADMIN_PROXY_IP;
-    if (allowInsecureIntranet && trustedProxyIp) throw new Error('内网 HTTP 直连模式不能配置 PLAZA_PREVIEW_ADMIN_PROXY_IP');
-    if (trustedProxyIp && (!isIP(trustedProxyIp) || trustedProxyIp.includes('%'))) throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
-    if (!localLoopback && !allowInsecureIntranet && !trustedProxyIp) {
-      throw new Error('非本地私有预览管理需配置 PLAZA_PREVIEW_ADMIN_PROXY_IP，并由可信 HTTPS 代理覆盖 X-Real-IP');
-    }
-    previewAdmin = { password: adminPassword, ...(trustedProxyIp ? { trustedProxyIp } : {}), ...(allowInsecureIntranet ? { allowInsecureIntranet: true } : {}) };
+  const trustedProxyIp = env.PLAZA_PREVIEW_ADMIN_PROXY_IP;
+  if (trustedProxyIp && (!isIP(trustedProxyIp) || trustedProxyIp.includes('%'))) {
+    throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
   }
-  return { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
-    dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true, ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}) };
+  const previewAdmin = trustedProxyIp ? { trustedProxyIp } : undefined;
+  const config: Config = { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
+    dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true,
+    ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}),
+    ...(env.PLAZA_LOCAL_MANAGEMENT === '1' ? { localManagement: true } : {}),
+    ...(env.PLAZA_INTRANET_MANAGEMENT === '1' ? { intranetManagement: true } : {}) };
+  assertManagementConfig(config);
+  return config;
 }
