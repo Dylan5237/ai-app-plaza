@@ -110,8 +110,9 @@ test('all-author enumeration filters confirmed records, paginates, preserves sou
   const get = (path: string) => h.app.inject({ url: BASE + path, headers: headers(h) });
   const first = await get('/publications'); assert.equal(first.statusCode, 200);
   assert.deepEqual(first.json().counts, { all: 26, preview_ready: 23, expired: 1, checking: 1, failed: 1 });
-  assert.equal(first.json().items.length, 20); assert.equal(first.json().total, 26);
-  const second = await get('/publications?page=2'); assert.equal(second.json().items.length, 6);
+  assert.equal(first.json().items.length, 20); assert.equal(first.json().pageSize, 20); assert.equal(first.json().total, 26);
+  const second = await get('/publications?page=2'); assert.equal(second.json().items.length, 6); assert.equal(second.json().pageSize, 20);
+  assert.equal((await get('/publications?pageSize=7')).statusCode, 400, 'the private preview API keeps its strict query contract');
   assert.equal(new Set([...first.json().items, ...second.json().items].map((x: any) => x.id)).size, 26);
   for (const status of ['expired', 'failed', 'checking']) {
     const response = await get(`/publications?status=${status}`); assert.equal(response.json().total, 1);

@@ -167,3 +167,78 @@ test('local management reads safe publications and placeholders, and reuses auth
 
   assert.ok(h.gitlab.state.requests.every((entry: any) => entry.method === 'GET' || entry.method === 'HEAD'));
 });
+
+test('management publication and upload lists paginate with validated page sizes', async t => {
+  const h = await startManagementHarness(true); t.after(() => h.close());
+  const request = (url: string) => h.app.inject({ method: 'GET', url, headers: headers(h) });
+  const fixtureCount = 23;
+  const publicationIds: string[] = [];
+  const uploadIds: string[] = [];
+
+  for (let index = 0; index < fixtureCount; index++) {
+    const createdAt = new Date(Date.now() - index * 1000);
+    const publicationId = randomUUID();
+    publicationIds.push(publicationId);
+    await h.db.query(`INSERT INTO publications (
+      id, actor_id, idempotency_digest, request_hash, submission, status, candidate_app_id,
+      preview_jsonb, next_action, expires_at, created_at, updated_at
+    ) VALUES ($1, $2, $3, 'pagination-fixture', $4::jsonb, 'preview_ready', $5, $6::jsonb, 'confirm', $7, $8, $8)`, [
+      publicationId, `pagination-actor-${index}`, randomUUID(), JSON.stringify({ appKey: `pagination-${index}` }), randomUUID(),
+      JSON.stringify({ version: `1.0.${index}`, manifest: { name: `分页应用 ${index}`, maintainers: [] } }),
+      new Date(Date.now() + 60 * 60 * 1000), createdAt,
+    ]);
+
+    const bindingId = randomUUID();
+    const operationId = randomUUID();
+    uploadIds.push(operationId);
+    await h.db.query(`INSERT INTO managed_app_bindings (id, app_key, publish_key_digest, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $4)`, [bindingId, `upload-${index}`, randomUUID(), createdAt]);
+    await h.db.query(`INSERT INTO managed_publish_operations (
+      id, binding_id, idempotency_digest, request_digest, manifest_path, branch, tag, status, created_at, updated_at, publication_id
+    ) VALUES ($1, $2, $3, $4, 'ai-app.json', $5, $6, 'prepared', $7, $7, NULL)`, [
+      operationId, bindingId, randomUUID(), `upload-request-${index}`, `branch-${index}`, `v1.0.${index}`, createdAt,
+    ]);
+  }
+
+  const cases = [
+    { path: '/api/management/publications', expectedIds: publicationIds },
+    { path: '/api/management/uploads', expectedIds: uploadIds },
+  ];
+  for (const { path, expectedIds } of cases) {
+    const defaultPage = await request(path);
+    assert.equal(defaultPage.statusCode, 200);
+    assert.equal(defaultPage.json().page, 1);
+    assert.equal(defaultPage.json().pageSize, 20);
+    assert.equal(defaultPage.json().total, fixtureCount);
+    assert.equal(defaultPage.json().items.length, 20);
+
+    const oneItem = await request(`${path}?page=1&pageSize=1`);
+    assert.equal(oneItem.statusCode, 200);
+    assert.equal(oneItem.json().pageSize, 1);
+    assert.equal(oneItem.json().items.length, 1);
+
+    const complete = await request(`${path}?pageSize=100`);
+    assert.equal(complete.statusCode, 200);
+    assert.equal(complete.json().pageSize, 100);
+    assert.equal(complete.json().items.length, fixtureCount);
+    const completeIds = complete.json().items.map((item: any) => item.id);
+    assert.deepEqual(completeIds, expectedIds);
+
+    const pageSize = 7;
+    const pageCount = Math.ceil(fixtureCount / pageSize);
+    const pages = [];
+    for (let page = 1; page <= pageCount; page++) {
+      const response = await request(`${path}?page=${page}&pageSize=${pageSize}`);
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.json().page, page);
+      assert.equal(response.json().pageSize, pageSize);
+      pages.push(...response.json().items.map((item: any) => item.id));
+    }
+    assert.deepEqual(pages, completeIds, 'all rows appear once across ordered pages');
+    assert.equal((await request(`${path}?page=${pageCount + 1}&pageSize=${pageSize}`)).json().items.length, 0);
+
+    for (const value of ['0', '-1', '1.5', '101', 'invalid']) {
+      assert.equal((await request(`${path}?pageSize=${value}`)).statusCode, 400, `reject pageSize=${value}`);
+    }
+  }
+});
