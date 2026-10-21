@@ -44,6 +44,8 @@ export interface AppView {
 
 export type PublicationStatus = "checking" | "preview_ready" | "registered" | "failed" | "cancelled";
 
+export type CatalogUsage = 'all' | 'platform' | 'agent';
+
 export interface PublicationChange {
   kind: "create" | "update" | "unchanged";
   previousVersion?: string;
@@ -95,7 +97,7 @@ export interface PlazaService {
   managementConfirm(id: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   managementRetry(id: string): Promise<PublicationView>;
   changeLifecycle(id: string, action: AppLifecycleAction, expectedAppRevision: number, expectedLifecycleRevision: number): Promise<AppLifecycleChange>;
-  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all' }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[] }>;
+  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all'; usage?: CatalogUsage }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[]; usageCounts: { platform: number; agent: number } }>;
   app(id: string, options?: { includeHidden?: boolean }): Promise<AppView>;
   instructions(id: string, entryId: string, options?: { includeHidden?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string }>;
 }
@@ -159,6 +161,14 @@ interface EncryptedToken {
 
 const PUBLICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 8 as const;
+const HAS_WEB_ENTRY = `EXISTS (
+  SELECT 1
+    FROM jsonb_array_elements(
+      CASE WHEN jsonb_typeof(s.manifest->'entries') = 'array'
+           THEN s.manifest->'entries' ELSE '[]'::jsonb END
+    ) AS entry(value)
+   WHERE entry.value->>'kind' = 'web'
+)`;
 const APP_SELECT = `
   SELECT a.id, a.instance_id, a.project_id, a.app_key, a.current_snapshot_id, a.revision,
          a.created_at, a.updated_at, s.id AS snap_id, s.commit_sha, s.manifest_path, s.tag,
@@ -787,6 +797,10 @@ export function createService(config: ServiceConfig): PlazaService {
     },
 
     async list(options = {}) {
+      const usage = options.usage;
+      if (usage !== undefined && !['all', 'platform', 'agent'].includes(usage)) {
+        throw new DomainError(400, 'VALIDATION_FAILED', 'usage 必须是 all、platform 或 agent。');
+      }
       await cleanupExpiredTokens();
       const page = options.page ?? 1;
       const pageSize = options.pageSize ?? PAGE_SIZE;
@@ -802,6 +816,8 @@ export function createService(config: ServiceConfig): PlazaService {
       if (requestedTags.length > 12) throw new DomainError(400, "VALIDATION_FAILED", "一次最多筛选 12 个标签。");
       const filters: string[] = ["s.audience = $1"];
       const params: unknown[] = [config.audience];
+      if (usage === 'platform') filters.push(HAS_WEB_ENTRY);
+      if (usage === 'agent') filters.push(`NOT (${HAS_WEB_ENTRY})`);
       const lifecycleStatuses: AppLifecycleStatus[] = !options.includeHidden
         ? ['published']
         : options.lifecycleStatus && options.lifecycleStatus !== 'all'
@@ -833,18 +849,26 @@ export function createService(config: ServiceConfig): PlazaService {
         )`);
       }
       const where = filters.join(" AND ");
-      const totalResult = await config.db.query<{ total: string | number }>(
-        `SELECT count(*) AS total FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id
+      const totalResult = await config.db.query<{ total: string | number; platform_total: string | number; agent_total: string | number }>(
+        `SELECT count(*) AS total,
+                count(*) FILTER (WHERE ${HAS_WEB_ENTRY}) AS platform_total,
+                count(*) FILTER (WHERE NOT (${HAS_WEB_ENTRY})) AS agent_total
+           FROM catalog_apps a JOIN published_snapshots s ON s.id = a.current_snapshot_id
          LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id ${TAG_OVERRIDE_JOIN} WHERE ${where}`,
         params,
       );
       const total = Number(totalResult.rows[0]?.total ?? 0);
+      const usageCounts = {
+        platform: Number(totalResult.rows[0]?.platform_total ?? 0),
+        agent: Number(totalResult.rows[0]?.agent_total ?? 0),
+      };
       const tags = await catalogTags(config.db, config.audience, lifecycleStatuses);
       const itemParams = [...params, pageSize, (page - 1) * pageSize];
       const limitParam = `$${itemParams.length - 1}`;
       const offsetParam = `$${itemParams.length}`;
+      const usageOrder = usage === undefined ? '' : `CASE WHEN ${HAS_WEB_ENTRY} THEN 0 ELSE 1 END, `;
       const itemResult = await config.db.query<AppRecord>(
-        `${APP_SELECT} WHERE ${where} ORDER BY lower(s.manifest->>'name'), a.id LIMIT ${limitParam} OFFSET ${offsetParam}`,
+        `${APP_SELECT} WHERE ${where} ORDER BY ${usageOrder}lower(s.manifest->>'name'), a.id LIMIT ${limitParam} OFFSET ${offsetParam}`,
         itemParams,
       );
       return {
@@ -853,6 +877,7 @@ export function createService(config: ServiceConfig): PlazaService {
         page,
         pageSize,
         tags,
+        usageCounts,
       };
     },
 
