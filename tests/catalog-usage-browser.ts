@@ -231,8 +231,6 @@ try {
   assert.deepEqual(initial.usageCounts, { platform: 6, agent: 8 });
   assert.equal(initial.total, 14, 'fixture contains five web-only, eight Agent-only, and one dual-entry application');
 
-  const firstPage = await visibleCards(page);
-  assert.ok(firstPage.some(card => card.usage === 'platform') && firstPage.some(card => card.usage === 'agent'), 'mixed categories fill the same first-page grid');
   const allPages = await collectPages(page, 'all', initial);
   const allNames = allPages.map(card => card.name);
   assert.equal(new Set(allNames).size, 14, 'paging does not repeat an application');
@@ -368,6 +366,8 @@ try {
   await waitForCatalog(page);
   assert.equal(combined.total, 3, 'search and tag filters apply together on the server');
   assert.deepEqual(combined.usageCounts, { platform: 2, agent: 1 });
+  const mixedCards = await visibleCards(page);
+  assert.ok(mixedCards.some(card => card.usage === 'platform') && mixedCards.some(card => card.usage === 'agent'), 'mixed search results share the same all-results page');
   const combinedPages = await collectPages(page, 'all', combined);
   assert.deepEqual(new Set(combinedPages.map(card => card.name)), new Set([webApps[0].name, agentApps[0].name, dualApp.name]));
   assert.equal(new Set(combinedPages.map(card => card.name)).size, 3);
