@@ -278,21 +278,24 @@ try {
   assert.equal(await page.getByTestId('management-search-input').inputValue(), detailQuery);
   report.checks.push('closing an app detail returns to the same management page and query');
 
-  await switchView('publications');
-  await page.getByTestId('management-search-input').fill('fixture-pagination-publication');
-  await page.getByTestId('management-search').click();
-  await waitListReady();
-  await nextPage();
-  const previewPage = await currentPage();
-  const previewKeys = await visibleKeys();
-  await page.getByTestId('management-table').locator('[data-testid^="management-preview-"]').first().click();
-  await page.getByTestId('confirm-publication').waitFor();
-  await page.getByTestId('return-management').click();
-  await waitListReady();
-  assert.equal(await currentPage(), previewPage, 'Returning from a publication preview must preserve the page after the list remounts');
-  assert.equal(await page.getByTestId('management-search-input').inputValue(), 'fixture-pagination-publication');
-  assert.deepEqual(await visibleKeys(), previewKeys);
-  report.checks.push('returning from publication preview preserves the current page, query and rows across list remounts');
+  for (const height of [820, 844, 864]) {
+    await page.setViewportSize({ width: 390, height });
+    await switchView('publications');
+    await page.getByTestId('management-search-input').fill('fixture-pagination-publication');
+    await page.getByTestId('management-search').click();
+    await waitListReady();
+    await nextPage();
+    const previewPage = await currentPage();
+    const previewKeys = await visibleKeys();
+    await page.getByTestId('management-table').locator('[data-testid^="management-preview-"]').first().click();
+    await page.getByTestId('confirm-publication').waitFor();
+    await page.getByTestId('return-management').click();
+    await waitListReady();
+    assert.equal(await currentPage(), previewPage, 'Returning from a publication preview must preserve the page after the list remounts');
+    assert.equal(await page.getByTestId('management-search-input').inputValue(), 'fixture-pagination-publication');
+    assert.deepEqual(await visibleKeys(), previewKeys);
+  }
+  report.checks.push('returning from publication preview preserves page, query and rows at mobile heights 820/844/864 across list remounts');
   await switchView('apps');
 
   const slowQuery = 'pagination slow old request';

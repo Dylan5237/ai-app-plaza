@@ -140,7 +140,7 @@ onUnmounted(() => { ++sequence; layoutObserver?.disconnect(); cancelAnimationFra
           <el-button v-else link disabled title="上传资料尚未就绪，生成预览后可以收录">收录</el-button>
         </div></template></el-table-column>
       </el-table>
-      <footer ref="footer" class="management-footer" data-testid="management-pagination"><span>共 {{ total }} 项</span><ListPagination :page="page" :page-size="pageSize" :total="total" @change="changePage" /></footer>
+      <footer ref="footer" class="management-footer" data-testid="management-pagination"><span>共 {{ total }} 项</span><div class="management-pager"><ListPagination :page="page" :page-size="pageSize" :total="total" @change="changePage" /></div></footer>
     </section>
     <p v-if="view === 'uploads'" class="management-note">上传占位尚无完整详情和作者资料，不能确认收录。上传完成后，在“待收录与更新”打开原预览流程核对。</p>
   </main>
@@ -175,6 +175,7 @@ onUnmounted(() => { ++sequence; layoutObserver?.disconnect(); cancelAnimationFra
 .management-actions { display: flex; gap: 12px; align-items: center; }
 .management-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .management-footer { position: relative; display: flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid #edf0f5; color: #7b8798; font-size: 12px; }
+.management-pager { display: flex; min-height: 32px; align-items: center; justify-content: center; }
 .management-footer > span { position: absolute; left: 16px; }
 .management-note { color: #7b8798; font-size: 12px; line-height: 1.7; }
 @media (max-width: 650px) { .management-footer { flex-direction: column; gap: 8px; padding: 10px 16px; } .management-footer > span { position: static; align-self: flex-start; } .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 20px; } .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px; } }
