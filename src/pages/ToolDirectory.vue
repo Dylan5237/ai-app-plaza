@@ -7,11 +7,19 @@ import AppPublicContent from '../components/AppPublicContent.vue'
 import AppExamples from '../components/AppExamples.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
+import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, safeHttpUrl } from '../lib/catalog.ts'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false } })
 
 const query = ref('')
 const selectedTags = ref([])
+const selectedUsage = ref('all')
+const usageCounts = ref({ platform: 0, agent: 0 })
+const usageOptions = [
+  { value: 'all', label: '全部' },
+  { value: 'platform', label: '平台类应用' },
+  { value: 'agent', label: 'Agent能力' },
+]
 const apps = ref([])
 const authorTags = ref([])
 const total = ref(0)
@@ -71,6 +79,10 @@ let brandClickCount = 0
 let brandClickTimer = 0
 
 const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const catalogGroups = computed(() => [
+  { value: 'platform', label: '平台类应用', description: '打开即用，常用平台的统一入口', apps: apps.value.filter(app => catalogUsage(app) === 'platform') },
+  { value: 'agent', label: 'Agent能力', description: '查看详情，按说明接入你的 Agent', apps: apps.value.filter(app => catalogUsage(app) === 'agent') },
+].filter(group => group.apps.length))
 const selectedAppEntries = computed(() => {
   const manifest = selectedApp.value?.manifest || {}
   const entries = Array.isArray(manifest.entries) ? [...manifest.entries] : []
@@ -129,16 +141,6 @@ function formatDate(value) {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed)
 }
 
-function safeHttpUrl(value) {
-  if (typeof value !== 'string') return ''
-  try {
-    const url = new URL(value)
-    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''
-  } catch {
-    return ''
-  }
-}
-
 function handleBrandClick() {
   if (brandClickTimer) window.clearTimeout(brandClickTimer)
   brandClickCount += 1
@@ -165,6 +167,7 @@ async function loadCatalog({ preserveNotice = false } = {}) {
   for (const tag of selectedTags.value) params.append('tags', tag)
   params.set('page', String(page.value))
   params.set('pageSize', String(pageSize.value))
+  params.set('usage', selectedUsage.value)
 
   try {
     const result = await apiRequest(`/api/apps?${params.toString()}`)
@@ -172,6 +175,7 @@ async function loadCatalog({ preserveNotice = false } = {}) {
     apps.value = Array.isArray(result.items) ? result.items : []
     authorTags.value = Array.isArray(result.tags) ? result.tags : []
     total.value = Number.isFinite(Number(result.total)) ? Number(result.total) : 0
+    usageCounts.value = result.usageCounts || { platform: 0, agent: 0 }
     page.value = Number.isFinite(Number(result.page)) && Number(result.page) > 0 ? Number(result.page) : page.value
   } catch (error) {
     if (requestSequence !== catalogRequestSequence) return
@@ -196,8 +200,12 @@ function updateCatalogPageSize(reload = true) {
   const noticeHeight = notice ? notice.offsetHeight + parseFloat(getComputedStyle(notice).marginBottom) : 0
   const availableHeight = main.clientHeight - (heading.getBoundingClientRect().bottom - main.getBoundingClientRect().top)
     - parseFloat(getComputedStyle(heading).marginBottom) - parseFloat(style.paddingBottom) - footer.offsetHeight - noticeHeight
-  const rows = Math.max(1, Math.floor((availableHeight + gap) / (cardHeight + gap)))
-  const capacity = Math.min(rows, Math.floor(100 / columns)) * columns
+  const capacity = catalogPageCapacity({
+    availableHeight, columns, cardHeight, gap,
+    headingHeight: parseFloat(style.getPropertyValue('--catalog-group-heading-height')),
+    groupGap: parseFloat(style.getPropertyValue('--catalog-group-gap')),
+    usage: selectedUsage.value, counts: usageCounts.value,
+  })
   if (capacity === pageSize.value) return
   pageSize.value = capacity
   page.value = 1
@@ -217,7 +225,7 @@ watch(directoryMain, (main) => {
   layoutObserver.observe(main.querySelector('.catalog-section'))
   scheduleCatalogLayout()
 }, { flush: 'post' })
-watch(catalogNotice, async () => {
+watch([catalogNotice, usageCounts], async () => {
   await nextTick()
   scheduleCatalogLayout()
 })
@@ -225,6 +233,14 @@ watch(catalogNotice, async () => {
 function searchCatalog() {
   page.value = 1
   return loadCatalog()
+}
+
+function selectUsage(usage) {
+  if (selectedUsage.value === usage) return
+  selectedUsage.value = usage
+  page.value = 1
+  updateCatalogPageSize(false)
+  loadCatalog()
 }
 
 function toggleTag(tag) {
@@ -243,6 +259,7 @@ function changePage(nextPage) {
 function clearFilters() {
   query.value = ''
   selectedTags.value = []
+  selectedUsage.value = 'all'
   page.value = 1
   loadCatalog()
 }
@@ -685,7 +702,7 @@ onUnmounted(() => {
           </button>
           <div>
             <h1>AI应用广场</h1>
-            <p>发现适合当前任务的 AI 应用</p>
+            <p>发现适合你的 AI 应用</p>
           </div>
         </div>
         <button class="share-button" data-testid="share-button" @click="openShareDialog()">分享我的AI应用</button>
@@ -722,11 +739,22 @@ onUnmounted(() => {
 
       <section class="catalog-section" aria-labelledby="catalog-heading">
         <div ref="catalogHeading" class="catalog-heading-row">
-          <div>
+          <div class="catalog-heading-main">
             <h2 id="catalog-heading">应用目录</h2>
             <span class="catalog-total">{{ total }} 项应用</span>
           </div>
-          <button v-if="query || selectedTags.length" class="clear-filters" @click="clearFilters">清除筛选</button>
+          <div class="catalog-usage-filter" role="group" aria-label="按使用方式筛选">
+            <button
+              v-for="option in usageOptions"
+              :key="option.value"
+              class="usage-filter-button"
+              :class="{ active: selectedUsage === option.value }"
+              :data-testid="`usage-${option.value}`"
+              :aria-pressed="selectedUsage === option.value"
+              @click="selectUsage(option.value)"
+            >{{ option.label }}</button>
+          </div>
+          <button v-if="query || selectedTags.length || selectedUsage !== 'all'" class="clear-filters" @click="clearFilters">清除筛选</button>
         </div>
 
         <div v-if="catalogError" class="catalog-state is-error" role="alert">
@@ -737,20 +765,26 @@ onUnmounted(() => {
         <div v-else-if="catalogLoading && !apps.length" class="catalog-state" role="status">正在读取应用目录…</div>
         <div v-else-if="!apps.length" class="catalog-state empty-state">
           <div class="empty-mark" aria-hidden="true">⌕</div>
-          <strong>{{ query || selectedTags.length ? '没有找到匹配的应用' : '目录中还没有应用' }}</strong>
-          <p>{{ query || selectedTags.length ? '试试其他关键词或清除筛选条件。' : '应用收录后会显示在这里。' }}</p>
-          <button v-if="query || selectedTags.length" class="secondary-button" @click="clearFilters">清除筛选</button>
+          <strong>{{ query || selectedTags.length || selectedUsage !== 'all' ? '没有找到匹配的应用' : '目录中还没有应用' }}</strong>
+          <p>{{ query || selectedTags.length || selectedUsage !== 'all' ? '试试其他关键词、使用方式或清除筛选条件。' : '应用收录后会显示在这里。' }}</p>
+          <button v-if="query || selectedTags.length || selectedUsage !== 'all'" class="secondary-button" @click="clearFilters">清除筛选</button>
         </div>
         <div v-else class="catalog-results" :aria-busy="catalogLoading">
           <div v-if="catalogNotice" class="catalog-notice" role="status">{{ catalogNotice }}</div>
-          <div class="app-grid">
-            <article v-for="app in apps" :key="app.id" class="app-card" data-testid="app-card" @click="openCard($event, app.id)">
+          <section v-for="group in catalogGroups" :key="group.value" class="catalog-group" :data-testid="`catalog-group-${group.value}`" :aria-label="group.label">
+            <div class="catalog-group-heading">
+              <h3>{{ group.label }}</h3>
+              <span>{{ group.description }}</span>
+            </div>
+            <div class="app-grid">
+            <article v-for="app in group.apps" :key="app.id" class="app-card" data-testid="app-card" :data-usage="group.value" @click="openCard($event, app.id)">
               <div class="app-card-top">
                 <button class="app-title" :aria-label="`查看 ${appName(app)} 详情`" @click="openApp(app.id)">{{ appName(app) }}</button>
                 <span v-if="app.version" class="app-version">{{ formatVersion(app.version) }}</span>
               </div>
               <p class="app-summary">{{ appSummary(app) }}</p>
-              <div v-if="appTags(app).length" class="app-tags" aria-label="应用作者标签">
+              <div class="app-tags" aria-label="应用形态与能力标签">
+                <span v-for="format in appFormats(app)" :key="`format-${format}`" class="app-format" data-testid="app-format">{{ format }}</span>
                 <button
                   v-for="tag in appTags(app).slice(0, 3)"
                   :key="tag"
@@ -762,14 +796,27 @@ onUnmounted(() => {
                 <span v-if="appTags(app).length > 3" class="app-tag-more">+{{ appTags(app).length - 3 }}</span>
               </div>
               <div class="app-card-footer">
-                <span class="app-author">{{ appMaintainers(app) }}</span>
+                <div class="app-card-author-action">
+                  <a
+                    v-if="group.value === 'platform' && platformEntry(app)"
+                    class="platform-open-button"
+                    data-testid="open-platform"
+                    :href="safeHttpUrl(platformEntry(app).url)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    @click.stop
+                  >打开平台 <span aria-hidden="true">↗</span></a>
+                  <button v-else-if="group.value === 'platform'" class="platform-open-button" disabled>入口不可用</button>
+                  <span class="app-author">{{ appMaintainers(app) }}</span>
+                </div>
                 <div class="app-dates">
                   <time :datetime="app.createdAt || undefined">创建 {{ formatDate(app.createdAt) }}</time>
                   <time :datetime="app.updatedAt || undefined">更新 {{ formatDate(app.updatedAt) }}</time>
                 </div>
               </div>
             </article>
-          </div>
+            </div>
+          </section>
         </div>
         <div ref="paginationRow" class="pagination-row" data-testid="pagination">
           <el-pagination
@@ -777,6 +824,7 @@ onUnmounted(() => {
             :current-page="page"
             :page-size="pageSize"
             :total="total"
+            :pager-count="5"
             layout="prev, pager, next"
             background
             @current-change="changePage"
@@ -972,7 +1020,7 @@ onUnmounted(() => {
 :global(html), :global(body), :global(#app) { width: 100%; height: 100%; margin: 0; }
 :global(body) { background: #f4f6f9; color: #273449; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .directory-shell { width: 100%; height: 100%; overflow-y: auto; background: #f4f6f9; }
-.directory-main { --catalog-columns: 4; --catalog-card-height: 164px; --catalog-gap: 12px; display: flex; flex-direction: column; width: min(1480px, calc(100% - 64px)); height: 100%; margin: 0 auto; padding: 18px 0; }
+.directory-main { --catalog-columns: 4; --catalog-card-height: 164px; --catalog-gap: 12px; --catalog-group-heading-height: 30px; --catalog-group-gap: 12px; display: flex; flex-direction: column; width: min(1480px, calc(100% - 64px)); height: 100%; margin: 0 auto; padding: 18px 0; }
 .directory-header, .search-section, .catalog-heading-row { flex-shrink: 0; }
 .catalog-section { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .catalog-results { flex: 1 0 auto; }
@@ -1001,10 +1049,19 @@ onUnmounted(() => {
 .filter-chip { flex: none; min-height: 26px; padding: 3px 9px; border: 1px solid #e2e7ed; border-radius: 5px; background: #fafbfc; color: #677487; font: inherit; font-size: 12px; cursor: pointer; }
 .filter-chip:hover { border-color: #c4d0e0; color: #425a7b; }
 .filter-chip.active { border-color: #9cb4dc; background: #edf3fc; color: #315fbd; }
-.catalog-heading-row { display: flex; align-items: end; justify-content: space-between; margin-bottom: 10px; }
-.catalog-heading-row > div { display: flex; align-items: baseline; gap: 10px; }
+.catalog-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-bottom: 10px; }
+.catalog-heading-main { display: flex; align-items: baseline; gap: 10px; }
+.catalog-usage-filter { display: flex; flex-wrap: wrap; gap: 4px; margin-right: auto; }
+.usage-filter-button { min-height: 32px; padding: 5px 12px; border: 0; border-radius: 5px; background: transparent; color: #68778c; font: inherit; font-size: 13px; cursor: pointer; }
+.usage-filter-button:hover { background: #e9eef7; color: #315fbd; }
+.usage-filter-button.active { background: #e6eeff; color: #165dff; font-weight: 600; }
+.usage-filter-button:focus-visible, .platform-open-button:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
 .catalog-heading-row h2 { margin: 0; color: #253347; font-size: 17px; font-weight: 650; }
 .catalog-total { color: #8a94a3; font-size: 12px; }
+.catalog-group + .catalog-group { margin-top: var(--catalog-group-gap); }
+.catalog-group-heading { display: flex; height: var(--catalog-group-heading-height); align-items: center; gap: 10px; }
+.catalog-group-heading h3 { flex: none; margin: 0; color: #46566d; font-size: 13px; font-weight: 600; }
+.catalog-group-heading > span { overflow: hidden; color: #8993a2; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .clear-filters { border: 0; background: transparent; color: #5273a6; font: inherit; font-size: 12px; cursor: pointer; }
 .clear-filters:hover { text-decoration: underline; }
 .app-grid { display: grid; grid-template-columns: repeat(var(--catalog-columns), minmax(0, 1fr)); gap: var(--catalog-gap); }
@@ -1017,12 +1074,17 @@ onUnmounted(() => {
 .app-version, .public-app-version { flex: none; padding: 3px 7px; border: 1px solid #dce3ed; border-radius: 5px; background: #f7f9fc; color: #61748f; font-size: 11px; line-height: 1.3; white-space: nowrap; }
 .app-summary { display: -webkit-box; height: 40px; min-height: 0; margin: 5px 0 7px; overflow: hidden; color: #657184; font-size: 13px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .app-tags { display: flex; height: 22px; min-height: 22px; flex-wrap: nowrap; align-items: flex-start; gap: 5px; overflow: hidden; }
+.app-format { flex: none; padding: 3px 7px; border: 1px solid #d5e2ff; border-radius: 4px; background: #edf3ff; color: #315fbd; font-size: 11px; line-height: 1.25; white-space: nowrap; }
 .app-tag, .app-tag-more { max-width: calc(50% - 3px); overflow: hidden; padding: 3px 7px; border: 1px solid #e5e9ef; border-radius: 4px; background: #fafbfc; color: #778395; font: inherit; font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .app-tag { cursor: pointer; }
 .app-tag:hover, .app-tag.active { border-color: #c2d1e7; background: #f1f5fb; color: #4a6792; }
 .app-tag-more { border-color: transparent; background: transparent; color: #8993a2; }
 .app-tag { max-width: calc((100% - 10px) / 3); min-width: 0; flex-shrink: 1; }
 .app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px; margin-top: auto; padding-top: 8px; border-top: 1px solid #edf0f3; }
+.app-card-author-action { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.platform-open-button { display: inline-flex; flex: none; min-height: 26px; align-items: center; gap: 3px; padding: 3px 8px; border: 1px solid #165dff; border-radius: 4px; background: #165dff; color: #fff; font: inherit; font-size: 12px; line-height: 18px; text-decoration: none; cursor: pointer; }
+.platform-open-button:hover { background: #4080ff; border-color: #4080ff; }
+.platform-open-button:disabled { border-color: #d6dde7; background: #f1f3f6; color: #8993a2; cursor: not-allowed; }
 .app-author { max-width: 150px; overflow: hidden; color: #53647a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .app-dates { display: grid; gap: 3px; color: #8993a2; font-size: 10px; line-height: 1.25; text-align: right; white-space: nowrap; }
 .catalog-state { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 28px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; color: #748094; font-size: 13px; text-align: center; }
