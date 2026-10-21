@@ -79,7 +79,9 @@ const publicationError = ref('')
 let brandClickCount = 0
 let brandClickTimer = 0
 
-const catalogGroups = computed(() => [
+const catalogGroups = computed(() => selectedUsage.value === 'all'
+  ? [{ value: 'all', label: '全部应用', description: '', apps: apps.value }]
+  : [
   { value: 'platform', label: '平台类应用', description: '打开即用，常用平台的统一入口', apps: apps.value.filter(app => catalogUsage(app) === 'platform') },
   { value: 'agent', label: 'Agent能力', description: '查看详情，按说明接入你的 Agent', apps: apps.value.filter(app => catalogUsage(app) === 'agent') },
 ].filter(group => group.apps.length))
@@ -203,8 +205,7 @@ function updateCatalogPageSize(reload = true) {
   const capacity = catalogPageCapacity({
     availableHeight, columns, cardHeight, gap,
     headingHeight: parseFloat(style.getPropertyValue('--catalog-group-heading-height')),
-    groupGap: parseFloat(style.getPropertyValue('--catalog-group-gap')),
-    usage: selectedUsage.value, counts: usageCounts.value,
+    usage: selectedUsage.value,
   })
   if (capacity === pageSize.value) return
   pageSize.value = capacity
@@ -772,12 +773,12 @@ onUnmounted(() => {
         <div v-else class="catalog-results" :aria-busy="catalogLoading">
           <div v-if="catalogNotice" class="catalog-notice" role="status">{{ catalogNotice }}</div>
           <section v-for="group in catalogGroups" :key="group.value" class="catalog-group" :data-testid="`catalog-group-${group.value}`" :aria-label="group.label">
-            <div class="catalog-group-heading">
+            <div v-if="selectedUsage !== 'all'" class="catalog-group-heading">
               <h3>{{ group.label }}</h3>
               <span>{{ group.description }}</span>
             </div>
             <div class="app-grid">
-            <article v-for="app in group.apps" :key="app.id" class="app-card" data-testid="app-card" :data-usage="group.value" @click="openCard($event, app.id)">
+            <article v-for="app in group.apps" :key="app.id" class="app-card" data-testid="app-card" :data-usage="catalogUsage(app)" @click="openCard($event, app.id)">
               <div class="app-card-top">
                 <button class="app-title" :aria-label="`查看 ${appName(app)} 详情`" @click="openApp(app.id)">{{ appName(app) }}</button>
                 <span v-if="app.version" class="app-version">{{ formatVersion(app.version) }}</span>
@@ -798,7 +799,7 @@ onUnmounted(() => {
               <div class="app-card-footer">
                 <div class="app-card-author-action">
                   <a
-                    v-if="group.value === 'platform' && platformEntry(app)"
+                    v-if="catalogUsage(app) === 'platform' && platformEntry(app)"
                     class="platform-open-button"
                     data-testid="open-platform"
                     :href="safeHttpUrl(platformEntry(app).url)"
@@ -806,7 +807,7 @@ onUnmounted(() => {
                     rel="noopener noreferrer"
                     @click.stop
                   >打开平台 <span aria-hidden="true">↗</span></a>
-                  <button v-else-if="group.value === 'platform'" class="platform-open-button" disabled>入口不可用</button>
+                  <button v-else-if="catalogUsage(app) === 'platform'" class="platform-open-button" disabled>入口不可用</button>
                   <span class="app-author">{{ appMaintainers(app) }}</span>
                 </div>
                 <div class="app-dates">

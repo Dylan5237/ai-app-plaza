@@ -60,23 +60,10 @@ export function appFormats(app: CatalogApp): string[] {
 
 export function catalogPageCapacity(options: {
   availableHeight: number; columns: number; cardHeight: number; gap: number;
-  headingHeight: number; groupGap: number; usage: string;
-  counts: { platform: number; agent: number };
+  headingHeight: number; usage: string;
 }): number {
-  const { availableHeight, columns, cardHeight, gap, headingHeight, groupGap, counts } = options;
-  const groupHeight = (count: number) => {
-    const rows = Math.ceil(count / columns);
-    return headingHeight + rows * cardHeight + Math.max(0, rows - 1) * gap;
-  };
+  const { availableHeight, columns, cardHeight, gap } = options;
+  const headingHeight = options.usage === 'all' ? 0 : options.headingHeight;
   const rows = Math.max(1, Math.floor((availableHeight - headingHeight + gap) / (cardHeight + gap)));
-  const maximum = Math.min(100, rows * columns);
-  if (options.usage !== 'all' || !counts.platform || !counts.agent) return maximum;
-  // The server sorts platform apps first. Only the page crossing that boundary can have two groups.
-  for (let size = maximum; size > 1; size--) {
-    const platformTail = counts.platform % size;
-    if (!platformTail) return size;
-    const agentHead = Math.min(counts.agent, size - platformTail);
-    if (groupHeight(platformTail) + groupHeight(agentHead) + groupGap <= availableHeight) return size;
-  }
-  return 1;
+  return Math.min(100, rows * columns);
 }
