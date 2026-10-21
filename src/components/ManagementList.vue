@@ -95,6 +95,7 @@ onMounted(async () => {
   updatePageSize(false)
   layoutObserver = new ResizeObserver(scheduleLayout)
   layoutObserver.observe(records.value)
+  layoutObserver.observe(footer.value)
   load()
 })
 onUnmounted(() => { ++sequence; layoutObserver?.disconnect(); cancelAnimationFrame(layoutFrame) })
@@ -173,7 +174,8 @@ onUnmounted(() => { ++sequence; layoutObserver?.disconnect(); cancelAnimationFra
 .record-app span { color: #8a96a8; font-size: 12px; }
 .management-actions { display: flex; gap: 12px; align-items: center; }
 .management-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.management-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid #edf0f5; color: #7b8798; font-size: 12px; }
+.management-footer { position: relative; display: flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid #edf0f5; color: #7b8798; font-size: 12px; }
+.management-footer > span { position: absolute; left: 16px; }
 .management-note { color: #7b8798; font-size: 12px; line-height: 1.7; }
-@media (max-width: 650px) { .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 20px; } .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px; } }
+@media (max-width: 650px) { .management-footer { flex-direction: column; gap: 8px; padding: 10px 16px; } .management-footer > span { position: static; align-self: flex-start; } .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 20px; } .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px; } }
 </style>

@@ -229,6 +229,8 @@ try {
       assert.ok(box, `${view} footer is not visible at ${viewport.width}x${viewport.height}`);
       assert.ok(box.y >= 0 && box.y + box.height <= viewport.height + 1, `${view} footer is outside the ${viewport.width}x${viewport.height} viewport`);
       assert.ok(box.x >= 0 && box.x + box.width <= viewport.width + 1, `${view} footer is outside the horizontal viewport bounds`);
+      const pager = await footer.locator('.el-pagination').boundingBox();
+      assert.ok(pager && Math.abs(pager.x + pager.width / 2 - box.x - box.width / 2) <= 1, `${view} pagination must be centered in the footer`);
       const widths = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, window: window.innerWidth }));
       assert.ok(widths.document <= widths.window, `${view} has horizontal page overflow at ${viewport.width}x${viewport.height}`);
       const create = await page.getByTestId('management-create').boundingBox();
