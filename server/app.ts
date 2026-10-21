@@ -7,7 +7,7 @@ import { createService } from './domain/service.js';
 import { normalizeProjectVersion } from './domain/manifest.js';
 import { DomainError, type DomainDiagnostic } from './domain/errors.js';
 import type { Database } from './domain/database.js';
-import { assertLocalManagementConfig, type Config } from './config.js';
+import { assertManagementConfig, managementEnabled, managementMode, type Config } from './config.js';
 import { publishContract } from './publish-contract.js';
 import { publisherScript } from './managed-publish-contract.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
@@ -56,7 +56,7 @@ function parseManagedCandidate(value: unknown) {
 }
 
 export async function createApp(config: Config, db: Database) {
-  assertLocalManagementConfig(config);
+  assertManagementConfig(config);
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
@@ -93,18 +93,21 @@ export async function createApp(config: Config, db: Database) {
       return reply.code(403).send({ error: { code: 'HOST_DENIED', message: '访问地址与 PUBLIC_ORIGIN 不一致' } });
     }
     const path = request.url.split('?')[0];
-    if (config.localManagement && /^\/api\/management(?:\/|$)/.test(path)) {
+    if (managementEnabled(config) && /^\/api\/management(?:\/|$)/.test(path)) {
       const fetchSite = request.headers['sec-fetch-site'];
       const values = Array.isArray(fetchSite) ? fetchSite : fetchSite === undefined ? [] : [fetchSite];
       if (values.some(value => value.toLowerCase() === 'cross-site')) {
-        return reply.code(403).send({ error: { code: 'CROSS_SITE_DENIED', message: '本地管理请求不接受跨站来源' } });
+        return reply.code(403).send({ error: { code: 'CROSS_SITE_DENIED', message: '后台管理请求不接受跨站来源' } });
       }
     }
     const managedPostPath = request.url.split('?')[0];
-    if (managed && request.method === 'POST' && ['/api/managed-publications', '/api/managed-publications/validate'].includes(managedPostPath)) {
+    const isManagedPublicationPost = ['/api/managed-publications', '/api/managed-publications/validate'].includes(managedPostPath);
+    const isManagementEditorPost = /^\/api\/management\/apps\/[^/]+\/editor$/.test(managedPostPath);
+    if (managed && request.method === 'POST' && (isManagedPublicationPost || isManagementEditorPost)) {
       if (managedActive >= 2) return reply.code(429).send({ error: { code: 'UPLOAD_BUSY', message: '正在处理其他上传，请保留本次记录后稍后重试' } });
       managedActive += 1;
       (request as any).managedSlot = true;
+      (request as any).releaseManagedSlot = () => releaseManagedSlot(request);
     }
   });
   app.addHook('onResponse', async request => releaseManagedSlot(request));
@@ -127,7 +130,8 @@ export async function createApp(config: Config, db: Database) {
     return header.slice(7);
   };
   const publicationId = (params: unknown) => idValue.parse((params as any).id);
-  app.get('/api/health', async () => ({ status: 'ok', mode: config.local ? 'local' : 'configured', loginRequired: false, managementEnabled: config.localManagement === true }));
+  app.get('/api/health', async () => ({ status: 'ok', mode: config.local ? 'local' : 'configured', loginRequired: false,
+    managementEnabled: managementEnabled(config), managementMode: managementMode(config) }));
   app.get('/api/publish-contract', async (request) => {
     const query = z.object({ mode: z.enum(['managed', 'gitlab']).optional() }).parse(request.query);
     return publishContract(config, undefined, undefined, query.mode === 'gitlab', await service.tags());

@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 
 const emit = defineEmits(['open-app', 'open-update', 'open-publication', 'open-editor', 'open-create'])
-const props = defineProps({ state: { type: Object, required: true }, managementEnabled: { type: Boolean, default: false } })
+const props = defineProps({ state: { type: Object, required: true }, managementEnabled: { type: Boolean, default: false }, managementMode: { type: String, default: 'disabled' } })
 const { view, query, status, page } = toRefs(props.state)
 const pageSize = ref(20)
 const rows = ref([])
@@ -75,11 +75,11 @@ onMounted(load)
 
 <template>
   <main class="management-main">
-    <div class="management-heading"><div><h1>{{ title }}</h1><p>{{ description }}</p></div><div class="management-heading-actions"><span v-if="managementEnabled" class="local-label">本地集成版本</span><el-button v-if="managementEnabled" type="primary" data-testid="management-create" @click="emit('open-create')">新增应用</el-button></div></div>
+    <div class="management-heading"><div><h1>{{ title }}</h1><p>{{ description }}</p></div><div class="management-heading-actions"><span v-if="managementMode === 'local'" class="local-label">本地集成版本</span><span v-else-if="managementMode === 'intranet'" class="local-label">内网管理</span><el-button v-if="managementEnabled" type="primary" data-testid="management-create" @click="emit('open-create')">新增应用</el-button></div></div>
     <nav class="management-tabs" aria-label="后台管理视图">
       <button v-for="item in [['apps','应用管理'],['publications','待收录与更新'],['uploads','上传占位'],['trash','回收站']]" :key="item[0]" type="button" :disabled="!managementEnabled && item[0] !== 'apps'" :class="{ active: view === item[0] }" :data-testid="`management-tab-${item[0]}`" @click="changeView(item[0])">{{ item[1] }}</button>
     </nav>
-    <el-alert v-if="!managementEnabled" class="management-alert" title="本地管理写入尚未启用，当前仅可查看应用。" description="本地集成需显式启用 PLAZA_LOCAL_MANAGEMENT=1；非本地模式不开放此候选写入口。" type="info" :closable="false" />
+    <el-alert v-if="!managementEnabled" class="management-alert" title="管理写入尚未启用，当前仅可查看应用。" description="本地试用可设置 PLAZA_LOCAL_MANAGEMENT=1；受信任的内网部署可设置 PLAZA_INTRANET_MANAGEMENT=1 并使用 RFC1918 私网 IPv4 门户地址。" type="info" :closable="false" />
     <form class="management-toolbar" @submit.prevent="search">
       <el-input v-model="query" clearable placeholder="搜索应用名称、标识或作者" aria-label="搜索后台应用" data-testid="management-search-input" @clear="search" />
       <el-select v-if="view === 'apps'" v-model="status" aria-label="按应用状态筛选" data-testid="management-status" @change="search"><el-option label="全部状态" value="all" /><el-option label="已上架" value="published" /><el-option label="已下架" value="offline" /></el-select>

@@ -1,6 +1,6 @@
-# 后台本地集成
+# 后台本地集成与内网管理
 
-本地候选按 [#65](https://github.com/Dylan5237/ai-app-plaza/issues/65) 集中后台入口，并按 [#66](https://github.com/Dylan5237/ai-app-plaza/issues/66) 补齐上下架、回收恢复和手动修改详情。详情、更新提示词及预览确认/重试继续共用原有组件与服务。它不代表线上部署或业务验收。
+本地集成复用 [#65](https://github.com/Dylan5237/ai-app-plaza/issues/65) 的集中后台入口，并按 [#66](https://github.com/Dylan5237/ai-app-plaza/issues/66) 补齐上下架、回收恢复和手动修改详情。详情、更新提示词及预览确认/重试继续共用原有组件与服务。本页也说明如何在受信任的 RFC1918 内网部署启用这些管理接口；代码交付、线上部署和业务验收分别记录。
 
 ## 本机试用
 
@@ -30,9 +30,25 @@ npm run dev:management-local
 
 新增接口：`GET /api/management/publications`，对应详情和 `POST .../confirm` / `POST .../retry`，以及 `GET /api/management/uploads`。旧 `/private-previews` 跳转 `/admin`；广场保留首次分享和使用，移除作者更新入口。
 
-## 启用范围
+## 管理模式
 
-管理写入要求显式 `PLAZA_LOCAL_MANAGEMENT=1`，同时 `PLAZA_LOCAL=1`，HOST/PUBLIC_ORIGIN 必须是同端口 `127.0.0.1`。生产或非本地配置拒绝启用。默认不注册 `/api/management/*`，Host/Origin 及跨站校验继续生效。这是本地候选边界，不是生产管理员身份方案。
+本地试用使用显式 `PLAZA_LOCAL_MANAGEMENT=1`，同时 `PLAZA_LOCAL=1`，HOST/PUBLIC_ORIGIN 必须是同端口 `127.0.0.1`。本地模式仍禁止在 `NODE_ENV=production` 启用。
+
+内网部署须显式设置 `PLAZA_INTRANET_MANAGEMENT=1`，移除 `PLAZA_LOCAL=1`，并将 `PUBLIC_ORIGIN` 设置为同端口的 RFC1918 IPv4 字面地址（10/8、172.16/12 或 192.168/16）。例如：
+
+```dotenv
+PLAZA_INTRANET_MANAGEMENT=1
+HOST=0.0.0.0
+PORT=16090
+PUBLIC_ORIGIN=http://192.168.2.145:16090
+ALLOW_INSECURE_PORTAL=1
+DATABASE_URL=postgresql://<部署配置的数据库连接>
+PLAZA_SECRET=<至少 32 字符的持久随机密钥>
+```
+
+使用 HTTPS 时，`PUBLIC_ORIGIN` 可为私网 IPv4 的 HTTPS 地址；端口仍须与 `PORT` 的有效端口一致，HTTP 才需要 `ALLOW_INSECURE_PORTAL=1`。非本地服务仍须配置外部 PostgreSQL、持久密钥、GitLab 地址，以及启用托管发布时所需的固定群组和服务端授权。
+
+内网模式不要求账号、密码、IP 白名单或审批。所有能访问门户的人都能使用后台管理应用和发布记录，因此网络部署必须限制在受信任的内网范围。管理 API 默认不注册；启用时继续执行 Host、Origin 和跨站请求校验，复用现有服务与托管 GitLab 授权。不得同时启用 `PLAZA_LOCAL_MANAGEMENT` 与 `PLAZA_INTRANET_MANAGEMENT`。
 
 数据库增加独立的应用状态表及托管发布 operation_kind 字段。试用脚本自动使用隔离内存库，不操作真实应用或公司 GitLab。
 
@@ -51,6 +67,6 @@ npm run dev:management-local
 
 ## 验证边界
 
-真实 GitLab/Host、生产管理员策略、部署和业务验收均未完成。当前试用只操作隔离的 GitLab 协议 fixture 和本地数据库。
+本地试用只操作隔离的 GitLab 协议 fixture 和本地数据库。任何真实 GitLab/Host 操作、内网部署和业务验收均须分别记录，不由本地验证自动代表。
 
 执行 `npm run typecheck`、`npm test`、`npm run build`、`npm run test:e2e`、`npm run test:docs`。浏览器用合成 GitLab/PGlite 检查流程复用、首次收录、失败重试、旧版保持、过期禁用、预览竞态、上下架与回收恢复、资料写回与源码保留、丢失响应恢复和移动端。测试通过不代表生产或业务验收完成。

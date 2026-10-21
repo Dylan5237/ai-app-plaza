@@ -484,7 +484,7 @@ async function mutatePublication(action) {
   const current = publication.value
   const id = publicationId.value
   if (!id || !current || publicationBusy.value) return
-  if (props.management && !props.managementEnabled) { publicationError.value = '本地管理写入尚未启用。'; return }
+  if (props.management && !props.managementEnabled) { publicationError.value = '管理写入尚未启用。'; return }
   const token = props.management ? '' : publicationToken(id)
   if (!props.management && !token) {
     publicationError.value = '此私有预览链接的临时授权已不可用，请重新打开作者提供的完整链接。'

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { Config } from './config.js';
+import { managementEnabled, type Config } from './config.js';
 import type { Database } from './domain/database.js';
 import { DomainError } from './domain/errors.js';
 import type { ManagedPublisher } from './domain/managed-publisher.js';
@@ -21,7 +21,7 @@ export function registerManagementLifecycle(
   service: PlazaService,
   managed?: Pick<ManagedPublisher, 'findByAppId'>,
 ): void {
-  if (!config.localManagement) return;
+  if (!managementEnabled(config)) return;
 
   app.get('/api/management/apps', async request => {
     const options = z.object({

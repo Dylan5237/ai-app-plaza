@@ -7,11 +7,16 @@ import ManagementList from '../components/ManagementList.vue'
 import plazaMark from '../assets/plaza-mark.svg'
 const listState = reactive({ view: 'apps', query: '', status: 'all', page: 1 })
 const managementEnabled = ref(false)
+const managementMode = ref('disabled')
 const editorAppId = ref('')
 const list = ref(null)
 function saved(publicationId, openPublication) { editorAppId.value = ''; openPublication(publicationId) }
 onMounted(async () => {
-  try { managementEnabled.value = (await apiRequest('/api/health')).managementEnabled === true } catch { /* The list reports connection errors. */ }
+  try {
+    const health = await apiRequest('/api/health')
+    managementEnabled.value = health.managementEnabled === true
+    managementMode.value = ['local', 'intranet'].includes(health.managementMode) ? health.managementMode : 'disabled'
+  } catch { /* The list reports connection errors. */ }
 })
 </script>
 
@@ -24,7 +29,7 @@ onMounted(async () => {
     </header>
     <ToolDirectory management :management-enabled="managementEnabled">
       <template #management="{ openApp, openUpdate, openPublication, openCreate }">
-        <ManagementList ref="list" :state="listState" :management-enabled="managementEnabled" @open-editor="editorAppId = $event" @open-create="openCreate()" @open-app="openApp" @open-update="openUpdate" @open-publication="openPublication" />
+        <ManagementList ref="list" :state="listState" :management-enabled="managementEnabled" :management-mode="managementMode" @open-editor="editorAppId = $event" @open-create="openCreate()" @open-app="openApp" @open-update="openUpdate" @open-publication="openPublication" />
         <ApplicationMetadataEditor :app-id="editorAppId" @close="editorAppId = ''" @saved="saved($event, openPublication)" />
       </template>
     </ToolDirectory>

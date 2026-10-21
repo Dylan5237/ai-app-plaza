@@ -63,6 +63,51 @@ test('insecure portal trial still requires an external database and persistent s
   await assert.rejects(loadConfig({ ...trialConfig, PLAZA_SECRET: undefined }), /PLAZA_SECRET/);
 });
 
+test('intranet management is explicit, private-origin-only, and compatible with production configuration', async () => {
+  const privateHttp = {
+    NODE_ENV: 'production',
+    HOST: '0.0.0.0',
+    PORT: '16090',
+    PUBLIC_ORIGIN: 'http://192.168.2.145:16090',
+    ALLOW_INSECURE_PORTAL: '1',
+    ...nonLocalRequirements,
+  };
+  const disabled = await loadConfig(privateHttp);
+  assert.equal(disabled.local, false);
+  assert.equal(disabled.intranetManagement, undefined);
+  assert.equal(disabled.localManagement, undefined);
+
+  const configured = await loadConfig({ ...privateHttp, PLAZA_INTRANET_MANAGEMENT: '1' });
+  assert.equal(configured.intranetManagement, true);
+  assert.equal(configured.local, false);
+  assert.equal(configured.port, 16090);
+
+  const privateHttps = await loadConfig({
+    ...privateHttp,
+    PORT: '443',
+    PUBLIC_ORIGIN: 'https://192.168.2.145',
+    ALLOW_INSECURE_PORTAL: undefined,
+    PLAZA_INTRANET_MANAGEMENT: '1',
+  });
+  assert.equal(privateHttps.publicOrigin, 'https://192.168.2.145');
+  assert.equal(privateHttps.intranetManagement, true);
+
+  await assert.rejects(loadConfig({ ...privateHttp, PORT: '16091', PLAZA_INTRANET_MANAGEMENT: '1' }), /端口与 PORT 一致/);
+  await assert.rejects(loadConfig({ ...privateHttp, PUBLIC_ORIGIN: 'https://plaza.example.invalid', PLAZA_INTRANET_MANAGEMENT: '1' }), /RFC1918/);
+  await assert.rejects(loadConfig({ ...privateHttp, PUBLIC_ORIGIN: 'https://203.0.113.10:16090', PLAZA_INTRANET_MANAGEMENT: '1' }), /RFC1918/);
+  await assert.rejects(loadConfig({ ...privateHttp, NODE_ENV: 'test', PLAZA_LOCAL: '1', HOST: '127.0.0.1', PUBLIC_ORIGIN: 'http://127.0.0.1:16090', PLAZA_INTRANET_MANAGEMENT: '1' }), /非本地模式/);
+  await assert.rejects(loadConfig({
+    ...privateHttp,
+    NODE_ENV: 'test',
+    PLAZA_LOCAL: '1',
+    HOST: '127.0.0.1',
+    PUBLIC_ORIGIN: 'http://127.0.0.1:16090',
+    PLAZA_LOCAL_MANAGEMENT: '1',
+    PLAZA_INTRANET_MANAGEMENT: '1',
+  }), /不能同时启用/);
+  await assert.rejects(loadConfig({ ...privateHttp, PLAZA_INTRANET_MANAGEMENT: 'true' }), /PLAZA_INTRANET_MANAGEMENT/);
+});
+
 test('managed publication requires an explicit complete fixed namespace and server-only authorization', async () => {
   const base = { PUBLIC_ORIGIN: 'https://plaza.example.invalid', ...nonLocalRequirements };
   for (const partial of [
