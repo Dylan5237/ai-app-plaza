@@ -97,22 +97,29 @@ async function visibleCards(page: any): Promise<CardSnapshot[]> {
   })));
 }
 
-async function collectPages(page: any, usage: Usage): Promise<CardSnapshot[]> {
+async function collectPages(page: any, usage: Usage, payload: ListResponse): Promise<CardSnapshot[]> {
   const cards: CardSnapshot[] = [];
-  const seenGroups = new Set<string>();
   while (true) {
     await waitForCatalog(page);
     const groups = await page.locator('[data-testid^="catalog-group-"]').evaluateAll((sections: HTMLElement[]) => sections.map(section => ({
       testId: section.dataset.testid || '',
       cardUsages: Array.from(section.querySelectorAll<HTMLElement>('[data-testid="app-card"]')).map(card => card.dataset.usage || ''),
     }))) as Array<{ testId: string; cardUsages: string[] }>;
-    for (const group of groups) {
-      seenGroups.add(group.testId);
-      const groupUsage = group.testId.replace('catalog-group-', '');
-      assert.ok(group.cardUsages.every(value => value === groupUsage), `${group.testId} contains only its own category`);
+    if (usage === 'all') {
+      assert.equal(groups.length, 1, 'all applications share one result section');
+      assert.equal(groups[0].testId, 'catalog-group-all');
+      assert.equal(await page.locator('.app-grid').count(), 1, 'all applications share one grid');
+      assert.equal(await page.locator('.catalog-group-heading').count(), 0, 'all results have no category headings');
+    } else {
+      assert.equal(groups.length, 1);
+      assert.equal(groups[0].testId, `catalog-group-${usage}`);
+      assert.ok(groups[0].cardUsages.every(value => value === usage), 'the category section contains only its matching apps');
     }
     const currentCards = await visibleCards(page);
+    assert.deepEqual(currentCards.map(card => card.name), payload.items.map(app => app.manifest.name), 'cards preserve the server page order');
     assert.ok(currentCards.every(card => card.usage === 'platform' || card.usage === 'agent'), 'every card declares its rendered category');
+    assert.ok(currentCards.every(card => card.usage !== 'platform' || card.hasPlatformLink), 'platform cards keep their direct links in every view');
+    assert.ok(currentCards.every(card => card.usage !== 'agent' || (!card.hasDirectUse && !card.hasPlatformLink)), 'Agent cards keep setup in details in every view');
     if (usage !== 'all') assert.ok(currentCards.every(card => card.usage === usage), `${usage} filtering is applied to each server page`);
     if (usage === 'agent') assert.ok(currentCards.every(card => !card.hasDirectUse && !card.hasPlatformLink), 'Agent cards keep use actions in details');
     cards.push(...currentCards);
@@ -129,11 +136,7 @@ async function collectPages(page: any, usage: Usage): Promise<CardSnapshot[]> {
     await next.click();
     const response = await responsePromise;
     assert.equal(response.status(), 200);
-    await response.json() as ListResponse;
-  }
-  if (usage === 'all') {
-    assert.ok(seenGroups.has('catalog-group-platform'), 'all results expose the platform section');
-    assert.ok(seenGroups.has('catalog-group-agent'), 'all results expose the Agent section');
+    payload = await response.json() as ListResponse;
   }
   return cards;
 }
@@ -228,7 +231,7 @@ try {
   assert.deepEqual(initial.usageCounts, { platform: 6, agent: 8 });
   assert.equal(initial.total, 14, 'fixture contains five web-only, eight Agent-only, and one dual-entry application');
 
-  const allPages = await collectPages(page, 'all');
+  const allPages = await collectPages(page, 'all', initial);
   const allNames = allPages.map(card => card.name);
   assert.equal(new Set(allNames).size, 14, 'paging does not repeat an application');
   assert.deepEqual(new Set(allNames), new Set([...webApps, ...agentApps, dualApp].map(app => app.name)), 'all applications remain reachable across all pages');
@@ -240,7 +243,7 @@ try {
   const dualCard = allPages.find(card => card.name === dualApp.name);
   assert.equal(dualCard?.usage, 'platform', 'dual-entry applications take the platform category');
   assert.ok(dualCard?.formats.includes('Web平台') && dualCard.formats.includes('Skill'), 'classification retains both entry formats');
-  report.checks.push('all groups and all pages: 5 web-only, 8 Agent-only formats, and one platform-priority dual entry; no loss or duplicates');
+  report.checks.push('one flat all-results grid without category headings, in API order across all pages; all 14 apps retained without duplicates');
 
   const overflowMetrics = async () => page.evaluate(() => {
     const root = document.documentElement;
@@ -275,7 +278,7 @@ try {
   const platformResponse = await clickUsage(page, 'platform');
   assert.equal(platformResponse.total, 6, 'platform filtering reports the full server-side category count');
   assert.deepEqual(platformResponse.usageCounts, { platform: 6, agent: 0 });
-  const platformPages = await collectPages(page, 'platform');
+  const platformPages = await collectPages(page, 'platform', platformResponse);
   assert.equal(new Set(platformPages.map(card => card.name)).size, 6);
   assert.deepEqual(new Set(platformPages.map(card => card.name)), new Set([...webApps, dualApp].map(app => app.name)));
   assert.ok(platformPages.every(card => !card.hasDirectUse), 'platform cards do not expose Agent setup');
@@ -307,7 +310,7 @@ try {
   const agentResponse = await search(page, '', 'agent');
   assert.equal(agentResponse.total, 8, 'Agent filtering reports every matching app, not only the preceding all page');
   assert.deepEqual(agentResponse.usageCounts, { platform: 0, agent: 8 });
-  const agentPages = await collectPages(page, 'agent');
+  const agentPages = await collectPages(page, 'agent', agentResponse);
   assert.equal(new Set(agentPages.map(card => card.name)).size, 8);
   assert.deepEqual(new Set(agentPages.map(card => card.name)), new Set(agentApps.map(app => app.name)));
   assert.ok(agentPages.every(card => !card.hasDirectUse && !card.hasPlatformLink), 'Agent cards have no direct setup or platform action');
@@ -363,10 +366,30 @@ try {
   await waitForCatalog(page);
   assert.equal(combined.total, 3, 'search and tag filters apply together on the server');
   assert.deepEqual(combined.usageCounts, { platform: 2, agent: 1 });
-  const combinedPages = await collectPages(page, 'all');
+  const mixedCards = await visibleCards(page);
+  assert.ok(mixedCards.some(card => card.usage === 'platform') && mixedCards.some(card => card.usage === 'agent'), 'mixed search results share the same all-results page');
+  const combinedPages = await collectPages(page, 'all', combined);
   assert.deepEqual(new Set(combinedPages.map(card => card.name)), new Set([webApps[0].name, agentApps[0].name, dualApp.name]));
   assert.equal(new Set(combinedPages.map(card => card.name)).size, 3);
   report.checks.push('search and tag combination returns only the matching platform and Agent applications');
+
+  await clickUsage(page, 'agent');
+  const clearResponsePromise = page.waitForResponse((response: any) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/apps' && url.searchParams.get('usage') === 'all'
+      && !url.searchParams.has('query') && !url.searchParams.has('tags') && url.searchParams.get('page') === '1';
+  });
+  await page.getByRole('button', { name: '清除筛选', exact: true }).click();
+  const clearResponse = await clearResponsePromise;
+  assert.equal(clearResponse.status(), 200);
+  const cleared = await clearResponse.json() as ListResponse;
+  await waitForCatalog(page);
+  assert.equal(cleared.total, 14, 'clearing category, search and tag filters restores the full catalog');
+  assert.equal(await page.getByTestId('usage-all').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.getByRole('textbox', { name: '搜索应用名称、用途或能力' }).inputValue(), '');
+  const clearedPages = await collectPages(page, 'all', cleared);
+  assert.equal(new Set(clearedPages.map(card => card.name)).size, 14);
+  report.checks.push('clear filters returns from the Agent category to the flat all-results grid, preserving API order and full pagination');
 
   assert.deepEqual(report.errors, [], 'browser reports no uncaught page errors');
   report.status = 'PASS';

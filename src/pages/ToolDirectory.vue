@@ -79,7 +79,9 @@ const publicationError = ref('')
 let brandClickCount = 0
 let brandClickTimer = 0
 
-const catalogGroups = computed(() => [
+const catalogGroups = computed(() => selectedUsage.value === 'all'
+  ? [{ value: 'all', label: '全部应用', description: '', apps: apps.value }]
+  : [
   { value: 'platform', label: '平台类应用', description: '打开即用，常用平台的统一入口', apps: apps.value.filter(app => catalogUsage(app) === 'platform') },
   { value: 'agent', label: 'Agent能力', description: '查看详情，按说明接入你的 Agent', apps: apps.value.filter(app => catalogUsage(app) === 'agent') },
 ].filter(group => group.apps.length))
@@ -203,8 +205,7 @@ function updateCatalogPageSize(reload = true) {
   const capacity = catalogPageCapacity({
     availableHeight, columns, cardHeight, gap,
     headingHeight: parseFloat(style.getPropertyValue('--catalog-group-heading-height')),
-    groupGap: parseFloat(style.getPropertyValue('--catalog-group-gap')),
-    usage: selectedUsage.value, counts: usageCounts.value,
+    usage: selectedUsage.value,
   })
   if (capacity === pageSize.value) return
   pageSize.value = capacity
@@ -261,6 +262,7 @@ function clearFilters() {
   selectedTags.value = []
   selectedUsage.value = 'all'
   page.value = 1
+  updateCatalogPageSize(false)
   loadCatalog()
 }
 
@@ -772,12 +774,12 @@ onUnmounted(() => {
         <div v-else class="catalog-results" :aria-busy="catalogLoading">
           <div v-if="catalogNotice" class="catalog-notice" role="status">{{ catalogNotice }}</div>
           <section v-for="group in catalogGroups" :key="group.value" class="catalog-group" :data-testid="`catalog-group-${group.value}`" :aria-label="group.label">
-            <div class="catalog-group-heading">
+            <div v-if="selectedUsage !== 'all'" class="catalog-group-heading">
               <h3>{{ group.label }}</h3>
               <span>{{ group.description }}</span>
             </div>
             <div class="app-grid">
-            <article v-for="app in group.apps" :key="app.id" class="app-card" data-testid="app-card" :data-usage="group.value" @click="openCard($event, app.id)">
+            <article v-for="app in group.apps" :key="app.id" class="app-card" data-testid="app-card" :data-usage="catalogUsage(app)" @click="openCard($event, app.id)">
               <div class="app-card-top">
                 <button class="app-title" :aria-label="`查看 ${appName(app)} 详情`" @click="openApp(app.id)">{{ appName(app) }}</button>
                 <span v-if="app.version" class="app-version">{{ formatVersion(app.version) }}</span>
@@ -798,7 +800,7 @@ onUnmounted(() => {
               <div class="app-card-footer">
                 <div class="app-card-author-action">
                   <a
-                    v-if="group.value === 'platform' && platformEntry(app)"
+                    v-if="catalogUsage(app) === 'platform' && platformEntry(app)"
                     class="platform-open-button"
                     data-testid="open-platform"
                     :href="safeHttpUrl(platformEntry(app).url)"
@@ -806,7 +808,7 @@ onUnmounted(() => {
                     rel="noopener noreferrer"
                     @click.stop
                   >打开平台 <span aria-hidden="true">↗</span></a>
-                  <button v-else-if="group.value === 'platform'" class="platform-open-button" disabled>入口不可用</button>
+                  <button v-else-if="catalogUsage(app) === 'platform'" class="platform-open-button" disabled>入口不可用</button>
                   <span class="app-author">{{ appMaintainers(app) }}</span>
                 </div>
                 <div class="app-dates">
@@ -1017,7 +1019,7 @@ onUnmounted(() => {
 :global(html), :global(body), :global(#app) { width: 100%; height: 100%; margin: 0; }
 :global(body) { background: #f4f6f9; color: #273449; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .directory-shell { width: 100%; height: 100%; overflow-y: auto; background: #f4f6f9; }
-.directory-main { --catalog-columns: 4; --catalog-card-height: 164px; --catalog-gap: 12px; --catalog-group-heading-height: 30px; --catalog-group-gap: 12px; display: flex; flex-direction: column; width: min(1480px, calc(100% - 64px)); height: 100%; margin: 0 auto; padding: 18px 0; }
+.directory-main { --catalog-columns: 3; --catalog-card-height: 190px; --catalog-gap: 12px; --catalog-group-heading-height: 30px; --catalog-group-gap: 12px; display: flex; flex-direction: column; width: min(1480px, calc(100% - 64px)); height: 100%; margin: 0 auto; padding: 18px 0; }
 .directory-header, .search-section, .catalog-heading-row { flex-shrink: 0; }
 .catalog-section { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .catalog-results { flex: 1 0 auto; }
@@ -1062,28 +1064,28 @@ onUnmounted(() => {
 .clear-filters { border: 0; background: transparent; color: #5273a6; font: inherit; font-size: 12px; cursor: pointer; }
 .clear-filters:hover { text-decoration: underline; }
 .app-grid { display: grid; grid-template-columns: repeat(var(--catalog-columns), minmax(0, 1fr)); gap: var(--catalog-gap); }
-.app-card { display: flex; height: var(--catalog-card-height); min-width: 0; flex-direction: column; padding: 12px 13px 10px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(25 43 67 / 2%); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.app-card { display: flex; height: var(--catalog-card-height); min-width: 0; flex-direction: column; padding: 12px 16px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(25 43 67 / 2%); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .app-card { cursor: pointer; }
 .app-card:hover { transform: translateY(-1px); border-color: #ccd6e4; box-shadow: 0 5px 15px rgb(25 43 67 / 5%); }
-.app-card-top { display: flex; height: 25px; min-height: 25px; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.app-title { min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: #25364e; font: inherit; font-size: 15px; font-weight: 650; line-height: 1.5; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.app-card-top { display: flex; min-height: 24px; flex-shrink: 0; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.app-title { display: -webkit-box; min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: #25364e; font: inherit; font-size: 15px; font-weight: 650; line-height: 1.45; text-align: left; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; cursor: pointer; }
 .app-title:hover { color: #315fbd; }
 .app-version, .public-app-version { flex: none; padding: 3px 7px; border: 1px solid #dce3ed; border-radius: 5px; background: #f7f9fc; color: #61748f; font-size: 11px; line-height: 1.3; white-space: nowrap; }
-.app-summary { display: -webkit-box; height: 40px; min-height: 0; margin: 5px 0 7px; overflow: hidden; color: #657184; font-size: 13px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.app-tags { display: flex; height: 22px; min-height: 22px; flex-wrap: nowrap; align-items: flex-start; gap: 5px; overflow: hidden; }
+.app-summary { display: -webkit-box; height: 40px; min-height: 40px; margin: 6px 0 8px; overflow: hidden; color: #657184; font-size: 13px; line-height: 20px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.app-tags { display: flex; height: 22px; min-height: 22px; flex-wrap: nowrap; align-items: flex-start; gap: 6px; overflow: hidden; }
 .app-format { flex: none; padding: 3px 7px; border: 1px solid #d5e2ff; border-radius: 4px; background: #edf3ff; color: #315fbd; font-size: 11px; line-height: 1.25; white-space: nowrap; }
 .app-tag, .app-tag-more { max-width: calc(50% - 3px); overflow: hidden; padding: 3px 7px; border: 1px solid #e5e9ef; border-radius: 4px; background: #fafbfc; color: #778395; font: inherit; font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .app-tag { cursor: pointer; }
 .app-tag:hover, .app-tag.active { border-color: #c2d1e7; background: #f1f5fb; color: #4a6792; }
 .app-tag-more { border-color: transparent; background: transparent; color: #8993a2; }
 .app-tag { max-width: calc((100% - 10px) / 3); min-width: 0; flex-shrink: 1; }
-.app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px; margin-top: auto; padding-top: 8px; border-top: 1px solid #edf0f3; }
-.app-card-author-action { display: flex; min-width: 0; align-items: center; gap: 8px; }
-.platform-open-button { display: inline-flex; flex: none; min-height: 26px; align-items: center; gap: 3px; padding: 3px 8px; border: 1px solid #165dff; border-radius: 4px; background: #165dff; color: #fff; font: inherit; font-size: 12px; line-height: 18px; text-decoration: none; cursor: pointer; }
+.app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-top: auto; padding-top: 6px; border-top: 1px solid #edf0f3; }
+.app-card-author-action { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.platform-open-button { display: inline-flex; flex: none; min-height: 30px; align-items: center; gap: 3px; padding: 5px 9px; border: 1px solid #165dff; border-radius: 4px; background: #165dff; color: #fff; font: inherit; font-size: 12px; line-height: 18px; text-decoration: none; cursor: pointer; }
 .platform-open-button:hover { background: #4080ff; border-color: #4080ff; }
 .platform-open-button:disabled { border-color: #d6dde7; background: #f1f3f6; color: #8993a2; cursor: not-allowed; }
 .app-author { max-width: 150px; overflow: hidden; color: #53647a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.app-dates { display: grid; gap: 3px; color: #8993a2; font-size: 10px; line-height: 1.25; text-align: right; white-space: nowrap; }
+.app-dates { display: grid; gap: 2px; color: #8993a2; font-size: 11px; line-height: 1.4; text-align: right; white-space: nowrap; }
 .catalog-state { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 28px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; color: #748094; font-size: 13px; text-align: center; }
 .catalog-state strong { color: #34445b; font-size: 15px; }
 .catalog-state p { margin: 0 0 4px; }
@@ -1177,7 +1179,7 @@ onUnmounted(() => {
   .detail-actions { max-height: 25vh; }
 }
 @media (max-width: 620px) {
-  .directory-main { --catalog-columns: 1; --catalog-card-height: 200px; --catalog-gap: 10px; width: calc(100% - 28px); padding-top: 16px; }
+  .directory-main { --catalog-columns: 1; --catalog-card-height: 198px; --catalog-gap: 12px; width: calc(100% - 28px); padding-top: 16px; }
   .directory-header { align-items: flex-start; }
   .brand-mark { width: 36px; height: 36px; }
   .brand-block h1 { font-size: 18px; }
@@ -1186,23 +1188,19 @@ onUnmounted(() => {
   .search-section { margin: 20px 0 23px; padding: 14px; }
   .search-row { gap: 7px; }
   .search-submit { min-width: 62px; padding: 0 10px; }
-  .app-card { min-height: var(--catalog-card-height); }
+  .app-card { min-height: var(--catalog-card-height); padding: 12px 14px; }
   .publication-main { width: calc(100% - 24px); margin-top: 12px; }
   .publication-status-card, .publication-preview { padding: 17px 15px; }
   .publication-status-heading h1, .preview-section-heading h2 { font-size: 17px; }
 }
 @media (min-width: 901px) and (max-height: 760px) {
-  .directory-main { --catalog-card-height: 158px; --catalog-gap: 10px; padding-top: 12px; padding-bottom: 12px; }
+  .directory-main { --catalog-card-height: 188px; --catalog-gap: 12px; padding-top: 12px; padding-bottom: 12px; }
   .search-section { margin: 14px 0 15px; padding: 10px 12px 8px; }
   .tag-filter-row { max-height: 48px; gap: 5px; margin-top: 8px; }
   .filter-chip { min-height: 24px; padding: 2px 8px; }
   .catalog-heading-row { margin-bottom: 8px; }
-  .app-card { padding: 10px 12px 9px; }
-  .app-card-top { height: 24px; min-height: 24px; }
-  .app-summary { height: 39px; margin: 4px 0 6px; font-size: 12.5px; }
-  .app-tags { height: 21px; min-height: 21px; }
-  .app-card-footer { padding-top: 6px; }
-  .app-dates { font-size: 9px; }
+  .app-title { line-height: 21px; }
+  .app-dates { font-size: 10px; }
 }
 </style>
 

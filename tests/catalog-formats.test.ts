@@ -14,13 +14,13 @@ test('card formats describe the delivered entry rather than its output or compat
   assert.deepEqual(appFormats({ manifest: { entries: [{ kind: 'agent', label: '接入我的Agent' }] } }), ['Agent能力']);
 });
 
-test('page capacity accounts for only the actual cross-group boundary without wasting pure pages', () => {
-  const layout = { availableHeight: 400, columns: 4, cardHeight: 158, gap: 10, headingHeight: 30, groupGap: 12, usage: 'all', counts: { platform: 5, agent: 8 } };
-  assert.equal(catalogPageCapacity(layout), 5, 'two full rows cannot fit a third row caused by the boundary');
-  assert.equal(catalogPageCapacity({ ...layout, counts: { platform: 4, agent: 8 } }), 8, 'aligned groups can use the full page capacity');
-  assert.equal(catalogPageCapacity({ ...layout, counts: { platform: 13, agent: 0 } }), 8);
+test('flat all-results pages use every row while category pages reserve their heading', () => {
+  const layout = { availableHeight: 400, columns: 4, cardHeight: 158, gap: 10, headingHeight: 30, usage: 'all' };
+  assert.equal(catalogPageCapacity(layout), 8, 'mixed categories share the same two rows');
+  assert.equal(catalogPageCapacity({ ...layout, availableHeight: 330 }), 8, 'all results do not reserve a category heading');
+  assert.equal(catalogPageCapacity({ ...layout, availableHeight: 330, usage: 'platform' }), 4, 'category results still reserve their heading');
   assert.equal(catalogPageCapacity({ ...layout, usage: 'agent' }), 8);
-  assert.equal(catalogPageCapacity({ ...layout, availableHeight: 480, columns: 1, cardHeight: 200 }), 2, 'mobile can show two cards even when a page contains both groups');
+  assert.equal(catalogPageCapacity({ ...layout, availableHeight: 480, columns: 1, cardHeight: 200 }), 2, 'mobile can show two cards in one grid');
 });
 
 test('mixed apps appear once as a platform and open a safe registered web entry', () => {
