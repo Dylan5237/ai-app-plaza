@@ -278,6 +278,28 @@ try {
   assert.equal(await page.getByTestId('management-search-input').inputValue(), detailQuery);
   report.checks.push('closing an app detail returns to the same management page and query');
 
+  const failedActionPage = await currentPage();
+  const failedActionKeys = await visibleKeys();
+  const failedActionId = (await visibleAppIds())[0];
+  const listReadsBeforeFailure = report.requests.filter((item: any) => item.path === '/api/management/apps').length;
+  await page.route('**/api/management/apps/*/lifecycle', route => route.fulfill({
+    status: 409, json: { error: { code: 'REVISION_CONFLICT', message: '分页验证：状态已变化，请刷新' } },
+  }));
+  await page.getByTestId(`management-delete-${failedActionId}`).click();
+  await page.locator('.el-message-box').getByRole('button', { name: '移入回收站', exact: true }).click();
+  await page.getByText('分页验证：状态已变化，请刷新', { exact: true }).waitFor();
+  await waitListReady();
+  assert.equal(await currentPage(), failedActionPage, 'A failed action must keep the page that owns the displayed rows');
+  assert.deepEqual(await visibleKeys(), failedActionKeys);
+  assert.equal(report.requests.filter((item: any) => item.path === '/api/management/apps').length, listReadsBeforeFailure,
+    'Showing an error must not trigger a resize/reload loop');
+  await page.unroute('**/api/management/apps/*/lifecycle');
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await waitListReady();
+  assert.equal(await currentPage(), failedActionPage);
+  assert.deepEqual(await visibleKeys(), failedActionKeys);
+  report.checks.push('a failed lifecycle action preserves the page/rows without a resize reload loop, and refresh recovers');
+
   for (const height of [820, 844, 864]) {
     await page.setViewportSize({ width: 390, height });
     await switchView('publications');

@@ -56,7 +56,7 @@ function changeView(value) { view.value = value; query.value = ''; status.value 
 function search() { page.value = 1; load() }
 function changePage(value) { page.value = value; load() }
 function updatePageSize(reload = true) {
-  if (!records.value || !footer.value) return
+  if (!records.value || !footer.value || (reload && error.value)) return
   const header = records.value.querySelector('.el-table__header-wrapper')
   // Reserve the horizontal scrollbar as well as the table heading and pager.
   const available = records.value.clientHeight - footer.value.offsetHeight - (header?.offsetHeight || 40) - 14
@@ -64,7 +64,7 @@ function updatePageSize(reload = true) {
   if (capacity === pageSize.value) return
   pageSize.value = capacity
   page.value = 1
-  if (reload && !error.value) load()
+  if (reload) load()
 }
 function scheduleLayout() {
   cancelAnimationFrame(layoutFrame)
