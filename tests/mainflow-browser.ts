@@ -214,7 +214,7 @@ try {
     }
     await page.goto(harness.origin);
     await page.getByTestId('app-card').first().waitFor();
-    const expectedCards = 6;
+    const expectedCards = viewport.width === 1440 ? 9 : 6;
     await page.waitForFunction(count => document.querySelectorAll('[data-testid="app-card"]').length === count, expectedCards);
     const firstCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 1' });
     const legacyCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 2' });
@@ -351,26 +351,34 @@ try {
   const layoutPage = await layoutContext.newPage();
   layoutPage.on('pageerror', error => report.errors.push(error.message));
   for (const view of [
-    { width: 1440, height: 900, cards: 6, columns: 3 },
-    { width: 1440, height: 1080, cards: 9, columns: 3 },
-    { width: 1100, height: 900, cards: 6, columns: 3 },
-    { width: 800, height: 900, cards: 4, columns: 2 },
-    { width: 390, height: 844, cards: 2, columns: 1 },
-    { width: 390, height: 400, cards: 1, columns: 1 },
+    { width: 1440, height: 900, columns: 3 },
+    { width: 1440, height: 1080, columns: 3 },
+    { width: 1100, height: 900, columns: 3 },
+    { width: 800, height: 900, columns: 2 },
+    { width: 390, height: 844, columns: 1 },
+    { width: 390, height: 400, columns: 1 },
   ]) {
     await layoutPage.setViewportSize({ width: view.width, height: view.height });
     if (layoutPage.url() === 'about:blank') await layoutPage.goto(harness.origin);
-    await layoutPage.waitForFunction(count => document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false'
-      && document.querySelectorAll('[data-testid="app-card"]').length === count, view.cards);
+    await layoutPage.waitForLoadState('networkidle');
+    await layoutPage.waitForFunction(() => document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false');
+    await layoutPage.getByTestId('pagination').getByText('1', { exact: true }).click();
+    await layoutPage.waitForLoadState('networkidle');
+    await layoutPage.waitForFunction(() => document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false'
+      && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1');
     const cards = await layoutPage.getByTestId('app-card').evaluateAll(elements => elements.map(el => {
       const box = el.getBoundingClientRect();
-      return { x: box.x, y: box.y, bottom: box.bottom };
+      return { x: box.x, y: box.y, bottom: box.bottom, height: box.height };
     }));
     const footer = await layoutPage.getByTestId('pagination').boundingBox();
     const scrollTop = await layoutPage.locator('.directory-shell').evaluate(el => el.scrollTop);
     assert.ok(footer);
     assert.equal(new Set(cards.map(card => card.x)).size, view.columns, 'responsive columns agree with page capacity');
+    assert.equal(cards.length % view.columns, 0, 'first page contains full rows');
     assert.ok(Math.max(...cards.map(card => card.bottom)) <= footer.y, 'footer must not cover the last card');
+    const rowGap = await layoutPage.locator('.app-grid').evaluate(el => parseFloat(getComputedStyle(el).rowGap));
+    assert.ok(Math.max(...cards.map(card => card.bottom)) + cards[0].height + rowGap > footer.y,
+      'another full row must not fit in the space before pagination');
     if (view.height >= 800) assert.ok(footer.y + footer.height <= view.height, 'full rows and footer fit without scrolling');
     const pageTwo = layoutPage.waitForResponse(response => {
       const url = new URL(response.url());
@@ -384,7 +392,7 @@ try {
     assert.equal(nextFooter!.y + nextScrollTop, footer.y + scrollTop, 'paging keeps the footer position in the scroll container');
     report.views.push({ viewport: { width: view.width, height: view.height }, cards: cards.length, columns: view.columns, footer, responsive: true });
   }
-  await layoutPage.setViewportSize({ width: 1440, height: 900 });
+  await layoutPage.setViewportSize({ width: 1280, height: 720 });
   await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
     && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1');
   let releaseResize: () => void = () => {};
@@ -398,7 +406,7 @@ try {
     }
     await route.continue();
   });
-  await layoutPage.setViewportSize({ width: 1440, height: 1080 });
+  await layoutPage.setViewportSize({ width: 1440, height: 900 });
   await resizeHeld;
   await layoutPage.setViewportSize({ width: 1280, height: 720 });
   await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6);
