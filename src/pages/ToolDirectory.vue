@@ -702,7 +702,7 @@ onUnmounted(() => {
           </button>
           <div>
             <h1>AI应用广场</h1>
-            <p>发现适合当前任务的 AI 应用</p>
+            <p>发现适合你的 AI 应用</p>
           </div>
         </div>
         <button class="share-button" data-testid="share-button" @click="openShareDialog()">分享我的AI应用</button>
