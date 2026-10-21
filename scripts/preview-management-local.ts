@@ -1,16 +1,20 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startManagementFixture } from '../tests/helpers/management-fixture.js';
+import { seedManagementPagination } from '../tests/helpers/management-pagination.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseOptions() {
   let port = Number(process.env.PORT || 9442);
   let staticDir = resolve(repositoryRoot, 'dist');
+  let pagination = false;
   const args = process.argv.slice(2);
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === '--port') {
+    if (argument === '--pagination') {
+      pagination = true;
+    } else if (argument === '--port') {
       port = Number(args[++index]);
     } else if (argument?.startsWith('--port=')) {
       port = Number(argument.slice('--port='.length));
@@ -25,12 +29,18 @@ function parseOptions() {
     }
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be an integer from 1 to 65535.');
-  return { port, staticDir };
+  return { port, staticDir, pagination };
 }
 
 async function main() {
   const options = parseOptions();
   const fixture = await startManagementFixture(options);
+  try {
+    if (options.pagination) await seedManagementPagination(fixture);
+  } catch (error) {
+    await fixture.close();
+    throw error;
+  }
   console.log(`本地管理后台试用地址：${fixture.origin}/admin`);
 
   let stopping = false;

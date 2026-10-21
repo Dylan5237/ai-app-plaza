@@ -47,7 +47,7 @@ function summary(row: RecordRow): AdminPreviewSummary {
 export function createPreviewAdministration(db: Database, options: { includeConfirmed?: boolean } = {}) {
   const listBase = options.includeConfirmed ? PUBLICATION_STATUSES : BASE;
   return {
-    async list(options: { query: string; status: AdminPreviewStatus; page: number }) {
+    async list(options: { query: string; status: AdminPreviewStatus; page: number; pageSize?: number }) {
       const params: unknown[] = [];
       let where = listBase;
       if (options.query.trim()) {
@@ -73,10 +73,11 @@ export function createPreviewAdministration(db: Database, options: { includeConf
         params.push(options.status);
         where += ` AND expires_at > now() AND status = $${params.length}`;
       }
-      params.push(20, (options.page - 1) * 20);
+      const pageSize = options.pageSize ?? 20;
+      params.push(pageSize, (options.page - 1) * pageSize);
       const rows = await db.query<RecordRow>(`SELECT ${FIELDS} FROM publications WHERE ${where}
         ORDER BY created_at DESC, id DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
-      return { items: rows.rows.map(summary), total: counts[options.status], page: options.page, pageSize: 20, counts };
+      return { items: rows.rows.map(summary), total: counts[options.status], page: options.page, pageSize, counts };
     },
     async detail(id: string) {
       const row = (await db.query<RecordRow>(`SELECT ${FIELDS}, preview_jsonb FROM publications WHERE id = $1 AND ${BASE}`, [id])).rows[0];

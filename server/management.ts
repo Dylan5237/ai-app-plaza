@@ -35,6 +35,7 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
       query: z.string().max(200).default(''),
       status: z.enum(['all', 'preview_ready', 'checking', 'failed', 'expired']).default('all'),
       page: z.coerce.number().int().min(1).max(100000).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20),
     }).strict().parse(request.query);
     return publications.list(options);
   });
@@ -60,7 +61,11 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
   });
 
   app.get('/api/management/uploads', async request => {
-    const options = z.object({ query: z.string().max(200).default(''), page: z.coerce.number().int().min(1).max(100000).default(1) }).strict().parse(request.query);
+    const options = z.object({
+      query: z.string().max(200).default(''),
+      page: z.coerce.number().int().min(1).max(100000).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    }).strict().parse(request.query);
     const params: unknown[] = [];
     let where = 'operation.publication_id IS NULL';
     if (options.query.trim()) {
@@ -72,7 +77,7 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
        JOIN managed_app_bindings AS binding ON binding.id = operation.binding_id WHERE ${where}`,
       params,
     )).rows[0]?.total ?? 0);
-    params.push(20, (options.page - 1) * 20);
+    params.push(options.pageSize, (options.page - 1) * options.pageSize);
     const rows = await db.query<UploadRow>(`SELECT operation.id, binding.app_key, operation.tag,
         operation.status, operation.created_at, operation.updated_at
       FROM managed_publish_operations AS operation
@@ -84,7 +89,7 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
         id: row.id, appKey: row.app_key, version: row.tag,
         status: row.status, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
       })),
-      total, page: options.page, pageSize: 20,
+      total, page: options.page, pageSize: options.pageSize,
     };
   });
 }
