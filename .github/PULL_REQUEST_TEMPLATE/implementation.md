@@ -1,3 +1,7 @@
+## 本项目审查规则
+
+本仓库已停用 Bugbot。下方 APO 原版清单中的 Bugbot 两项不适用：不发送 `bugbot run`，不等待其结果，也不将其状态作为复审或合并条件。其余代码审查、验证、合并授权和 Phase Accept 规则继续适用。
+
 ## Summary
 
 <!-- What changed in product/library/docs **code**. One Phase / one task. -->
@@ -47,3 +51,5 @@ Merging this PR does not close the Phase. Disposer still records `PHASE ACCEPT` 
 - [ ] No push to `main`
 - [ ] Secrets not committed
 - [ ] **CC §1 updated** (or GitHub `BLOCKED:` if Command Center could not be edited)
+- [ ] Commented `bugbot run` on this PR (body exactly that text) before asking merge
+- [ ] Prompted disposer to wait for Bugbot review results before merge judgment
