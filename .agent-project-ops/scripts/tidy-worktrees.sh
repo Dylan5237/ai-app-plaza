@@ -87,7 +87,7 @@ fi
 gh_repo="$authority"
 gh_ok=0
 if [[ -n "$gh_repo" ]] && command -v gh >/dev/null 2>&1 \
-  && (cd "$primary" && GH_PROMPT_DISABLED=1 gh repo view "$gh_repo" --json name </dev/null >/dev/null 2>&1); then
+  && (cd "$primary" && GH_PROMPT_DISABLED=1 gh repo view "github.com/$gh_repo" --json name </dev/null >/dev/null 2>&1); then
   gh_ok=1
 fi
 
@@ -170,7 +170,7 @@ upstream_gone() { # pushed with -u to origin/<branch>, and that branch is gone n
   return 0
 }
 pr_lines() {
-  (cd "$primary" && GH_PROMPT_DISABLED=1 gh pr list -R "$gh_repo" --head "$1" --state all --limit 20 \
+  (cd "$primary" && GH_PROMPT_DISABLED=1 gh pr list -R "github.com/$gh_repo" --head "$1" --state all --limit 20 \
     --json number,state,headRefOid,headRefName,isCrossRepository,headRepositoryOwner,headRepository \
     --jq '.[] | [.number, .state, .headRefOid, .headRefName, .isCrossRepository, .headRepositoryOwner.login, .headRepository.name] | map(if . == null then "null" else tostring end) | join(" ")' </dev/null 2>/dev/null)
 }

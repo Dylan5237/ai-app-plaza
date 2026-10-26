@@ -38,7 +38,7 @@ def authority(root: Path) -> str:
             bash = str(candidate)
     if not bash:
         raise Invalid("Git Bash/bash required for the shared origin URL guard")
-    identity = run([bash, "-c", 'source "$1"; github_origin_identity "$2"',
+    identity = run([bash, "-c", 'source "$1"; github_worktree_authority "$2"',
                     "apo-authority", str(guard), str(root)]).strip()
     if not re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", identity):
         raise Invalid("origin identity unavailable")

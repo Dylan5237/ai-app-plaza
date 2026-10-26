@@ -24,8 +24,8 @@ labels: "type:command-center, status:in-progress"
 ## 项目说明
 
 - 方法论地址：https://github.com/Dylan5237/agent-project-ops
-- PIN 提交：0d20dbf55db410fd2ed901b2ddb595fbeacaf1bf
-- PIN 分支或标签：0d20dbf55db410fd2ed901b2ddb595fbeacaf1bf
+- PIN 提交：2dfaed026ffc5bcbef650e96445e9c5f0540bee4
+- PIN 分支或标签：2dfaed026ffc5bcbef650e96445e9c5f0540bee4
 - 根目录规则文件是否已接入：是 / 否
 
 ## 项目设置

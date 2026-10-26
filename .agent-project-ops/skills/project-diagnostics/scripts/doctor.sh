@@ -15,6 +15,16 @@ emit() {
   printf '%s\t%s\t%s\n' "$1" "$2" "$3"
   [[ "$1" != FAIL ]] || failed=1
 }
+read_first_field() {
+  local file="$1" prefix="$2" line
+  field_value=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$prefix"* ]]; then
+      field_value="${line#"$prefix"}"
+      return
+    fi
+  done < "$file"
+}
 root="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)" || {
   emit FAIL REPO_MISSING "Not inside a Git repository."
   exit 1
@@ -33,9 +43,14 @@ fi
 
 pin="$root/.agent-project-ops/PIN"
 if [[ -f "$pin" ]]; then
-  sha="$(sed -n 's/^sha=//p' "$pin" | head -1)"
-  url="$(sed -n 's/^url=//p' "$pin" | head -1)"
-  if [[ "$sha" =~ ^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$ && -n "$url" ]]; then
+  # Bash read keeps raw CR bytes on Windows; permit one CR from a CRLF ending.
+  read_first_field "$pin" 'sha='
+  sha="$field_value"
+  read_first_field "$pin" 'url='
+  url="$field_value"
+  sha="${sha%$'\r'}"
+  url="${url%$'\r'}"
+  if [[ "$sha" =~ ^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?$ && -n "$url" && "$url" != *$'\r'* ]]; then
     emit PASS PIN_FORMAT_OK "Pinned methodology SHA and URL recorded."
   else
     emit FAIL PIN_INVALID "PIN must contain a real 40/64-character commit SHA and a nonempty URL."
@@ -50,7 +65,9 @@ fi
 
 registry="$root/.agent-project-ops/remotes"
 if [[ -f "$registry" ]]; then
-  authority="$(sed -n 's/^authority=//p' "$registry" | head -1)"
+  read_first_field "$registry" 'authority='
+  authority="$field_value"
+  authority="${authority%$'\r'}"
   origin_url_valid=0
   if [[ "$authority" == origin ]] && git -C "$root" remote get-url origin >/dev/null 2>&1; then
     if [[ -f "$url_guard" ]] && github_origin_identity "$root" >/dev/null; then
