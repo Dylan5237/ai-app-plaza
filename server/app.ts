@@ -1,7 +1,8 @@
 import Fastify from 'fastify';
 import staticPlugin from '@fastify/static';
 import rateLimit from '@fastify/rate-limit';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import { createService } from './domain/service.js';
 import { normalizeProjectVersion } from './domain/manifest.js';
@@ -148,6 +149,8 @@ export async function createApp(config: Config, db: Database) {
     return service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage });
   });
   app.get('/api/tags', async () => ({ tags: await service.tags(), maxTagsPerApp: 3 }));
+  app.get('/api/entry-policies', async () => ({ policies: config.fuxiEntry ? [config.fuxiEntry] : [] }));
+  app.get('/api/integration/fuxi-test/config', async () => config.fuxiTest || { enabled: false, plazaOrigin: config.publicOrigin });
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
   app.get('/api/apps/:id/publish-contract', async (request) => {
     const id = publicationId(request.params);
@@ -205,6 +208,14 @@ export async function createApp(config: Config, db: Database) {
     await access(config.staticDir);
     await app.register(staticPlugin, { root: config.staticDir, index: ['index.html'], dotfiles: 'deny' });
     app.get('/admin', (_request, reply) => reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow').sendFile('index.html'));
+    app.get('/integration/fuxi-test', async (_request, reply) => {
+      // Vite's existing relative asset base needs a root base on this nested
+      // entry; ordinary catalog/admin pages keep their existing document.
+      const document = await readFile(resolve(config.staticDir, 'index.html'), 'utf8');
+      return reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow')
+        .type('text/html').send(document.replace('<head>', '<head><base href="/">'));
+    });
+    app.get('/integration/fuxi-test/', (_request, reply) => reply.redirect('/integration/fuxi-test'));
     app.get('/admin/', (_request, reply) => reply.redirect('/admin'));
     app.get('/private-previews', (_request, reply) => reply.redirect('/admin'));
     app.get('/private-previews/', (_request, reply) => reply.redirect('/admin'));

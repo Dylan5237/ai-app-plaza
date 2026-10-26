@@ -9,6 +9,7 @@ import ListPagination from '../components/ListPagination.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, safeHttpUrl } from '../lib/catalog.ts'
+import { createFuxiLauncher, entryPolicy, sameEntryPolicy } from '../lib/fuxi-entry.ts'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false } })
 
@@ -35,6 +36,23 @@ let catalogReady = false
 const catalogLoading = ref(false)
 const catalogError = ref('')
 const catalogNotice = ref('')
+const entryPolicies = ref(null)
+const fuxiLauncher = createFuxiLauncher(window, message => ElMessage.error(message), {
+  confirmPolicy: async policy => {
+    const result = await apiRequest('/api/entry-policies')
+    return Array.isArray(result.policies) && sameEntryPolicy(policy, entryPolicy(result.policies, policy.appId, policy.entryId))
+  },
+})
+const webEntryPolicy = (app, entry) => entryPolicy(entryPolicies.value, app?.id, entry?.id)
+async function loadEntryPolicies() {
+  try {
+    const result = await apiRequest('/api/entry-policies')
+    if (!Array.isArray(result.policies)) throw new Error()
+    entryPolicies.value = result.policies
+  } catch {
+    ElMessage.error('应用入口配置暂不可用，请刷新页面后重试。')
+  }
+}
 let catalogRequestSequence = 0
 
 const detailVisible = ref(false)
@@ -561,6 +579,7 @@ async function returnToCatalog() {
 }
 
 onMounted(async () => {
+  loadEntryPolicies()
   window.addEventListener('hashchange', handleHashChange)
   window.addEventListener('resize', scheduleCatalogLayout)
   if (preparePublicationRoute()) return
@@ -575,6 +594,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  fuxiLauncher.dispose()
   publicationRequestSequence += 1
   window.removeEventListener('hashchange', handleHashChange)
   window.removeEventListener('resize', scheduleCatalogLayout)
@@ -799,8 +819,14 @@ onUnmounted(() => {
               </div>
               <div class="app-card-footer">
                 <div class="app-card-author-action">
+                  <button
+                    v-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))"
+                    class="platform-open-button"
+                    data-testid="open-platform"
+                    @click.stop="fuxiLauncher.launch(webEntryPolicy(app, platformEntry(app)))"
+                  >打开平台 <span aria-hidden="true">↗</span></button>
                   <a
-                    v-if="catalogUsage(app) === 'platform' && platformEntry(app)"
+                    v-else-if="catalogUsage(app) === 'platform' && platformEntry(app) && entryPolicies !== null"
                     class="platform-open-button"
                     data-testid="open-platform"
                     :href="safeHttpUrl(platformEntry(app).url)"
@@ -867,8 +893,14 @@ onUnmounted(() => {
           <div v-for="entry in selectedAppEntries" :key="entry.id" class="entry-action">
             <template v-if="entry.kind === 'web'">
               <span v-if="selectedAppEntries.length > 1 && entry.label" class="entry-label">{{ entry.label }}</span>
+              <button
+                v-if="webEntryPolicy(selectedApp, entry)"
+                class="primary-button entry-button"
+                data-testid="use-web"
+                @click="fuxiLauncher.launch(webEntryPolicy(selectedApp, entry))"
+              >打开应用</button>
               <a
-                v-if="safeHttpUrl(entry.url)"
+                v-else-if="safeHttpUrl(entry.url) && entryPolicies !== null"
                 class="primary-button entry-button"
                 data-testid="use-web"
                 :href="safeHttpUrl(entry.url)"
