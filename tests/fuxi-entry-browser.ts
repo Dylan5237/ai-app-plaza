@@ -11,6 +11,8 @@ import { loadFuxiEntryPolicy } from '../server/fuxi-entry.js';
 const fixtureRoot = process.env.PLAZA_FUXI_FIXTURE_ROOT;
 if (!fixtureRoot) throw new Error('请配置 PLAZA_FUXI_FIXTURE_ROOT 指向伏羲本地测试工作树');
 const channel = process.env.PLAYWRIGHT_CHANNEL || 'chrome';
+const credentialStorage = process.env.PLAZA_FUXI_TEST_STORAGE || 'localStorage';
+if (credentialStorage !== 'localStorage' && credentialStorage !== 'sessionStorage') throw new Error('仅支持显式浏览器存储测试模式');
 const evidence = resolve('artifacts/fuxi-entry', channel);
 await mkdir(evidence, { recursive: true });
 const checks: string[] = [];
@@ -57,7 +59,7 @@ try {
   }
   const policy = loadFuxiEntryPolicy({
     PLAZA_FUXI_ENABLED: '1', PLAZA_FUXI_APP_ID: fuxi.appId, PLAZA_FUXI_ENTRY_ID: 'web',
-    PLAZA_FUXI_ORIGIN: config.fuxiOrigin, PLAZA_FUXI_CREDENTIAL_STORAGE: 'sessionStorage',
+    PLAZA_FUXI_ORIGIN: config.fuxiOrigin, PLAZA_FUXI_CREDENTIAL_STORAGE: credentialStorage,
     PLAZA_FUXI_CREDENTIAL_KEY: 'fixture-existing-sky-token',
   }, { local: true, publicOrigin: harness.origin })!;
   harness.config.fuxiEntry = policy;
@@ -91,12 +93,12 @@ try {
   const check = async (name: string, action: () => Promise<void>) => {
     await action(); checks.push(name); console.log(`PASS ${name}`);
   };
-  const setToken = (token: string | null) => plaza.evaluate(value => {
-    if (value === null) sessionStorage.removeItem('fixture-existing-sky-token');
-    else sessionStorage.setItem('fixture-existing-sky-token', value);
+  const setToken = (token: string | null) => plaza.evaluate(({ value, storage }: { value: string | null; storage: 'localStorage' | 'sessionStorage' }) => {
+    if (value === null) window[storage].removeItem('fixture-existing-sky-token');
+    else window[storage].setItem('fixture-existing-sky-token', value);
     // Forging browser user JSON must not affect server identity.
-    sessionStorage.setItem('sky-design-userInfo', JSON.stringify({ userId: 'forged', isAdministrator: true }));
-  }, token);
+    window[storage].setItem('sky-design-userInfo', JSON.stringify({ userId: 'forged', isAdministrator: true }));
+  }, { value: token, storage: credentialStorage as 'localStorage' | 'sessionStorage' });
   const calls = async () => (await (await context.request.get(`${config.fuxiOrigin}/_test/observations`)).json()).portalCalls as number;
   const openFrom = async (detail = false) => {
     const pending = plaza.waitForEvent('popup');
@@ -227,7 +229,7 @@ try {
   await writeFile(resolve(evidence, 'results.json'), JSON.stringify({ passed: checks.length, checks, channel,
     fuxiCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fixtureRoot, encoding: 'utf8' }).trim(),
     plazaBase: execFileSync('git', ['merge-base', 'HEAD', 'origin/main'], { encoding: 'utf8' }).trim(),
-    fixture: true, realPortalVerified: false, observations, pageErrors,
+    fixture: true, credentialStorage, realPortalVerified: false, observations, pageErrors,
   }, null, 2));
   console.log(JSON.stringify({ passed: checks.length, channel, evidence }));
 } catch (error) {
