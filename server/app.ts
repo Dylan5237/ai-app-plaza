@@ -148,6 +148,7 @@ export async function createApp(config: Config, db: Database) {
     return service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage });
   });
   app.get('/api/tags', async () => ({ tags: await service.tags(), maxTagsPerApp: 3 }));
+  app.get('/api/entry-policies', async () => ({ policies: config.fuxiEntry ? [config.fuxiEntry] : [] }));
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
   app.get('/api/apps/:id/publish-contract', async (request) => {
     const id = publicationId(request.params);
