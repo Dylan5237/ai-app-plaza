@@ -10,13 +10,13 @@
 
 本实现从**当前广场origin**的既有 `sessionStorage` 或 `localStorage` 指定单一键读取原始token字符串。只在主动点击时读取，不扫描存储、不写回、不读取用户JSON/父页面存储/URL凭证，也不要求用户粘贴token。存储为空、不可访问或格式不符时明确失败。
 
-门户截图中的 `sky-token` 属于 `https://192.168.5.143:17090`；已有广场部署说明使用 `http://192.168.2.145:16090`。两者不同origin，截图不能证明广场可读取门户存储。需要核实实际入口是否与门户同源挂载，或是否有现成跨域桥接；未核实的部署保持关闭。当前实现不虚构父页面消息契约，不替部署者迁移门户令牌。
+门户 `sky-token` 属于 `https://192.168.5.143:17090`；用户确认独立广场为 `http://192.168.2.145:16090`。两者不同origin，广场不能直接读取门户存储。原目录接入继续保持默认关闭；本期另外提供下文的专用测试桥，不接受旧全局状态消息或URL凭证。
 
 2026-10-26匿名读取门户公开前端后已核实：主包 `/web/design-portal-web/assets/index-pQfoMoY7.js` 的普通浏览器分支直接从localStorage读取 `sky-token`，没有JSON/TTL/加密包装。因此Chrome/Edge可在同origin部署后显式配置 `localStorage` + `sky-token`。Zoe专用浏览器另走Cef存储，本实现没有验证或适配该宿主。
 
 现有 `/web/design-portal-web/assets/iframe-adapter-Bij5jdvO.js` 的初始化机制传递globalStates，已找到用户资料写入，未找到token写入或转交证据；该机制还使用通配消息目标，缺少本接入所需的来源/窗口/请求关联校验，不能直接作为凭证桥。公开资源代码研究不等于已取得登录后的真实菜单配置或完成门户联调。
 
-如确认同源挂载可复用既有存储，再配置以下字段。如实际必须跨域传入，先确认现有消息协议或最小门户改动，再补适配；不能通过放开来源校验绕过同源限制。无需重复索取已取得的findByToken接口文档。
+如确认同源挂载可复用既有存储，再配置以下原目录入口字段。当前两个实际地址之间的验证，使用下文独立测试profile和明确的消息桥；不能放开来源校验绕过同源限制，也无需重复索取已取得的findByToken文档。
 
 同源挂载还需由门户部署方验证路径及API路由不冲突：当前广场使用根路径 `/api/*`，伏羲接入使用固定 `/auth/tiangong`。不能仅改Manifest URL，就把不同origin的现有独立广场当成同源应用。
 
@@ -70,3 +70,58 @@ npm run test:fuxi-entry:browser
 联合测试默认采用门户普通浏览器实际使用的localStorage方式；设置 `PLAZA_FUXI_TEST_STORAGE=sessionStorage` 可单独验证另一个显式配置的存储方式。这仅选择合成测试上下文，不会读取真实门户存储。
 
 本地模拟通过不等于真实门户接通、真实账号上传/归属验收或AI Host接入。真实来源、两名有效天宫用户和两端部署仍需分别验证。
+
+## 不改正式卡片的跨域测试桥
+
+用户已确认本地实现及GitHub交付范围，见 [#79](https://github.com/Dylan5237/ai-app-plaza/issues/79)。16090/17090实际发布仍待具体维护路径、验证和备份齐备后确认；16088及真实目录记录保持。
+
+测试页面固定为 `/integration/fuxi-test`，只读取 `/api/integration/fuxi-test/config`。它不修改 `/api/entry-policies` 默认行为，不按URL参数选择接收方，也不修改现有appId `2b549391-93c5-4335-9c87-dd5677e59d3f` 的 `platform-web` 正式16088入口。测试路径是环境提示，不是身份或权限证明。
+
+维护者可为该独立profile准备以下配置，未获发布确认时不要写入线上：
+
+```text
+PLAZA_FUXI_TEST_ENABLED=1
+PLAZA_FUXI_TEST_ORIGIN=http://192.168.2.145:16077
+PLAZA_FUXI_TEST_PORTAL_ORIGIN=https://192.168.5.143:17090
+PLAZA_FUXI_TEST_ALLOW_INTRANET_HTTP=1
+```
+
+默认关闭。非本地模式的伏羲测试目标必须与广场同主机且端口为16077，拒绝16088；门户须HTTPS。HTTP测试目标仍需显式内网开关，固定RFC1918字面地址限制继续有效。本地回环模拟允许随机端口，不得把回环目标配置到非本地环境。
+
+门户侧仅准备两个独立静态资产：
+
+- `ops/integration/tiangong-test/fuxi-entry-test.html`
+- `ops/integration/tiangong-test/fuxi-entry-test-bridge.js`
+
+发布候选地址为 `https://192.168.5.143:17090/web/design-portal-web/fuxi-entry-test.html`，但实际静态资源目录必须由门户维护者核对，不能猜路径或覆盖已有主包。HTML仅加载同目录外部模块，无内联凭证/脚本；脚本中的门户、广场origin是固定值，不读取URL覆盖。现有CSP、COOP和浏览器策略仍须核验，禁止降低全站安全头。两个文件均为本仓可审查源码，尚不意味着已上传门户。
+
+用户正常登录天宫后打开该同origin测试页，点击按钮创建固定16090测试窗口。门户仅为此窗口保留120秒、一次性的授权；打开页面和按钮本身都不读token。用户再在广场点击进入伏羲，广场先收到固定伏羲窗口的ready并重检开关，然后向原门户opener发送：
+
+```js
+{ type: 'plaza:tiangong:credential-request', requestId: '<32字节随机值的64位hex>', purpose: 'fuxi-test' }
+```
+
+门户同时核对精确广场origin、自己打开的窗口、用途、格式及未过期授权；先消费授权，再读取一次自身localStorage的 `sky-token`，回给精确广场origin：
+
+```js
+{ type: 'plaza:tiangong:credential-result', requestId: '<原值>', token: '<仅内存交接>' }
+// 无凭证只返回固定错误，不包含用户JSON或异常原文
+{ type: 'plaza:tiangong:credential-result', requestId: '<原值>', error: 'NO_PORTAL_CREDENTIAL' }
+```
+
+广场核对原门户opener、精确portalOrigin及本次随机值，只接受一次结果。凭证到达后再次读取测试开关及固定目标，才沿既有伏羲协议发送；随后清除凭证、监听和计时器。旧请求、重复消息、来源/窗口错误、关闭、取消、超时、缺失opener或配置变化均拒绝，不退回访客账号或手工粘贴token。HTTP页面用 `crypto.getRandomValues` 生成关联值，不依赖仅安全上下文可用的randomUUID。
+
+HTTPS门户打开HTTP顶层测试窗口不属于嵌入HTTP iframe的混合内容；本期不使用HTTP iframe。仍需在实际浏览器验证opener可用。COOP切断窗口关系时明确报错；本地负向测试不得关闭该头来伪造通过。[浏览器混合内容说明](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Mixed_content)、[跨窗口消息校验](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage)。
+
+新桥独立回归：
+
+```powershell
+node --import tsx --test tests/fuxi-entry.test.ts tests/tiangong-credential.test.ts
+$env:PLAZA_FUXI_FIXTURE_ROOT='D:\_projects\platform\FuxiPlatform\.worktrees\111-codex-tiangong-login'
+$env:PLAYWRIGHT_CHANNEL='chrome'
+npm run test:tiangong-bridge:browser
+$env:PLAYWRIGHT_CHANNEL='msedge'
+npm run test:tiangong-bridge:browser
+```
+
+浏览器测试使用本机临时TLS证书的合成HTTPS门户、HTTP广场及伏羲隔离服务，网络限回环。仅测试上下文允许该合成证书；不访问真实门户或复用真实token。覆盖完整三方链、一次授权、账号隔离、COOP缺opener、过期、最终开关重检、原正式链接及泄露检查。结果在忽略的 `artifacts/fuxi-test-bridge/`。两个静态资产需随部署申请单独列出摘要及回退方式；不要把共享广场首次安装器当成现有服务更新器。

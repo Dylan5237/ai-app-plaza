@@ -1,4 +1,5 @@
 import type { FuxiEntryPolicy } from '../../server/fuxi-entry.js';
+import { isPortalToken } from './tiangong-credential.js';
 
 export function entryPolicy(policies: FuxiEntryPolicy[] | null, appId?: string, entryId?: string): FuxiEntryPolicy | undefined {
   return policies?.find(policy => policy.appId === appId && policy.entryId === entryId);
@@ -13,6 +14,7 @@ export function sameEntryPolicy(left: FuxiEntryPolicy, right?: FuxiEntryPolicy):
 export function createFuxiLauncher(host: Window, onError: (message: string) => void, options: {
   timeoutMs?: number;
   confirmPolicy?: (policy: FuxiEntryPolicy) => Promise<boolean>;
+  getCredential?: (signal: AbortSignal) => Promise<string>;
 } = {}) {
   let cancelActive: (() => void) | undefined;
   const fail = (message: string) => onError(message);
@@ -20,15 +22,17 @@ export function createFuxiLauncher(host: Window, onError: (message: string) => v
     launch(policy: FuxiEntryPolicy) {
       cancelActive?.();
       if (!policy.enabled) return fail('伏羲身份接入暂未启用，请联系广场维护者。');
-      if (!policy.fuxiOrigin || !policy.credential || host.location.origin !== policy.plazaOrigin ||
-        !['localStorage', 'sessionStorage'].includes(policy.credential.storage)) {
+      if (!policy.fuxiOrigin || host.location.origin !== policy.plazaOrigin ||
+        (!options.getCredential && (!policy.credential || !['localStorage', 'sessionStorage'].includes(policy.credential.storage)))) {
         return fail('当前页面没有可用的天宫身份接入配置。');
       }
       // Only read the configured existing key in this origin after a click.
       // Never read user JSON, parent storage or URL tokens, or persist a token.
       let token: string | null = null;
-      try { token = host[policy.credential.storage].getItem(policy.credential.key); } catch { /* fixed error below */ }
-      if (!token || token.length > 8192 || token.trim() !== token || /[\u0000-\u001f\u007f]/.test(token)) {
+      if (!options.getCredential) {
+        try { token = host[policy.credential!.storage].getItem(policy.credential!.key); } catch { /* fixed error below */ }
+      }
+      if (!options.getCredential && !isPortalToken(token)) {
         token = null;
         return fail('当前页面未取得天宫登录凭证，请从已登录的天宫入口进入。');
       }
@@ -45,8 +49,10 @@ export function createFuxiLauncher(host: Window, onError: (message: string) => v
       let closedPoll: number | undefined;
       let active = true;
       let receiving = false;
+      const controller = new AbortController();
       const cleanup = (close = false) => {
         active = false;
+        controller.abort();
         token = null;
         host.removeEventListener('message', receive);
         if (timeout !== undefined) host.clearTimeout(timeout);
@@ -70,6 +76,22 @@ export function createFuxiLauncher(host: Window, onError: (message: string) => v
           if (!confirmed) {
             cleanup(true);
             return fail('伏羲入口配置已停用或发生变化，请刷新广场后重试。');
+          }
+        }
+        if (options.getCredential) {
+          try { token = await options.getCredential(controller.signal); }
+          catch {
+            if (!active) return;
+            cleanup(true);
+            return fail('未取得本次天宫凭证，请从天宫专用测试页重新打开入口。');
+          }
+          if (!active) return;
+          let confirmed = true;
+          try { if (options.confirmPolicy) confirmed = await options.confirmPolicy(policy); } catch { confirmed = false; }
+          if (!active) return;
+          if (!confirmed || !isPortalToken(token)) {
+            cleanup(true);
+            return fail('伏羲测试接入已停用或凭证不可用，请重新打开入口。');
           }
         }
         const credential = token;

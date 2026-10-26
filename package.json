@@ -22,7 +22,8 @@
     "test:e2e": "node --import tsx tests/mainflow-browser.ts && node --import tsx tests/update-browser.ts && node --import tsx tests/preview-admin-browser.ts && node --import tsx tests/management-browser.ts && node --import tsx tests/admin-basics-browser.ts && node --import tsx tests/catalog-usage-browser.ts && node --import tsx tests/management-pagination-browser.ts",
     "test:prototype": "node tests/mock-v13-qa.cjs && node tests/publisher-v13-qa.cjs",
     "test:admin-basics:browser": "node --import tsx tests/admin-basics-browser.ts",
-    "test:fuxi-entry:browser": "node --import tsx tests/fuxi-entry-browser.ts"
+    "test:fuxi-entry:browser": "node --import tsx tests/fuxi-entry-browser.ts",
+    "test:tiangong-bridge:browser": "node --import tsx tests/tiangong-credential-browser.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.8",
