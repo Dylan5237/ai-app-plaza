@@ -6,6 +6,7 @@ import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
 import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
+import FuxiPortalWidget from '../components/FuxiPortalWidget.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, safeHttpUrl } from '../lib/catalog.ts'
@@ -37,11 +38,12 @@ const catalogLoading = ref(false)
 const catalogError = ref('')
 const catalogNotice = ref('')
 const entryPolicies = ref(null)
+async function confirmFuxiPolicy(policy) {
+  const result = await apiRequest('/api/entry-policies')
+  return Array.isArray(result.policies) && sameEntryPolicy(policy, entryPolicy(result.policies, policy.appId, policy.entryId))
+}
 const fuxiLauncher = createFuxiLauncher(window, message => ElMessage.error(message), {
-  confirmPolicy: async policy => {
-    const result = await apiRequest('/api/entry-policies')
-    return Array.isArray(result.policies) && sameEntryPolicy(policy, entryPolicy(result.policies, policy.appId, policy.entryId))
-  },
+  confirmPolicy: confirmFuxiPolicy,
 })
 const webEntryPolicy = (app, entry) => entryPolicy(entryPolicies.value, app?.id, entry?.id)
 async function loadEntryPolicies() {
@@ -819,8 +821,14 @@ onUnmounted(() => {
               </div>
               <div class="app-card-footer">
                 <div class="app-card-author-action">
+                  <FuxiPortalWidget
+                    v-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))?.mode === 'portal-widget' && webEntryPolicy(app, platformEntry(app))?.enabled && webEntryPolicy(app, platformEntry(app))?.widget"
+                    :policy="webEntryPolicy(app, platformEntry(app))"
+                    :confirm-policy="confirmFuxiPolicy"
+                    variant="card"
+                  />
                   <button
-                    v-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))"
+                    v-else-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))"
                     class="platform-open-button"
                     data-testid="open-platform"
                     @click.stop="fuxiLauncher.launch(webEntryPolicy(app, platformEntry(app)))"
@@ -893,8 +901,14 @@ onUnmounted(() => {
           <div v-for="entry in selectedAppEntries" :key="entry.id" class="entry-action">
             <template v-if="entry.kind === 'web'">
               <span v-if="selectedAppEntries.length > 1 && entry.label" class="entry-label">{{ entry.label }}</span>
+              <FuxiPortalWidget
+                v-if="webEntryPolicy(selectedApp, entry)?.mode === 'portal-widget' && webEntryPolicy(selectedApp, entry)?.enabled && webEntryPolicy(selectedApp, entry)?.widget"
+                :policy="webEntryPolicy(selectedApp, entry)"
+                :confirm-policy="confirmFuxiPolicy"
+                variant="detail"
+              />
               <button
-                v-if="webEntryPolicy(selectedApp, entry)"
+                v-else-if="webEntryPolicy(selectedApp, entry)"
                 class="primary-button entry-button"
                 data-testid="use-web"
                 @click="fuxiLauncher.launch(webEntryPolicy(selectedApp, entry))"
