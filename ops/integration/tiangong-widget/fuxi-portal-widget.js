@@ -1,3 +1,17 @@
+// Only transient network failures are retried; a disabled, invalid or
+// unsuccessful response must never be turned into an enabled policy.
+async function readFixedPolicy(host, url, isCurrent = () => true) {
+  for (let attempt = 0; attempt < 2 && isCurrent(); attempt++) {
+    let response
+    try {
+      response = await host.fetch(url, { method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(5000) })
+    } catch { continue }
+    if (!response.ok) return null
+    try { return await response.json() } catch { return null }
+  }
+  return null
+}
+
 // The delivered page reads a fixed same-origin policy file; URL parameters,
 // parent messages and Manifest fields never choose a credential recipient.
 // Profile injection exists solely for isolated fixtures of this module.
@@ -126,15 +140,9 @@ export function startPortalWidget(host, profile) {
       }
       currentGrant.stage = 'checking-portal'
     } else return
-    let enabled = false
-    try {
-      const response = await host.fetch(profile.policyUrl, { method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(5000) })
-      if (response.ok) {
-        const policy = await response.json()
-        enabled = policy?.enabled === true && policy.portalOrigin === profile.portalOrigin && policy.plazaOrigin === profile.plazaOrigin && policy.fuxiOrigin === profile.fuxiOrigin &&
-          policy.appId === profile.appId && policy.entryId === profile.entryId
-      }
-    } catch { /* fixed diagnostic below */ }
+    const policy = await readFixedPolicy(host, profile.policyUrl, () => grant === currentGrant && Date.now() < currentGrant.expiresAt)
+    const enabled = policy?.enabled === true && policy.portalOrigin === profile.portalOrigin && policy.plazaOrigin === profile.plazaOrigin && policy.fuxiOrigin === profile.fuxiOrigin &&
+      policy.appId === profile.appId && policy.entryId === profile.entryId
     if (grant !== currentGrant || Date.now() >= currentGrant.expiresAt) return
     const child = grant.child
     const storage = grant.storage
@@ -185,11 +193,7 @@ export async function startConfiguredPortalWidget(host) {
   if (!button || host.parent === host) { show('请从天宫中的广场入口进入。'); return }
   const policyUrl = new URL('./fuxi-widget-test-policy.json', import.meta.url)
   if (policyUrl.origin !== host.location.origin) { show('入口配置不可用。'); return }
-  let policy
-  try {
-    const response = await host.fetch(policyUrl.href, { method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(5000) })
-    if (response.ok) policy = await response.json()
-  } catch { /* fixed diagnostic below */ }
+  const policy = await readFixedPolicy(host, policyUrl.href)
   if (policy?.enabled !== true) { button.textContent = '入口暂不可用'; show('伏羲入口暂未启用。'); return }
   return startPortalWidget(host, { portalOrigin: policy.portalOrigin, plazaOrigin: policy.plazaOrigin,
     fuxiOrigin: policy.fuxiOrigin, appId: policy.appId, entryId: policy.entryId,

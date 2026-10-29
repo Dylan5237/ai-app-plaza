@@ -24,6 +24,10 @@ assert.equal(JSON.parse(await readFile('ops/integration/tiangong-widget/fuxi-wid
 const harness = await startHarness();
 let portalOrigin = '', fuxiOrigin = '', appId = '', portalEnabled = true;
 let portalPolicyRequests = 0, portalPolicyResponses = 0;
+let policyNetworkAttempts = 0, injectedPolicyFailures = 0;
+const policyTrace: Array<{ at: number; event: string }> = [];
+const tracePolicy = (event: string) => { if (process.env.PLAZA_WIDGET_DIAG === '1') policyTrace.push({ at: Date.now(), event }); };
+const traceCleanup = (event: string) => { if (process.env.PLAZA_WIDGET_DIAG === '1') console.log(`cleanup:${event}`); };
 const entryId = 'web';
 const portalServer = createServer((req, res) => {
   const pathname = new URL(req.url || '/', portalOrigin).pathname;
@@ -34,7 +38,9 @@ const portalServer = createServer((req, res) => {
   if (pathname.endsWith('/fuxi-portal-widget.css')) { res.setHeader('Content-Type', 'text/css'); return res.end(css); }
   if (pathname.endsWith('/fuxi-widget-test-policy.json')) {
     portalPolicyRequests++;
-    res.once('finish', () => { portalPolicyResponses++; });
+    tracePolicy('server-request');
+    res.once('finish', () => { portalPolicyResponses++; tracePolicy('server-finish'); });
+    res.once('close', () => tracePolicy('server-close'));
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({ enabled: portalEnabled, portalOrigin, plazaOrigin: harness.origin, fuxiOrigin, appId, entryId }));
   }
@@ -149,9 +155,22 @@ try {
     };
   }, portalOrigin);
   browserContext.on('page', page => page.on('pageerror', error => pageErrors.push(error.message)));
-  browserContext.on('requestfailed', request => requestFailures.push(`${new URL(request.url()).pathname}: ${request.failure()?.errorText}`));
+  browserContext.on('requestfailed', request => {
+    requestFailures.push(`${new URL(request.url()).pathname}: ${request.failure()?.errorText}`);
+    if (new URL(request.url()).pathname.endsWith('/fuxi-widget-test-policy.json')) tracePolicy(`browser-failed:${request.failure()?.errorText}`);
+  });
+  browserContext.on('requestfinished', request => {
+    if (new URL(request.url()).pathname.endsWith('/fuxi-widget-test-policy.json')) tracePolicy('browser-finished');
+  });
   await browserContext.route('**/*', route => {
     const request = route.request(), url = new URL(request.url()), body = request.postData() || '';
+    if (url.pathname.endsWith('/fuxi-widget-test-policy.json')) {
+      tracePolicy('browser-route');
+      policyNetworkAttempts++;
+      if (process.env.PLAZA_WIDGET_INJECT_FAILURE === 'recheck' && policyNetworkAttempts === 2) {
+        injectedPolicyFailures++; tracePolicy('injected-network-failure'); return route.abort('failed');
+      }
+    }
     if (url.href.includes('fixture-valid-')) violations.push('credential in URL');
     if (body.includes('fixture-valid-') && !(url.origin === fuxiOrigin && url.pathname === '/api/auth/tiangong/exchange')) violations.push('credential in unexpected body');
     if (url.origin === fuxiOrigin && url.pathname === '/api/auth/tiangong/exchange') exchanges++;
@@ -182,6 +201,7 @@ try {
     return (await response.json()).data;
   });
   if (process.env.PLAZA_WIDGET_HTTPS_ONLY !== '1') {
+  if (process.env.PLAZA_WIDGET_DIAG_ENTRY_ONLY !== '1') {
   await check('目录及非可信点击不读取凭证或打开伏羲', async () => {
     await button.waitFor(); await card.hover();
     const pages = browserContext.pages().length;
@@ -218,6 +238,7 @@ try {
     assert.equal(await direct.locator('#open-fuxi').isDisabled(), true); assert.equal(reads, 0);
     await direct.close();
   });
+  }
   let first: Page;
   await check('卡片一次点击进入旧账号，旧密码、项目、原型与历史版本保持', async () => {
     first = await enter();
@@ -225,7 +246,7 @@ try {
     catch {
       const status = await cardWidget.locator('#status').textContent().catch(() => 'unavailable');
       const alerts = await first.getByRole('alert').allTextContents().catch(() => []);
-      throw new Error(`接收页等待跳转超时：${JSON.stringify({ status, alerts, reads, exchanges, portalPolicyRequests, portalPolicyResponses, requestFailures, pageErrors })}`);
+      throw new Error(`接收页等待跳转超时：${JSON.stringify({ status, alerts, reads, exchanges, portalPolicyRequests, portalPolicyResponses, requestFailures, pageErrors, policyTrace })}`);
     }
     assert.equal((await user(first)).id, legacy.user.id);
     const assets = await first.evaluate(async ({ projectId, prototypeId }) => {
@@ -236,7 +257,22 @@ try {
     }, { projectId, prototypeId });
     assert.deepEqual(assets, { statuses: [200, 200, 200], project: '合成旧项目', prototype: '合成旧原型', versions: [2, 1] });
     assert.equal(reads, 1); assert.equal(exchanges, 1);
+    if (process.env.PLAZA_WIDGET_INJECT_FAILURE === 'recheck') assert.equal(injectedPolicyFailures, 1);
   });
+  const diagnosticRepeats = Math.min(20, Math.max(0, Number(process.env.PLAZA_WIDGET_DIAG_REPEAT || 0)));
+  for (let i = 0; i < diagnosticRepeats; i++) {
+    const beforeReads = reads, beforeExchanges = exchanges;
+    const popup = await enter();
+    try { await popup.waitForURL(`${fuxiOrigin}/`, { timeout: 15000 }); }
+    catch {
+      const status = await cardWidget.locator('#status').textContent().catch(() => 'unavailable');
+      throw new Error(`第 ${i + 1} 次针对复现失败：${JSON.stringify({ status, reads, exchanges, portalPolicyRequests, portalPolicyResponses, requestFailures, policyTrace })}`);
+    }
+    assert.equal((await user(popup)).id, legacy.user.id);
+    assert.equal(reads, beforeReads + 1); assert.equal(exchanges, beforeExchanges + 1);
+    await popup.close();
+    console.log(`PASS 入口策略复现 ${i + 1}/${diagnosticRepeats}`);
+  }
   if (process.env.PLAZA_WIDGET_FIRST_ONLY !== '1') {
   await check('详情重复进入同一账号无需额外确认', async () => {
     await card.getByRole('button', { name: `查看 ${fuxi.source.name} 详情`, exact: true }).click();
@@ -305,8 +341,11 @@ try {
   }
   console.log(JSON.stringify({ fixture: true, browser: channel, partitioningEnabled: true,
     storagePermissionGrantedForTest: true, checks: checks.length, violations: violations.length }));
+  if (process.env.PLAZA_WIDGET_DIAG === '1') console.log(JSON.stringify({ policyTrace, portalPolicyRequests, portalPolicyResponses }));
   }
+  traceCleanup('context-start');
   await browserContext.close();
+  traceCleanup('context-end');
   if (process.env.PLAZA_WIDGET_FIRST_ONLY !== '1') {
 
   // Different synthetic HTTPS sites, with the real plaza page and portal widget.
@@ -383,12 +422,20 @@ try {
   await siteContext.close();
   }
 } finally {
+  traceCleanup('browser-start');
   await browser?.close();
+  traceCleanup('browser-end');
   if (fixture && fixture.exitCode === null) {
     const stopped = new Promise<void>(accept => fixture!.once('exit', () => accept()));
     fixture.stdin.write('stop\n');
-    await Promise.race([stopped, new Promise<void>(accept => setTimeout(() => { fixture?.kill(); accept(); }, 5000))]);
+    let cleanupTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([stopped, new Promise<void>(accept => { cleanupTimeout = setTimeout(() => { fixture?.kill(); accept(); }, 5000); })]);
+    } finally { if (cleanupTimeout !== undefined) clearTimeout(cleanupTimeout); }
   }
+  traceCleanup('fixture-end');
   await new Promise<void>(accept => portalServer.close(() => accept()));
+  traceCleanup('portal-end');
   await harness.close();
+  traceCleanup('harness-end');
 }

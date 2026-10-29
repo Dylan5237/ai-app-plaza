@@ -220,3 +220,37 @@ test('teardown during a pending storage permission cannot open a Fuxi window', a
   resolve({ localStorage: x.storage }); await pending;
   assert.equal(x.state.opens, 0); assert.equal(x.state.reads, 0);
 });
+
+test('portal rechecks once after a transient network failure, but fails closed on repeated failure or disabled policy', async () => {
+  for (const scenario of ['transient', 'persistent', 'disabled', 'retry-then-disabled']) {
+    const x = await portalFixture();
+    const originalFetch = x.host.fetch;
+    let calls = 0;
+    x.host.fetch = async (...args: unknown[]) => {
+      calls++;
+      if (scenario === 'persistent' || (['transient', 'retry-then-disabled'].includes(scenario) && calls === 1)) throw new TypeError('synthetic network failure');
+      return originalFetch(...args);
+    };
+    if (['disabled', 'retry-then-disabled'].includes(scenario)) x.state.policyEnabled = false;
+    await x.click(true);
+    await x.message({ type: 'fuxi:tiangong:ready', requestId: 'fuxi-request' });
+    await x.message(x.answer(), { source: x.parent, origin: portalProfile.plazaOrigin });
+    assert.equal(calls, scenario === 'disabled' ? 1 : 2, scenario);
+    assert.equal(x.state.reads, scenario === 'transient' ? 1 : 0, scenario);
+    assert.equal(x.childMessages.length, scenario === 'transient' ? 1 : 0, scenario);
+    assert.equal(x.child.closed, scenario !== 'transient', scenario);
+  }
+});
+
+test('a failed policy request is not retried after the portal frame is disposed', async () => {
+  const x = await portalFixture();
+  let calls = 0, reject!: (error: Error) => void;
+  x.host.fetch = () => { calls++; return new Promise((_resolve, rejectPromise) => { reject = rejectPromise; }); };
+  await x.click(true);
+  await x.message({ type: 'fuxi:tiangong:ready', requestId: 'fuxi-request' });
+  const pending = x.message(x.answer(), { source: x.parent, origin: portalProfile.plazaOrigin });
+  x.events.get('pagehide')?.();
+  reject(new Error('synthetic network failure'));
+  await pending;
+  assert.equal(calls, 1); assert.equal(x.state.reads, 0); assert.equal(x.childMessages.length, 0);
+});
