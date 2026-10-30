@@ -966,12 +966,14 @@ export function createService(config: ServiceConfig): PlazaService {
         const status = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: entry.id, commitSha: record.commit_sha });
         if (status) disabled[entry.id] = status;
       }
+      if ((record.lifecycle_status ?? 'published') === 'published' && view.manifest.entries.some(entry => entry.kind === 'agent')) {
+        view.displayRequirements = normalizeLegacyRequirements(view.manifest.requirements);
+      }
       if (Object.keys(disabled).length) view.entryAvailability = disabled;
       const availableAssets = assets.filter(asset => !disabled[asset.entry_id]);
       view.distributions = availableAssets.map(asset => ({ entryId: asset.entry_id, type: asset.package_type, delivery: asset.delivery_mode, sha256: asset.sha256,
         size: asset.byte_size, files: parseJsonValue<DistributionFile[]>(asset.files), ...(asset.guide_text ? { guide: asset.guide_text } : {}) }));
       if ((record.lifecycle_status ?? 'published') === 'published' && assets.some(asset => asset.guide_text)) {
-        view.displayRequirements = normalizeLegacyRequirements(view.manifest.requirements);
         const usagePath = view.manifest.docs.usage;
         const usageText = view.documents[usagePath];
         const packageGuide = availableAssets.find(asset => asset.guide_text && asset.delivery_mode !== 'remote')?.guide_text;

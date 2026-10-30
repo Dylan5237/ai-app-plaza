@@ -183,14 +183,20 @@ test('known missing upstream disables only its matching entry and blocks direct 
     const skipped = await refreshLegacyDistributions({ ...disabledOptions, apply: true, expectedPlan: skippedPlan.planId });
     assert.equal(skipped.applied, 0); assert.equal(skipped.skipped, 1);
     assert.equal((await h.db.query('SELECT * FROM distribution_assets')).rows.length, 0);
-    assert.match((await h.service.app(appId)).documents[value.docs.usage]!, /安装暂不可用/);
+    const withoutAsset = await h.service.app(appId);
+    assert.match(withoutAsset.documents[value.docs.usage]!, /安装暂不可用/);
+    assert.match(withoutAsset.displayRequirements![0]!, /Node\.js 18/);
+    assert.doesNotMatch(withoutAsset.displayRequirements![0]!, /仓库读取权限|通过 Git/);
+    assert.match(withoutAsset.manifest.requirements[0]!, /仓库读取权限/, 'the stored snapshot remains unchanged');
   } finally { globalThis.fetch = originalFetch; }
 
   // An unrelated version does not inherit a stale diagnosis, and is not
   // installable until a distribution asset is published for its snapshot.
   await h.db.query('UPDATE published_snapshots SET commit_sha = $1 WHERE id = $2', ['a'.repeat(40), row.id]);
   assert.equal((await h.service.instructions(appId, 'agent-install')).distribution.status, 'unavailable');
-  assert.equal((await h.service.app(appId)).entryAvailability, undefined);
+  const future = await h.service.app(appId);
+  assert.equal(future.entryAvailability, undefined);
+  assert.doesNotMatch(future.displayRequirements![0]!, /仓库读取权限|通过 Git/);
 
   // The rule is scoped to the original GitLab instance and project, not an appKey alone.
   await h.db.query('UPDATE published_snapshots SET commit_sha = $1 WHERE id = $2', [incompleteCommit, row.id]);
