@@ -967,7 +967,10 @@ export function createService(config: ServiceConfig): PlazaService {
         if (status) disabled[entry.id] = status;
       }
       if ((record.lifecycle_status ?? 'published') === 'published' && view.manifest.entries.some(entry => entry.kind === 'agent')) {
-        view.displayRequirements = normalizeLegacyRequirements(view.manifest.requirements);
+        const normalized = normalizeLegacyRequirements(view.manifest.requirements);
+        if (!isDeepStrictEqual(normalized, view.manifest.requirements) || assets.some(asset => asset.guide_text)) {
+          view.displayRequirements = normalized;
+        }
       }
       if (Object.keys(disabled).length) view.entryAvailability = disabled;
       const availableAssets = assets.filter(asset => !disabled[asset.entry_id]);
