@@ -48,7 +48,7 @@ const maintainerLabel = computed(() => maintainerNames.value.join('、') || '未
 const scenarios = computed(() => toList(capabilities.value.scenarios))
 const inputs = computed(() => toList(capabilities.value.inputs))
 const outputs = computed(() => toList(capabilities.value.outputs))
-const requirements = computed(() => toList(manifest.value.requirements))
+const requirements = computed(() => toList(props.app?.displayRequirements ?? manifest.value.requirements))
 const limitations = computed(() => toList(manifest.value.limitations))
 const examples = computed(() => Array.isArray(manifest.value.examples) ? manifest.value.examples : [])
 const entries = computed(() => Array.isArray(manifest.value.entries) ? manifest.value.entries : [])
@@ -89,18 +89,23 @@ function documentContent(key) {
 }
 
 const readmeDocument = computed(() => documentContent('readme'))
-const usageDocument = computed(() => documentContent('usage'))
+const usageDocument = computed(() => {
+  const raw = documentContent('usage')
+  if (authorPreview.value) return raw
+  const guide = distributions.value.find(item => item.delivery !== 'remote' && typeof item.guide === 'string')?.guide
+    || distributions.value.find(item => typeof item.guide === 'string')?.guide
+  return guide ? { text: guide, path: raw.path } : raw
+})
 
 function documentsMatch() {
   const readme = readmeDocument.value
   const usage = usageDocument.value
-  if (readme.path && usage.path && normalizeDocumentPath(readme.path) === normalizeDocumentPath(usage.path)) return true
   return Boolean(readme.text.trim()) && readme.text.trim() === usage.text.trim()
 }
 
 function docHtml(doc) {
   if (!authorPreview.value && conflictsWithInstallSource(doc.text)) {
-    return '<p>原始资料包含旧的仓库获取步骤，暂不作为安装依据；请使用广场接入说明并等待发布者修正。</p>'
+    return '<p>原始资料包含旧的仓库获取步骤，暂不作为安装依据；请使用广场接入说明并联系广场维护者处理。</p>'
   }
   const baseUrl = repositoryDocumentBase(source.value.projectUrl, source.value.commitSha, doc.path)
   return renderMarkdown(doc.text, { baseUrl })
@@ -231,15 +236,16 @@ function formatVersion(value) {
             <p>接入说明：<code>{{ entry.instructionsPath }}</code></p>
             <p v-if="!distributionFor(entry) && !authorPreview">广场分发包尚未准备，暂不可安装。</p>
             <div v-if="distributionFor(entry)" class="entry-artifact">
-              <p>广场分发包：{{ distributionFor(entry).type === 'artifact' ? '发布物' : '源码与脚本' }}，{{ distributionFor(entry).size }} 字节</p>
-              <p>SHA-256：<code>{{ distributionFor(entry).sha256 }}</code></p>
-              <details v-if="authorPreview"><summary>查看确认的分享文件（{{ distributionFor(entry).files.length }} 项）</summary>
+              <p v-if="distributionFor(entry).delivery === 'remote'">远程连接入口：无需在本机安装服务端，远程版本另行核验。</p>
+              <p v-if="distributionFor(entry).delivery !== 'remote'">广场分发包：{{ distributionFor(entry).type === 'artifact' ? '发布物' : '源码与脚本' }}，{{ distributionFor(entry).size }} 字节</p>
+              <p v-if="distributionFor(entry).delivery !== 'remote'">SHA-256：<code>{{ distributionFor(entry).sha256 }}</code></p>
+              <details v-if="authorPreview && distributionFor(entry).delivery !== 'remote'"><summary>查看确认的分享文件（{{ distributionFor(entry).files.length }} 项）</summary>
                 <ul><li v-for="file in distributionFor(entry).files" :key="file.path"><code>{{ file.path }}</code> · {{ file.size }} 字节</li></ul>
               </details>
             </div>
             <details v-if="app.documents?.[entry.instructionsPath] && (authorPreview || distributionFor(entry))">
-              <summary>查看接入说明全文</summary>
-              <div class="markdown-body" v-html="docHtml({ text: app.documents[entry.instructionsPath], path: entry.instructionsPath })" />
+              <summary>查看广场接入说明全文</summary>
+              <div class="markdown-body" v-html="docHtml({ text: (!authorPreview && distributionFor(entry)?.guide) || app.documents[entry.instructionsPath], path: entry.instructionsPath })" />
             </details>
             <div v-for="artifact in authorPreview ? (entry.artifacts || []) : []" :key="artifact.url" class="entry-artifact">
               <span>作者原始产物声明（不是广场下载地址）：</span>

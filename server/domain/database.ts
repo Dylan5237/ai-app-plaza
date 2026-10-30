@@ -63,9 +63,17 @@ const MIGRATIONS = [
     sha256 text NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
     byte_size integer NOT NULL CHECK (byte_size > 0),
     files jsonb NOT NULL,
+    delivery_mode text NOT NULL DEFAULT 'package' CHECK (delivery_mode IN ('package', 'remote')),
+    guide_text text,
+    transformed_paths jsonb NOT NULL DEFAULT '[]'::jsonb,
+    excluded_paths jsonb NOT NULL DEFAULT '[]'::jsonb,
     created_at timestamptz NOT NULL,
     UNIQUE (snapshot_id, entry_id)
   )`,
+  `ALTER TABLE distribution_assets ADD COLUMN IF NOT EXISTS delivery_mode text NOT NULL DEFAULT 'package' CHECK (delivery_mode IN ('package', 'remote'))`,
+  `ALTER TABLE distribution_assets ADD COLUMN IF NOT EXISTS guide_text text`,
+  `ALTER TABLE distribution_assets ADD COLUMN IF NOT EXISTS transformed_paths jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE distribution_assets ADD COLUMN IF NOT EXISTS excluded_paths jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `CREATE TABLE IF NOT EXISTS publications (
     id uuid PRIMARY KEY,
     actor_id text NOT NULL,
