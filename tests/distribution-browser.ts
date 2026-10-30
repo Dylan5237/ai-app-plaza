@@ -115,6 +115,7 @@ if (process.argv.includes('--serve')) {
     await page.getByRole('button', { name: '查看 历史应用缺包示例（模拟） 详情' }).click();
     const disabledDetail = page.getByTestId('app-detail');
     assert.match(await disabledDetail.getByTestId('disabled-agent-reason').innerText(), /上游源码/);
+    assert.equal(await disabledDetail.getByTestId('use-agent').isDisabled(), true);
     assert.equal(await disabledDetail.locator('.overview-steps-section').count(), 0, 'disabled agent has no active installation steps');
     const conditions = await disabledDetail.locator('.overview-conditions').innerText();
     assert.match(conditions, /Node\.js 18/);
