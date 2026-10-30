@@ -14,7 +14,8 @@ root = Path(__file__).resolve().parents[2]
 if subprocess.check_output(['git', 'status', '--porcelain'], cwd=root): raise SystemExit('commit all release source changes before packaging')
 sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
 release = f'{args.date}-{sha[:8]}'
-files = [root / name for name in ('package.json', 'package-lock.json')]
+files = [root / name for name in ('package.json', 'package-lock.json', 'scripts/refresh-agent-distributions.ts')]
+if not files[-1].is_file(): raise SystemExit('distribution refresh script is missing')
 files.extend(path for path in (root / 'dist').rglob('*') if path.is_file())
 # Only committed server sources belong in a release; local Python caches and credentials do not.
 server_files = subprocess.check_output(['git', 'ls-files', '-z', '--', 'server'], cwd=root).decode().split('\0')

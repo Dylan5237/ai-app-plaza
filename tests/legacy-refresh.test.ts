@@ -140,3 +140,55 @@ test('one ambiguous legacy app blocks the entire batch and preserves existing re
   assert.equal(applied.status, 'blocked');
   assert.equal((await h.db.query('SELECT * FROM distribution_assets')).rows.length, 0);
 });
+
+test('known missing upstream disables only its matching entry and blocks direct package download', async t => {
+  const { h, options, appId } = await setup(t);
+  const preview = await refreshLegacyDistributions(options);
+  await refreshLegacyDistributions({ ...options, apply: true, expectedPlan: preview.planId });
+  const row = (await h.db.query<{ id: string; manifest: any }>('SELECT id, manifest FROM published_snapshots WHERE app_id = $1', [appId])).rows[0]!;
+  const value = row.manifest;
+  value.appKey = 'zoe-extend-project-dsh';
+  value.entries[0].id = 'agent-install';
+  value.primaryEntry = 'agent-install';
+  await h.db.query('UPDATE catalog_apps SET instance_id = $1, project_id = $2, app_key = $3 WHERE id = $4',
+    ['http://192.168.2.145:11980', '26', value.appKey, appId]);
+  await h.db.query('UPDATE published_snapshots SET manifest = $1::jsonb WHERE id = $2', [JSON.stringify(value), row.id]);
+  await h.db.query('UPDATE distribution_assets SET entry_id = $1 WHERE snapshot_id = $2', ['agent-install', row.id]);
+  const asset = (await h.db.query<{ id: string }>('SELECT id FROM distribution_assets WHERE snapshot_id = $1', [row.id])).rows[0]!;
+
+  const view = await h.service.app(appId);
+  assert.equal(view.entryAvailability!['agent-install']!.status, 'disabled');
+  assert.match(view.entryAvailability!['agent-install']!.reason, /上游源码/);
+  assert.deepEqual(view.distributions, [], 'no usable package is exposed');
+  assert.match(view.documents[value.docs.usage]!, /安装暂不可用/);
+  const guide = await h.service.instructions(appId, 'agent-install');
+  assert.equal(guide.distribution.status, 'disabled');
+  assert.equal(guide.distribution.url, undefined);
+  assert.match(guide.text, /不要从其他仓库或地址自行安装/);
+  await assert.rejects(h.service.distributionPackage(appId, asset.id), (error: any) => error.code === 'INSTALL_DISABLED');
+  assert.equal((await fetch(`${h.origin}/api/apps/${appId}/packages/${asset.id}`)).status, 409);
+
+  // A new version must not silently re-enable an entry whose dependency was never verified.
+  await h.db.query('UPDATE published_snapshots SET commit_sha = $1 WHERE id = $2', ['a'.repeat(40), row.id]);
+  assert.equal((await h.service.instructions(appId, 'agent-install')).distribution.status, 'disabled');
+
+  // The disabled source is not fetched or required for a complete batch.
+  await h.db.query('DELETE FROM distribution_assets WHERE snapshot_id = $1', [row.id]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => { throw new Error('disabled entry must not fetch GitLab'); }) as typeof fetch;
+  try {
+    const disabledOptions = { ...options, gitlabUrl: 'http://192.168.2.145:11980' };
+    const skippedPlan = await refreshLegacyDistributions(disabledOptions);
+    assert.equal(skippedPlan.status, 'ready');
+    assert.equal(skippedPlan.items[0]!.availability.status, 'disabled');
+    assert.equal(skippedPlan.items[0]!.sha256, undefined);
+    const skipped = await refreshLegacyDistributions({ ...disabledOptions, apply: true, expectedPlan: skippedPlan.planId });
+    assert.equal(skipped.applied, 0); assert.equal(skipped.skipped, 1);
+    assert.equal((await h.db.query('SELECT * FROM distribution_assets')).rows.length, 0);
+    assert.match((await h.service.app(appId)).documents[value.docs.usage]!, /安装暂不可用/);
+  } finally { globalThis.fetch = originalFetch; }
+
+  // The rule is scoped to the original GitLab instance and project, not an appKey alone.
+  await h.db.query('UPDATE catalog_apps SET instance_id = $1 WHERE id = $2', [h.gitlab.url, appId]);
+  assert.equal((await h.service.instructions(appId, 'agent-install')).distribution.status, 'unavailable');
+});

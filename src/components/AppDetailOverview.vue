@@ -23,6 +23,7 @@ const scenarios = computed(() => toList(capabilities.value.scenarios))
 const visibleScenarios = computed(() => scenarios.value.slice(0, 3))
 const requirements = computed(() => toList(props.app?.displayRequirements ?? manifest.value.requirements))
 const limitations = computed(() => toList(manifest.value.limitations))
+const disabledEntries = computed(() => Object.values(props.app?.entryAvailability || {}).filter(value => value?.status === 'disabled'))
 const visibleRequirements = computed(() => requirements.value.slice(0, 2))
 const visibleLimitations = computed(() => limitations.value.slice(0, 2))
 const hiddenConditionCount = computed(() => Math.max(0, requirements.value.length - 2) + Math.max(0, limitations.value.length - 2))
@@ -102,6 +103,11 @@ function formatVersion(value) {
       </div>
     </header>
 
+    <section v-if="disabledEntries.length" class="overview-unavailable" data-testid="disabled-agent-reason" role="note">
+      <strong>安装入口暂不可用</strong>
+      <p v-for="(item, index) in disabledEntries" :key="index">{{ item.reason }}</p>
+    </section>
+
     <section v-if="visibleScenarios.length" class="overview-section">
       <h3>主要用途</h3>
       <ul class="overview-use-list">
@@ -146,6 +152,8 @@ function formatVersion(value) {
 </template>
 
 <style scoped>
+.overview-unavailable { margin-top: 16px; padding: 10px 12px; border-radius: 6px; background: #fff7e8; color: #7d541a; font-size: 12px; line-height: 1.6; }
+.overview-unavailable p { margin: 4px 0 0; }
 .detail-overview { min-width: 0; color: #273449; }
 .overview-hero { padding: 2px 0 16px; border-bottom: 1px solid #e8ebf0; }
 .overview-title-row { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 12px; }

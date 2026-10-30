@@ -9,6 +9,7 @@
 - 只接收普通文件，限制为最多 1000 个文件、单文件 5 MiB、总计 20 MiB；拒绝链接、子模块、LFS 指针、不兼容路径、疑似凭据和已知私有 GitLab 依赖。受限制的凭据及本机配置路径会列为排除项；检查不能代替对实际内容和分享授权的审阅。
 - 已收录的使用说明会生成分发版：替换旧源码获取部分、移除旧仓库获取命令，保留环境、安装、业务配置和验证步骤。历史使用条件中的源码仓库授权要求会生成展示值；公开详情的 `derivedDocumentPaths` 标识已整理或提示替换的说明，`installationBasis` 指向统一接入依据；原始 manifest 和数据库快照不变。版本溯源标记保留为记录；Skill 本体不改。若应用带有 `distribution-files.json`，先检查原清单，再更新其中被改写使用说明的摘要。预览列出变更路径、展示条件和摘要，`--show-guides` 可审阅转换后的完整说明。
 - 若已有分发记录，检查包大小和摘要、入口说明与记录一致性；重复刷新相同计划不会新增记录。任一应用无法核验时，整批阻断，不写入任何映射。应用所需外部依赖、实际宿主加载和业务授权仍需分别验证。
+- 已确认缺少必要上游的入口在 `server/contracts/legacy-distribution-profiles.json` 中按广场来源、项目、应用和入口登记停用原因；该入口列入批次但不读取源码、不生成或关联分发包，结果计入 `skipped`。详情和接入接口说明原因，即使已有旧包，直接下载接口也拒绝。除非经维护者核实依赖并审阅变更后移除该记录，新版本不会自动解除停用。
 
 ## 执行前提
 
@@ -24,7 +25,7 @@
 node --import tsx scripts/refresh-agent-distributions.ts --show-guides
 ```
 
-检查 `status`、`problems`、每个应用及入口的 commit、`files`、`excludedPaths`、`transformedPaths`、`displayRequirements`、`delivery`、包和说明摘要，并阅读转换后的 `guides`。确认文件完整、内容适合目标受众、说明能指导安装，特别核对应用的额外依赖。`blocked` 表示有问题，不能执行；修复广场侧来源或资料后重新预览，不应让最终使用者配置 GitLab 权限。
+检查 `status`、`problems`、每个应用及入口的 commit、`availability`、`files`、`excludedPaths`、`transformedPaths`、`displayRequirements`、`delivery`、包和说明摘要，并阅读转换后的 `guides`。确认文件完整、内容适合目标受众、说明能指导安装，特别核对应用的额外依赖。`availability.status=disabled` 的入口按显示的原因跳过；批次 `blocked` 表示其余入口有问题，不能执行。修复广场侧来源或资料后重新预览，不应让最终使用者配置 GitLab 权限。
 
 预览为 `ready` 且已获该环境的执行授权后，用同一运行环境传入报告中的完整 `planId`：
 
@@ -32,6 +33,6 @@ node --import tsx scripts/refresh-agent-distributions.ts --show-guides
 node --import tsx scripts/refresh-agent-distributions.ts --apply --expect-plan <预览的完整planId>
 ```
 
-执行时会重新读取固定来源并重新计算计划；来源、目录集合、版本、文件或说明与预览不同就拒绝执行。候选包先按摘要写入非公开持久目录，随后在短事务中锁定目录并一次性关联全部入口；中断可能留下未引用文件，但不会自动删除。重复执行已成功的相同计划应报告全部 `unchanged`。不要把未引用文件当成已发布资产或在本流程中自动清理。
+执行时会重新读取可用入口的固定来源并重新计算计划；来源、目录集合、版本、文件、停用状态或说明与预览不同就拒绝执行。候选包先按摘要写入非公开持久目录，随后在短事务中锁定目录并一次性关联全部可用入口；中断可能留下未引用文件，但不会自动删除。重复执行已成功的相同计划应将可用入口报告为 `unchanged`，停用入口继续报告为 `skipped`。不要把未引用文件当成已发布资产或在本流程中自动清理。
 
 执行后逐项读取当前应用的接入说明，检查本地包地址、SHA-256 与实际下载，远程入口检查连接说明与宿主协议；另行验证真实环境所需依赖和业务系统授权。若发现差异，停止使用受影响入口，保留执行报告及备份，按已审阅的数据库与存储恢复流程处理，不盲目重试或自动回滚。
