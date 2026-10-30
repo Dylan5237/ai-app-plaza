@@ -17,6 +17,22 @@ const props = defineProps({
 const manifest = computed(() => props.app?.manifest || {})
 const capabilities = computed(() => manifest.value.capabilities || {})
 const source = computed(() => props.app?.source || {})
+const authorPreview = computed(() => props.app?.isAuthorPreview === true)
+const distributions = computed(() => Array.isArray(props.app?.distributions) ? props.app.distributions : [])
+function distributionFor(entry) { return distributions.value.find(item => item.entryId === entry.id) }
+function conflictsWithInstallSource(text) {
+  if (typeof text !== 'string') return false
+  let host = ''
+  try { host = new URL(source.value.projectUrl).host.toLowerCase() } catch { /* source is optional */ }
+  return /\bgit\s+(?:clone|checkout|switch|pull|fetch)\b/i.test(text) || /\bgit\+(?:ssh|https?):\/\//i.test(text)
+    || /\bgit@[^\s:]+:/i.test(text)
+    || /https?:\/\/[^\s"'<>]+\.(?:zip|tgz|tar(?:\.(?:gz|bz2|xz))?|whl|msi|exe|git)(?:[?#][^\s"'<>]*)?(?=[\s"'<>)]|$)/i.test(text)
+    || /https?:\/\/[^\s"'<>]+\/(?:archive|releases\/download)\//i.test(text)
+    || text.split(/\r?\n/).some(line => /https?:\/\//i.test(line) && (
+      /\bwget\b/i.test(line) || (/\b(?:curl|iwr|invoke-webrequest)\b/i.test(line) && /(?:\s-(?:o|outfile|output)\b|--output\b|>|\|\s*(?:sh|bash|powershell)\b)/i.test(line))
+      || /\b(?:pip|pip3|npm|npx)\s+(?:install|i)\s+https?:\/\//i.test(line)
+    )) || Boolean(host && text.toLowerCase().includes(host))
+}
 const tags = computed(() => Array.isArray(props.app?.tags) ? props.app.tags : Array.isArray(manifest.value.tags) ? manifest.value.tags : [])
 const maintainers = computed(() => {
   const values = manifest.value.maintainers
@@ -83,6 +99,9 @@ function documentsMatch() {
 }
 
 function docHtml(doc) {
+  if (!authorPreview.value && conflictsWithInstallSource(doc.text)) {
+    return '<p>原始资料包含旧的仓库获取步骤，暂不作为安装依据；请使用广场接入说明并等待发布者修正。</p>'
+  }
   const baseUrl = repositoryDocumentBase(source.value.projectUrl, source.value.commitSha, doc.path)
   return renderMarkdown(doc.text, { baseUrl })
 }
@@ -210,12 +229,20 @@ function formatVersion(value) {
           </div>
           <div v-if="entry.kind === 'agent'" class="entry-details">
             <p>接入说明：<code>{{ entry.instructionsPath }}</code></p>
-            <details v-if="app.documents?.[entry.instructionsPath]">
+            <p v-if="!distributionFor(entry) && !authorPreview">广场分发包尚未准备，暂不可安装。</p>
+            <div v-if="distributionFor(entry)" class="entry-artifact">
+              <p>广场分发包：{{ distributionFor(entry).type === 'artifact' ? '发布物' : '源码与脚本' }}，{{ distributionFor(entry).size }} 字节</p>
+              <p>SHA-256：<code>{{ distributionFor(entry).sha256 }}</code></p>
+              <details v-if="authorPreview"><summary>查看确认的分享文件（{{ distributionFor(entry).files.length }} 项）</summary>
+                <ul><li v-for="file in distributionFor(entry).files" :key="file.path"><code>{{ file.path }}</code> · {{ file.size }} 字节</li></ul>
+              </details>
+            </div>
+            <details v-if="app.documents?.[entry.instructionsPath] && (authorPreview || distributionFor(entry))">
               <summary>查看接入说明全文</summary>
               <div class="markdown-body" v-html="docHtml({ text: app.documents[entry.instructionsPath], path: entry.instructionsPath })" />
             </details>
-            <div v-for="artifact in entry.artifacts || []" :key="artifact.url" class="entry-artifact">
-              <span>下载地址：</span>
+            <div v-for="artifact in authorPreview ? (entry.artifacts || []) : []" :key="artifact.url" class="entry-artifact">
+              <span>作者原始产物声明（不是广场下载地址）：</span>
               <a v-if="safeHttpUrl(artifact.url)" :href="safeHttpUrl(artifact.url)" target="_blank" rel="noopener noreferrer">{{ artifact.url }}</a>
               <span v-else>{{ artifact.url }}</span>
               <p>SHA-256：<code>{{ artifact.sha256 }}</code></p>

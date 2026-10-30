@@ -1,6 +1,6 @@
 # AI应用广场上传、分享与更新接入规范
 
-核对日期：2026-10-20。实现基线：`54471817`（同步 main 后复核，完整 SHA 见 Git）。适用读者：在应用项目内工作的 Agent、Host 集成维护者及应用作者。本文归纳现有实现，不新增接口、授权或验收承诺。
+核对日期：2026-10-30。本地候选包含 Agent 固定包分发；未部署的服务仍以目标服务在线契约为准。适用读者：在应用项目内工作的 Agent、Host 集成维护者及应用作者。
 
 ## 1. 接入起点与依据
 
@@ -44,9 +44,9 @@
 ### 使用入口
 
 - `web`：`id`、`kind: "web"`、`label`、`url`。登记实际平台地址；平台自己负责登录、部署与运行版本。
-- `agent`：`id`、`kind: "agent"`、`label`、`instructionsPath`、非空 `compatibility`。接入说明写清固定版本获取、环境要求、授权渠道、安装/升级步骤、配置和本地修改保护、最小验证及失败恢复。可选 `artifacts` 每项含 `url` 和 64 位小写十六进制 `sha256`。
+- `agent`：`id`、`kind: "agent"`、`label`、`instructionsPath`、非空 `compatibility`。接入说明写清广场包获取、环境要求、安装/升级步骤、配置和本地修改保护、最小验证及失败恢复。`distribution` 声明可分享的固定文件：`{"type":"source","files":["package.json","src/main.js"]}`；`type` 为 `source` 或 `artifact`，`files` 是仓库根相对的普通文件列表。原有 `artifacts` 只作为作者原始声明，不作为广场安装下载地址。
 
-同一应用可同时有两类入口。Skill、MCP、CLI、脚本或工作流通过合适的 `agent` 入口表达，不新增 `kind: "mcp"` 等类型；已有 `SKILL.md` 保持原格式。入口和产物 URL 只允许不含用户名、密码的 HTTP(S)。包摘要是作者声明，由使用者 Agent 下载后验证，不代表广场已下载或扫描该包。
+同一应用可同时有两类入口。Skill、MCP、CLI、脚本或工作流通过合适的 `agent` 入口表达，不新增 `kind: "mcp"` 等类型；已有 `SKILL.md` 保持原格式。作者确认文件可向所有门户访问者分享，并保证安装步骤所需源码、脚本、依赖和平台条件完整。广场按固定 commit 读取这些文件，生成实际 ZIP 和 SHA-256，在候选预览显示文件清单；作者确认后才允许下载。未声明 `distribution` 的旧入口可继续展示资料，但安装明确暂停；这不等于已在真实 Host 安装成功。
 
 ### 路径、共享内容与文件限制
 
@@ -54,13 +54,15 @@
 
 路径使用 `/`，不得为绝对路径，不含反斜杠、冒号、空段、`.`、`..` 或控制字符。共享文件是固定 commit 中的普通 UTF-8 文件，不能用符号链接、子模块或 LFS 指针代替正文。Manifest 上限 64 KiB；所有去重后的共享说明和 Agent 接入说明合计上限 512 KiB。
 
-广场目录展示 manifest 和它指定的共享说明，不因托管上传而公开完整源码或未声明文件。Markdown 安全渲染，不执行 HTML/脚本，不递归抓取附件。源码、包和目标平台仍保留各自访问权限。
+广场目录展示 manifest 和它指定的共享说明，只向门户受众开放作者确认的分发文件，不公开未声明文件或代理任意仓库。Markdown 安全渲染，不执行 HTML/脚本，不递归抓取附件。目标业务系统仍保留自身访问权限。
 
 托管包限 1–1000 个文件，单文件最多 5 MiB，总原始字节最多 20 MiB。只上传必要源码和共享资料；排除凭据、`.env`、私钥、机器配置、`.git`、`node_modules`、缓存、归档及无关会话/治理文件。工具和服务端有路径、文件类型与敏感内容检查；不要把扫描通过解释为所有内容均已获准分享。超限时向作者说明精简范围，不能静默丢失必要文件。
 
+分发清单同样最多 1000 个普通文件、单文件 5 MiB、总计 20 MiB；禁止链接、子模块和 LFS 指针。安装说明、锁文件及安装脚本不能继续引用 GitLab 下载地址或克隆命令。安装提示词要求在新安装目录记录广场应用、入口、版本、固定 commit 和包摘要，便于日后核对；应用自身若因源码包没有 `.git` 而报告 `unknown`，必须如实说明，不能伪造。服务端检查已知冲突，但不能静态证明所有间接依赖均可访问；发布方仍须在目标环境完成安装和最小验证。现有客户端兼容读取历史入口，缺少分发包的入口不会回退到 GitLab 安装。
+
 ### 可复制的结构样例
 
-[平台应用](../architecture/examples/platform-app.json)、[Agent 应用](../architecture/examples/agent-app.json)、[本地工具](../architecture/examples/local-tool.json)均使用 v2。作者姓名、域名、文件路径和哈希都是虚构示例，不能直接用于真实发布。示例仅展示 manifest 结构，不包含完整应用源码及引用文档；发布前必须换成项目实际资料，并经过目标服务预检。
+[平台应用](../architecture/examples/platform-app.json)、[Agent 应用](../architecture/examples/agent-app.json)、[本地工具](../architecture/examples/local-tool.json)均使用 v2。作者姓名、域名、文件路径和哈希都是虚构示例，不能直接用于真实发布。示例仅展示原有 manifest 结构，不包含完整应用源码及引用文档；其中 Agent 入口还未声明 `distribution`，直接使用会显示为暂不可安装。发布前必须按上面的格式补齐项目实际分发文件和资料，并经过目标服务预检。
 
 ## 3. 首次分享：统一托管
 
@@ -228,6 +230,7 @@ HTTP 错误结构通常为 `{ "error": { "code": "...", "message": "...", "diagn
 | 作者确认 | `POST /api/publications/{id}/confirm`，仅作者网页流程 | 无确认工具 |
 | 已收录详情 | `GET /api/apps/{appId}` | 无单独工具 |
 | 安装/升级说明 | `GET /api/apps/{appId}/instructions/{entryId}` | `get_agent_instructions({ appId, entryId })` |
+| 当前已确认分发包 | `GET /api/apps/{appId}/packages/{assetId}`，地址和 SHA-256 由安装说明返回 | 使用 HTTP 下载并核验摘要 |
 
 托管低层接口供维护者对照实现：`POST /api/managed-publications` 接受 `appKey`、`manifestPath`、`files: [{path, content}]`，其中 `content` 为规范 Base64；更新可带 `managedAppId` 和 `expectedAppRevision`。Headers 为 `X-Plaza-Publish-Key` 与 UUID `Idempotency-Key`，不传个人 GitLab token。HTTP JSON 上限 32 MiB，与 20 MiB 原文件总量是不同限制。`GET /api/managed-publications/receipt` 使用同一专属凭证和原幂等键；`GET /api/managed-apps/{managedAppId}/status` 使用专属凭证查询更新状态。不要据此另写 Agent 上传器。
 
