@@ -132,6 +132,53 @@ test('NULL receipt recovers the same managed preview, enforces expiry and preser
   assert.deepEqual((await h.db.query('SELECT * FROM catalog_tag_cleanup_operations WHERE operation_id = $1', [plan.operationId])).rows, identityBefore);
 });
 
+test('expired registered receipts recover the same app without rewriting legacy operations or publication history', async t => {
+  const h = await performanceHarness(); t.after(h.close);
+  const sent = await h.submit(bundle());
+  const confirmed = await h.confirm(sent.result);
+  assert.equal(confirmed.status, 'registered');
+  const operation = (await h.db.query('SELECT id FROM managed_publish_operations WHERE publication_id = $1', [sent.result.id])).rows[0]!;
+  await h.db.query("UPDATE publications SET expires_at = '2020-01-01' WHERE id = $1", [sent.result.id]);
+  await h.db.query('UPDATE managed_publish_operations SET publication_id = NULL WHERE id = $1', [operation.id]);
+  const history = async () => Promise.all([
+    h.db.query('SELECT * FROM publications ORDER BY id'),
+    h.db.query('SELECT * FROM managed_app_bindings ORDER BY id'),
+    h.db.query('SELECT * FROM managed_publish_operations ORDER BY id'),
+    h.db.query('SELECT * FROM catalog_apps ORDER BY id'),
+    h.db.query('SELECT * FROM published_snapshots ORDER BY id'),
+  ]).then(results => results.map(result => result.rows));
+  const before = await history();
+  const writes = h.fixture.state.writes.length;
+  const receipt = (key: string) => fetch(`${h.origin}/api/managed-publications/receipt`, {
+    headers: { 'X-Plaza-Publish-Key': key, 'Idempotency-Key': sent.idempotency },
+  });
+  const denied = await receipt('A'.repeat(43));
+  assert.equal(denied.status, 404);
+  assert.equal((await denied.json() as any).error.code, 'MANAGED_OPERATION_NOT_FOUND');
+  const response = await receipt(sent.key);
+  assert.equal(response.status, 200);
+  const recovered = await response.json() as any;
+  assert.equal(recovered.status, 'registered');
+  assert.equal(recovered.id, sent.result.id);
+  assert.equal(recovered.appId, confirmed.appId);
+  assert.equal(recovered.managedAppId, sent.result.managedAppId);
+  assert.equal(recovered.sourceUploaded, true);
+  assert.equal(h.fixture.state.writes.length, writes);
+  assert.deepEqual(await history(), before, 'read-only recovery must preserve the expired record and legacy NULL link');
+
+  const record = (await h.db.query('SELECT submission FROM publications WHERE id = $1', [sent.result.id])).rows[0]!;
+  const input = record.submission as Parameters<typeof h.service.managedReceipt>[1];
+  const linked = await h.service.managedReceipt(sent.result.id, input);
+  assert.equal(linked.status, 'registered');
+  assert.equal(linked.appId, confirmed.appId);
+  await assert.rejects(h.service.managedReceipt(sent.result.id, { ...input, commitSha: 'f'.repeat(40) }),
+    (error: any) => error.code === 'MANAGED_SOURCE_CONFLICT');
+  await assert.rejects(h.service.lookupManagedReceipt({ ...input, tag: 'v9.9.9' }, h.config.managedPublishing.token, `managed:${operation.id}`),
+    (error: any) => error.code === 'IDEMPOTENCY_CONFLICT');
+  assert.equal(h.fixture.state.writes.length, writes);
+  assert.deepEqual(await history(), before);
+});
+
 test('receipt migration preserves managed and catalog history through migrate:false and repeated normal opens', async t => {
   const path = await mkdtemp(join(tmpdir(), 'plaza-perf-migration-'));
   const first = await openDatabase({ path });
