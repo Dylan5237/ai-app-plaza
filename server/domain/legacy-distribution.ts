@@ -8,7 +8,7 @@ import { validateRepoPath, type AgentEntry, type StoredAppManifest } from './man
 
 export type LegacyDelivery = 'package' | 'remote';
 export interface DisabledLegacyEntry { status: 'disabled'; reason: string }
-interface DisabledLegacyProfile { instanceId: string; projectId: string; appKey: string; entryId: string; reason: string }
+interface DisabledLegacyProfile { instanceId: string; projectId: string; appKey: string; entryId: string; commitSha: string; reason: string }
 const profileDocument: unknown = JSON.parse(readFileSync(new URL('../contracts/legacy-distribution-profiles.json', import.meta.url), 'utf8'));
 if (!profileDocument || typeof profileDocument !== 'object' || (profileDocument as any).schemaVersion !== 1
     || !Array.isArray((profileDocument as any).disabledEntries)) throw new Error('Invalid legacy distribution profile.');
@@ -16,17 +16,19 @@ const disabledProfiles: DisabledLegacyProfile[] = (profileDocument as any).disab
   if (!profile || typeof profile !== 'object' || !/^https?:\/\/[^/]+$/.test(profile.instanceId)
       || !/^[1-9]\d*$/.test(profile.projectId) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(profile.appKey)
       || typeof profile.entryId !== 'string' || !profile.entryId.trim() || profile.entryId.length > 64
+      || !/^[a-f0-9]{40}$/.test(profile.commitSha)
       || typeof profile.reason !== 'string' || !profile.reason.trim() || profile.reason.length > 500) {
     throw new Error('Invalid legacy distribution profile.');
   }
   return { instanceId: profile.instanceId, projectId: profile.projectId, appKey: profile.appKey,
-    entryId: profile.entryId, reason: profile.reason };
+    entryId: profile.entryId, commitSha: profile.commitSha, reason: profile.reason };
 });
 
-/** Disable a specific application's entry for every version until the profile is explicitly reviewed. */
-export function disabledLegacyEntry(input: { instanceId: string; projectId: string; appKey: string; entryId: string }): DisabledLegacyEntry | undefined {
+/** Disable only the known incomplete fixed source; other versions still require a distribution asset. */
+export function disabledLegacyEntry(input: { instanceId: string; projectId: string; appKey: string; entryId: string; commitSha: string | null }): DisabledLegacyEntry | undefined {
   const profile = disabledProfiles.find(item => item.instanceId === input.instanceId.replace(/\/$/, '')
-    && item.projectId === input.projectId && item.appKey === input.appKey && item.entryId === input.entryId);
+    && item.projectId === input.projectId && item.appKey === input.appKey && item.entryId === input.entryId
+    && item.commitSha === input.commitSha);
   return profile ? { status: 'disabled', reason: profile.reason } : undefined;
 }
 export interface LegacySourceFiles {

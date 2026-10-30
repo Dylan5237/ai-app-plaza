@@ -68,7 +68,7 @@ function candidateItem(row: SnapshotRow, entry: AgentEntry, value: {
     delivery: value.delivery, packageType: value.packageType,
     ...(value.sha256 ? { sha256: value.sha256 } : {}), ...(value.size === undefined ? {} : { size: value.size }),
     guideSha256: digest(value.guide), files: value.files, transformedPaths: value.transformedPaths, excludedPaths: value.excludedPaths,
-    availability: disabledLegacyEntry({ instanceId: row.instance_id, projectId: row.project_id, appKey: row.app_key, entryId: entry.id }) ?? { status: 'ready' },
+    availability: disabledLegacyEntry({ instanceId: row.instance_id, projectId: row.project_id, appKey: row.app_key, entryId: entry.id, commitSha: row.commit_sha }) ?? { status: 'ready' },
     ...(value.displayRequirements ? { displayRequirements: value.displayRequirements } : {}) };
 }
 
@@ -84,7 +84,7 @@ async function buildCandidates(options: { db: Database; gitlabUrl: string; token
       const documents = parse<Record<string, string>>(row.documents);
       const entries = manifest.entries.filter((entry): entry is AgentEntry => entry.kind === 'agent');
       const disabled = new Map(entries.flatMap(entry => {
-        const availability = disabledLegacyEntry({ instanceId: row.instance_id, projectId: row.project_id, appKey: row.app_key, entryId: entry.id });
+        const availability = disabledLegacyEntry({ instanceId: row.instance_id, projectId: row.project_id, appKey: row.app_key, entryId: entry.id, commitSha: row.commit_sha });
         return availability ? [[entry.id, availability] as const] : [];
       }));
       const existing = (await options.db.query<AssetRow>('SELECT * FROM distribution_assets WHERE snapshot_id = $1 ORDER BY entry_id', [row.snapshot_id])).rows;

@@ -152,7 +152,9 @@ test('known missing upstream disables only its matching entry and blocks direct 
   value.primaryEntry = 'agent-install';
   await h.db.query('UPDATE catalog_apps SET instance_id = $1, project_id = $2, app_key = $3 WHERE id = $4',
     ['http://192.168.2.145:11980', '26', value.appKey, appId]);
-  await h.db.query('UPDATE published_snapshots SET manifest = $1::jsonb WHERE id = $2', [JSON.stringify(value), row.id]);
+  const incompleteCommit = 'e880e9a86c36524606f2db5e535a44371a7cbe98';
+  await h.db.query('UPDATE published_snapshots SET manifest = $1::jsonb, commit_sha = $2 WHERE id = $3',
+    [JSON.stringify(value), incompleteCommit, row.id]);
   await h.db.query('UPDATE distribution_assets SET entry_id = $1 WHERE snapshot_id = $2', ['agent-install', row.id]);
   const asset = (await h.db.query<{ id: string }>('SELECT id FROM distribution_assets WHERE snapshot_id = $1', [row.id])).rows[0]!;
 
@@ -167,10 +169,6 @@ test('known missing upstream disables only its matching entry and blocks direct 
   assert.match(guide.text, /不要从其他仓库或地址自行安装/);
   await assert.rejects(h.service.distributionPackage(appId, asset.id), (error: any) => error.code === 'INSTALL_DISABLED');
   assert.equal((await fetch(`${h.origin}/api/apps/${appId}/packages/${asset.id}`)).status, 409);
-
-  // A new version must not silently re-enable an entry whose dependency was never verified.
-  await h.db.query('UPDATE published_snapshots SET commit_sha = $1 WHERE id = $2', ['a'.repeat(40), row.id]);
-  assert.equal((await h.service.instructions(appId, 'agent-install')).distribution.status, 'disabled');
 
   // The disabled source is not fetched or required for a complete batch.
   await h.db.query('DELETE FROM distribution_assets WHERE snapshot_id = $1', [row.id]);
@@ -188,7 +186,14 @@ test('known missing upstream disables only its matching entry and blocks direct 
     assert.match((await h.service.app(appId)).documents[value.docs.usage]!, /安装暂不可用/);
   } finally { globalThis.fetch = originalFetch; }
 
+  // An unrelated version does not inherit a stale diagnosis, and is not
+  // installable until a distribution asset is published for its snapshot.
+  await h.db.query('UPDATE published_snapshots SET commit_sha = $1 WHERE id = $2', ['a'.repeat(40), row.id]);
+  assert.equal((await h.service.instructions(appId, 'agent-install')).distribution.status, 'unavailable');
+  assert.equal((await h.service.app(appId)).entryAvailability, undefined);
+
   // The rule is scoped to the original GitLab instance and project, not an appKey alone.
+  await h.db.query('UPDATE published_snapshots SET commit_sha = $1 WHERE id = $2', [incompleteCommit, row.id]);
   await h.db.query('UPDATE catalog_apps SET instance_id = $1 WHERE id = $2', [h.gitlab.url, appId]);
   assert.equal((await h.service.instructions(appId, 'agent-install')).distribution.status, 'unavailable');
 });

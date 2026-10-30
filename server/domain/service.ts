@@ -963,7 +963,7 @@ export function createService(config: ServiceConfig): PlazaService {
       const disabled: Record<string, DisabledLegacyEntry> = {};
       for (const entry of view.manifest.entries) {
         if (entry.kind !== 'agent') continue;
-        const status = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: entry.id });
+        const status = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: entry.id, commitSha: record.commit_sha });
         if (status) disabled[entry.id] = status;
       }
       if (Object.keys(disabled).length) view.entryAvailability = disabled;
@@ -1017,7 +1017,7 @@ export function createService(config: ServiceConfig): PlazaService {
       const asset = (await config.db.query<DistributionAssetRecord>(
         'SELECT * FROM distribution_assets WHERE snapshot_id = $1 AND id = $2', [record.snap_id, assetId])).rows[0];
       if (!asset) throw new DomainError(404, 'ASSET_NOT_FOUND', '分发包不存在。');
-      const disabled = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: asset.entry_id });
+      const disabled = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: asset.entry_id, commitSha: record.commit_sha });
       if (disabled) throw new DomainError(409, 'INSTALL_DISABLED', disabled.reason);
       return { id: asset.id, sha256: asset.sha256, bytes: await readDistribution(asset) };
     },
@@ -1029,7 +1029,7 @@ export function createService(config: ServiceConfig): PlazaService {
       const view = appView(record, true);
       const entry = view.manifest.entries.find((item): item is AgentEntry => item.id === entryId && item.kind === "agent");
       if (!entry) throw new DomainError(404, "ENTRY_NOT_FOUND", "Agent 接入入口不存在。");
-      const disabled = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId });
+      const disabled = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId, commitSha: record.commit_sha });
       if (disabled) {
         return { text: `# ${view.manifest.name} · 安装暂不可用\n\n${disabled.reason}\n\n请等待广场维护者补齐并验证，不要从其他仓库或地址自行安装。`,
           compatibility: [...entry.compatibility], source: view.source, instructionsPath: entry.instructionsPath, version: view.version, distribution: { ...disabled } };
