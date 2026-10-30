@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 import { DEFAULT_TAG, manifest, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 import { startHarness } from './helpers/harness.js';
 
 // Everything here is loopback-only synthetic data; it never contacts the real GitLab.
-const temp = await mkdtemp(join(tmpdir(), 'plaza-distribution-browser-'));
+const tempRoot = resolve('artifacts', 'distribution-tests');
+await mkdir(tempRoot, { recursive: true });
+const temp = await mkdtemp(join(tempRoot, 'plaza-distribution-browser-'));
 const harness = await startHarness(3, 'memory://', { dataDir: temp } as any);
 const inputs = (index: number) => ({
   projectId: 1, appKey: `sample-${index}`, manifestPath: index === 1 ? 'ai-app.json' : `.ai-apps/sample-${index}/ai-app.json`, commitSha: SHA, tag: DEFAULT_TAG,
@@ -102,7 +103,7 @@ if (process.argv.includes('--serve')) {
   } finally {
     await browser?.close();
     await harness.close();
-    assert.ok(resolve(temp).startsWith(resolve(tmpdir()) + sep));
+    assert.ok(resolve(temp).startsWith(tempRoot + sep));
     assert.ok(temp.split(/[\\/]/).at(-1)?.startsWith('plaza-distribution-browser-'));
     await rm(temp, { recursive: true, force: true });
   }

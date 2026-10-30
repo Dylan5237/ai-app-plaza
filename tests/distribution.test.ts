@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { makeDistributionPackage, validateDistributionPath } from '../server/domain/distribution.js';
@@ -12,9 +11,10 @@ import { DEFAULT_TAG, manifest, SHA, SHA2, TOKEN } from './helpers/gitlab-fixtur
 import { startHarness } from './helpers/harness.js';
 import { bundle, performanceHarness } from './helpers/managed-performance.js';
 
-async function tempDirectory() { return mkdtemp(join(tmpdir(), 'plaza-distribution-test-')); }
+const testRoot = resolve('artifacts', 'distribution-tests');
+async function tempDirectory() { await mkdir(testRoot, { recursive: true }); return mkdtemp(join(testRoot, 'plaza-distribution-test-')); }
 async function removeTemp(path: string) {
-  assert.ok(resolve(path).startsWith(resolve(tmpdir()) + sep));
+  assert.ok(resolve(path).startsWith(testRoot + sep));
   assert.ok(path.split(/[\\/]/).at(-1)?.startsWith('plaza-distribution-test-'));
   await rm(path, { recursive: true, force: true });
 }
@@ -93,7 +93,7 @@ test('direct publication binds a reviewed package to the current public snapshot
   const appId = registered.appId!;
   const guide = await h.service.instructions(appId, 'agent');
   assert.equal(guide.distribution.status, 'ready');
-  assert.match(guide.text, /只能使用此广场分发包/);
+  assert.match(guide.text, /应用代码使用此广场分发包/);
   assert.match(guide.text, /\.plaza-installation\.json/);
   assert.match(guide.text, /commit 为 unknown，须如实报告/);
   assert.doesNotMatch(guide.text, /git clone/i);

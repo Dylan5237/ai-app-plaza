@@ -21,7 +21,7 @@ const maintainerLabel = computed(() => maintainers.value.map((value) => {
 }).filter(Boolean).join('、') || '未登记')
 const scenarios = computed(() => toList(capabilities.value.scenarios))
 const visibleScenarios = computed(() => scenarios.value.slice(0, 3))
-const requirements = computed(() => toList(manifest.value.requirements))
+const requirements = computed(() => toList(props.app?.displayRequirements ?? manifest.value.requirements))
 const limitations = computed(() => toList(manifest.value.limitations))
 const visibleRequirements = computed(() => requirements.value.slice(0, 2))
 const visibleLimitations = computed(() => limitations.value.slice(0, 2))

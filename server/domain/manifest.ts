@@ -19,7 +19,7 @@ export interface AgentEntry {
   instructionsPath: string;
   compatibility: string[];
   artifacts?: Array<{ url: string; sha256: string }>;
-  distribution?: { type: 'source' | 'artifact'; files: string[] };
+  distribution?: { type: 'source' | 'artifact'; files: string[]; delivery?: 'package' | 'remote' };
 }
 
 export type ManifestEntry = WebEntry | AgentEntry;
