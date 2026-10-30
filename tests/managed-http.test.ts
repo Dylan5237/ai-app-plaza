@@ -490,6 +490,22 @@ test("managed HTTP flow uploads a local project, confirms and updates one app wi
   assert.equal(afterFirstConfirm.items[0]?.id, confirmed.appId);
   assert.equal(afterFirstConfirm.items[0]?.version, "1.0.0");
 
+  await portal.db.query("UPDATE publications SET expires_at = '2020-01-01' WHERE id = $1", [firstPreview.publicationId]);
+  await portal.db.query("UPDATE managed_publish_operations SET publication_id = NULL WHERE binding_id = $1", [managedId]);
+  const expiredHistory = (await portal.db.query('SELECT * FROM publications WHERE id = $1', [firstPreview.publicationId])).rows;
+  const recoverySubmissions = portal.submissions.length;
+  const recoveredRun = await runCli(helperPath, [...args, '--recover']);
+  assert.equal(recoveredRun.code, 0, recoveredRun.stderr);
+  const recovered = cliJson(recoveredRun.stdout);
+  assert.equal(recovered.status, 'registered');
+  assert.equal(recovered.handoffState, 'registered');
+  assert.equal(recovered.managedAppId, managedId);
+  assert.equal(recovered.sourceUploaded, true);
+  assert.equal(portal.submissions.length, recoverySubmissions, 'recover must not re-upload source');
+  assert.deepEqual(gitLabWriteCounts(portal.gitlab), initialCounts);
+  assert.deepEqual((await portal.db.query('SELECT * FROM publications WHERE id = $1', [firstPreview.publicationId])).rows, expiredHistory);
+  assert.equal((await portal.db.query('SELECT publication_id FROM managed_publish_operations WHERE binding_id = $1', [managedId])).rows[0]!.publication_id, null);
+
   await writeVersion(projectRoot, "1.1.0", "新增批量转换和格式核验能力。", 'export const release = "two";\n');
   const updateRun = await runCli(helperPath, [...args, "--managed-app-id", managedId]);
   assert.equal(updateRun.code, 0, updateRun.stderr);
