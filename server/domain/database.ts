@@ -55,6 +55,17 @@ const MIGRATIONS = [
     created_at timestamptz NOT NULL,
     UNIQUE (app_id, commit_sha, digest, audience)
   )`,
+  `CREATE TABLE IF NOT EXISTS distribution_assets (
+    id uuid PRIMARY KEY,
+    snapshot_id uuid NOT NULL REFERENCES published_snapshots(id),
+    entry_id text NOT NULL,
+    package_type text NOT NULL CHECK (package_type IN ('source', 'artifact')),
+    sha256 text NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
+    byte_size integer NOT NULL CHECK (byte_size > 0),
+    files jsonb NOT NULL,
+    created_at timestamptz NOT NULL,
+    UNIQUE (snapshot_id, entry_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS publications (
     id uuid PRIMARY KEY,
     actor_id text NOT NULL,

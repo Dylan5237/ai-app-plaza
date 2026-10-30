@@ -124,6 +124,10 @@ DIAGNOSTIC_RULES: dict[str, frozenset[str]] = {
     "USAGE_PATH_INVALID": frozenset({"managed.bundle.usage_path"}),
     "ENTRY_URL_INVALID": frozenset({"managed.bundle.entry_url"}),
     "DOCUMENT_MISSING": frozenset({"managed.bundle.document_missing"}),
+    "DISTRIBUTION_FILE_MISSING": frozenset({"managed.bundle.distribution_file"}),
+    "DISTRIBUTION_PATH_INVALID": frozenset({"managed.bundle.distribution_path"}),
+    "DISTRIBUTION_FILE_INVALID": frozenset({"managed.bundle.distribution_invalid"}),
+    "INSTALL_SOURCE_CONFLICT": frozenset({"managed.bundle.install_source"}),
     "DOCUMENT_SIZE_EXCEEDED": frozenset({"managed.bundle.document_size"}),
     "DOCUMENT_TOTAL_SIZE_EXCEEDED": frozenset({"managed.bundle.document_total_size"}),
     "DOCUMENT_UTF8_INVALID": frozenset({"managed.bundle.document_utf8"}),
@@ -203,6 +207,11 @@ def _load_manifest(raw: bytes) -> dict[str, Any]:
     for entry in entries:
         if isinstance(entry, dict) and entry.get("kind") == "agent":
             required.append(_repo_path(entry.get("instructionsPath"), "entries.instructionsPath"))
+            distribution = entry.get("distribution")
+            if distribution is not None:
+                if not isinstance(distribution, dict) or distribution.get("type") not in {"source", "artifact"} or not isinstance(distribution.get("files"), list) or not distribution["files"]:
+                    raise CliError("Agent 分发资料须声明类型及非空文件清单。")
+                required.extend(_repo_path(path, "entries.distribution.files") for path in distribution["files"])
     return {"manifest": value, "required": list(dict.fromkeys(required)), "appKey": app_key}
 
 
