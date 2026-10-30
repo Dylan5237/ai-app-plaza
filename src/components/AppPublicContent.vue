@@ -20,6 +20,7 @@ const source = computed(() => props.app?.source || {})
 const authorPreview = computed(() => props.app?.isAuthorPreview === true)
 const distributions = computed(() => Array.isArray(props.app?.distributions) ? props.app.distributions : [])
 function distributionFor(entry) { return distributions.value.find(item => item.entryId === entry.id) }
+function disabledFor(entry) { return props.app?.entryAvailability?.[entry.id]?.status === 'disabled' ? props.app.entryAvailability[entry.id] : null }
 function conflictsWithInstallSource(text) {
   if (typeof text !== 'string') return false
   let host = ''
@@ -234,7 +235,8 @@ function formatVersion(value) {
           </div>
           <div v-if="entry.kind === 'agent'" class="entry-details">
             <p>接入说明：<code>{{ entry.instructionsPath }}</code></p>
-            <p v-if="!distributionFor(entry) && !authorPreview">广场分发包尚未准备，暂不可安装。</p>
+            <p v-if="disabledFor(entry)">安装入口暂不可用：{{ disabledFor(entry).reason }}</p>
+            <p v-else-if="!distributionFor(entry) && !authorPreview">广场分发包尚未准备，暂不可安装。</p>
             <div v-if="distributionFor(entry)" class="entry-artifact">
               <p v-if="distributionFor(entry).delivery === 'remote'">远程连接入口：无需在本机安装服务端，远程版本另行核验。</p>
               <p v-if="distributionFor(entry).delivery !== 'remote'">广场分发包：{{ distributionFor(entry).type === 'artifact' ? '发布物' : '源码与脚本' }}，{{ distributionFor(entry).size }} 字节</p>

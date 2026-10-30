@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { Database, Queryable } from './database.js';
 import { DomainError } from './errors.js';
 import { GitLabSourceReader } from './gitlab-source.js';
-import { normalizeLegacyRequirements, prepareLegacyDistribution, type LegacyPreparedEntry } from './legacy-distribution.js';
+import { disabledLegacyEntry, normalizeLegacyRequirements, prepareLegacyDistribution, type DisabledLegacyEntry, type LegacyPreparedEntry } from './legacy-distribution.js';
 import { distributionPath, hasConflictingInstallSource, MAX_DISTRIBUTION_BYTES, storeDistribution, type DistributionFile } from './distribution.js';
 import type { AgentEntry, StoredAppManifest } from './manifest.js';
 
@@ -21,14 +21,15 @@ interface AssetRow {
 export interface RefreshItem {
   appId: string; appKey: string; snapshotId: string; revision: number; projectId: string; commitSha: string;
   snapshotDigest: string; entryId: string; delivery: 'package' | 'remote'; packageType: 'source' | 'artifact';
-  sha256: string; size: number; guideSha256: string; files: DistributionFile[]; transformedPaths: string[]; excludedPaths: string[]; displayRequirements?: string[];
+  sha256?: string; size?: number; guideSha256: string; files: DistributionFile[]; transformedPaths: string[]; excludedPaths: string[]; displayRequirements?: string[];
+  availability: DisabledLegacyEntry | { status: 'ready' };
 }
 interface Candidate { row: SnapshotRow; item: RefreshItem; guide: string; prepared?: LegacyPreparedEntry }
 export interface RefreshResult {
   status: 'ready' | 'blocked' | 'applied'; planId?: string; items: RefreshItem[];
   problems: Array<{ appKey: string; code: string; message: string }>;
   guides?: Array<{ appKey: string; entryId: string; text: string }>;
-  applied?: number; unchanged?: number;
+  applied?: number; unchanged?: number; skipped?: number;
 }
 const parse = <T>(value: T | string): T => typeof value === 'string' ? JSON.parse(value) as T : value;
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -59,13 +60,15 @@ async function currentRows(db: Queryable): Promise<SnapshotRow[]> {
 }
 
 function candidateItem(row: SnapshotRow, entry: AgentEntry, value: {
-  sha256: string; size: number; files: DistributionFile[]; delivery: 'package' | 'remote'; packageType: 'source' | 'artifact';
+  sha256?: string; size?: number; files: DistributionFile[]; delivery: 'package' | 'remote'; packageType: 'source' | 'artifact';
   guide: string; transformedPaths: string[]; excludedPaths: string[]; displayRequirements?: string[];
 }): RefreshItem {
   return { appId: row.app_id, appKey: row.app_key, snapshotId: row.snapshot_id, revision: row.revision,
     projectId: row.project_id, commitSha: row.commit_sha, snapshotDigest: row.digest, entryId: entry.id,
-    delivery: value.delivery, packageType: value.packageType, sha256: value.sha256, size: value.size,
+    delivery: value.delivery, packageType: value.packageType,
+    ...(value.sha256 ? { sha256: value.sha256 } : {}), ...(value.size === undefined ? {} : { size: value.size }),
     guideSha256: digest(value.guide), files: value.files, transformedPaths: value.transformedPaths, excludedPaths: value.excludedPaths,
+    availability: disabledLegacyEntry({ instanceId: row.instance_id, projectId: row.project_id, appKey: row.app_key, entryId: entry.id }) ?? { status: 'ready' },
     ...(value.displayRequirements ? { displayRequirements: value.displayRequirements } : {}) };
 }
 
@@ -80,9 +83,13 @@ async function buildCandidates(options: { db: Database; gitlabUrl: string; token
       const manifest = parse<StoredAppManifest>(row.manifest);
       const documents = parse<Record<string, string>>(row.documents);
       const entries = manifest.entries.filter((entry): entry is AgentEntry => entry.kind === 'agent');
+      const disabled = new Map(entries.flatMap(entry => {
+        const availability = disabledLegacyEntry({ instanceId: row.instance_id, projectId: row.project_id, appKey: row.app_key, entryId: entry.id });
+        return availability ? [[entry.id, availability] as const] : [];
+      }));
       const existing = (await options.db.query<AssetRow>('SELECT * FROM distribution_assets WHERE snapshot_id = $1 ORDER BY entry_id', [row.snapshot_id])).rows;
       const assets = new Map(existing.map(asset => [asset.entry_id, asset]));
-      const missing = entries.filter(entry => !assets.has(entry.id));
+      const missing = entries.filter(entry => !disabled.has(entry.id) && !assets.has(entry.id));
       let prepared = new Map<string, LegacyPreparedEntry>();
       if (missing.length) {
         const source = await reader.loadLegacySnapshot({ projectId: row.project_id, appKey: row.app_key, manifestPath: row.manifest_path,
@@ -91,6 +98,13 @@ async function buildCandidates(options: { db: Database; gitlabUrl: string; token
           gitlabUrl: options.gitlabUrl, token: options.token }).map(entry => [entry.entryId, entry]));
       }
       for (const entry of entries) {
+        const blocked = disabled.get(entry.id);
+        if (blocked) {
+          const item = candidateItem(row, entry, { files: [], delivery: entry.distribution?.delivery ?? 'package', packageType: 'source',
+            guide: blocked.reason, transformedPaths: [], excludedPaths: [], displayRequirements: normalizeLegacyRequirements(manifest.requirements) });
+          candidates.push({ row, item, guide: blocked.reason });
+          continue;
+        }
         const asset = assets.get(entry.id);
         if (asset) {
           await verifyStoredAsset(options.directory, asset);
@@ -142,6 +156,7 @@ export async function refreshLegacyDistributions(options: {
   for (const candidate of candidates) if (candidate.prepared) await storeDistribution(options.directory, candidate.prepared.pack, options.staticDir);
   let applied = 0;
   let unchanged = 0;
+  let skipped = 0;
   await options.db.transaction(async tx => {
     // Prevent new catalog registrations and lifecycle transitions from racing
     // the complete-set check and the following short transaction.
@@ -161,6 +176,10 @@ export async function refreshLegacyDistributions(options: {
           || current.digest !== item.snapshotDigest || current.project_id !== item.projectId) {
         throw new DomainError(409, 'REFRESH_PLAN_MISMATCH', '目录快照已变化，请重新预览。');
       }
+      if (item.availability.status === 'disabled') {
+        skipped++;
+        continue;
+      }
       const saved = (await tx.query<AssetRow>('SELECT * FROM distribution_assets WHERE snapshot_id = $1 AND entry_id = $2', [item.snapshotId, item.entryId])).rows[0];
       if (saved) {
         const currentEntry = parse<StoredAppManifest>(current.manifest).entries
@@ -175,7 +194,7 @@ export async function refreshLegacyDistributions(options: {
         }
         unchanged++;
       } else {
-        if (!candidate.prepared) throw new DomainError(409, 'REFRESH_PLAN_MISMATCH', '分发候选已失效，请重新预览。');
+        if (!candidate.prepared || !item.sha256 || item.size === undefined) throw new DomainError(409, 'REFRESH_PLAN_MISMATCH', '分发候选已失效，请重新预览。');
         await tx.query(`INSERT INTO distribution_assets (id, snapshot_id, entry_id, package_type, sha256, byte_size, files,
           delivery_mode, guide_text, transformed_paths, excluded_paths, created_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10::jsonb,$11::jsonb,now())`,
@@ -185,5 +204,5 @@ export async function refreshLegacyDistributions(options: {
       }
     }
   });
-  return { status: 'applied', planId, items, problems: [], applied, unchanged, ...review };
+  return { status: 'applied', planId, items, problems: [], applied, unchanged, skipped, ...review };
 }

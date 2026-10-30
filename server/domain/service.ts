@@ -31,7 +31,7 @@ import {
 import { compareProjectVersions, type AgentEntry, type AppManifest, type StoredAppManifest } from "./manifest.js";
 import { catalogTags, EFFECTIVE_TAGS, TAG_OVERRIDE_JOIN, validateTagReuse } from './tags.js';
 import { distributionPath, hasConflictingInstallSource, MAX_DISTRIBUTION_BYTES, storeDistribution, type DistributionFile } from './distribution.js';
-import { normalizeLegacyGuide, normalizeLegacyRequirements } from './legacy-distribution.js';
+import { disabledLegacyEntry, normalizeLegacyGuide, normalizeLegacyRequirements, type DisabledLegacyEntry } from './legacy-distribution.js';
 
 export interface AppView {
   id: string;
@@ -45,6 +45,7 @@ export interface AppView {
   documents: Record<string, string>;
   distributions?: Array<{ entryId: string; type: 'source' | 'artifact'; delivery?: 'package' | 'remote'; sha256: string; size: number; files: DistributionFile[]; guide?: string }>;
   displayRequirements?: string[];
+  entryAvailability?: Record<string, DisabledLegacyEntry>;
   derivedDocumentPaths?: string[];
   installationBasis?: string;
   /** Present only in the private publication preview response. */
@@ -959,28 +960,53 @@ export function createService(config: ServiceConfig): PlazaService {
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
       const assets = (await config.db.query<DistributionAssetRecord>('SELECT * FROM distribution_assets WHERE snapshot_id = $1 ORDER BY entry_id', [record.snap_id])).rows;
-      view.distributions = assets.map(asset => ({ entryId: asset.entry_id, type: asset.package_type, delivery: asset.delivery_mode, sha256: asset.sha256,
+      const disabled: Record<string, DisabledLegacyEntry> = {};
+      for (const entry of view.manifest.entries) {
+        if (entry.kind !== 'agent') continue;
+        const status = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: entry.id });
+        if (status) disabled[entry.id] = status;
+      }
+      if (Object.keys(disabled).length) view.entryAvailability = disabled;
+      const availableAssets = assets.filter(asset => !disabled[asset.entry_id]);
+      view.distributions = availableAssets.map(asset => ({ entryId: asset.entry_id, type: asset.package_type, delivery: asset.delivery_mode, sha256: asset.sha256,
         size: asset.byte_size, files: parseJsonValue<DistributionFile[]>(asset.files), ...(asset.guide_text ? { guide: asset.guide_text } : {}) }));
       if ((record.lifecycle_status ?? 'published') === 'published' && assets.some(asset => asset.guide_text)) {
         view.displayRequirements = normalizeLegacyRequirements(view.manifest.requirements);
         const usagePath = view.manifest.docs.usage;
         const usageText = view.documents[usagePath];
-        const packageGuide = assets.find(asset => asset.guide_text && asset.delivery_mode !== 'remote')?.guide_text;
+        const packageGuide = availableAssets.find(asset => asset.guide_text && asset.delivery_mode !== 'remote')?.guide_text;
         const derived = new Set<string>();
         if (typeof usageText === 'string') {
-          view.documents = { ...view.documents, [usagePath]: packageGuide ?? normalizeLegacyGuide(usageText, config.gitlabUrl) };
+          const agentEntries = view.manifest.entries.filter((entry): entry is AgentEntry => entry.kind === 'agent');
+          const blockedAll = agentEntries.length > 0 && agentEntries.every(entry => disabled[entry.id]);
+          const disabledNotice = blockedAll ? `# 安装暂不可用\n\n${agentEntries.map(entry => disabled[entry.id]!.reason).join('\n\n')}` : undefined;
+          view.documents = { ...view.documents, [usagePath]: disabledNotice ?? packageGuide ?? normalizeLegacyGuide(usageText, config.gitlabUrl) };
           derived.add(usagePath);
         }
         for (const [path, original] of Object.entries(view.documents)) {
           if (derived.has(path) || path.split('/').at(-1)?.toLowerCase() === 'skill.md'
               || !hasConflictingInstallSource(original, config.gitlabUrl)) continue;
           const entry = view.manifest.entries.find((item): item is AgentEntry => item.kind === 'agent' && item.instructionsPath === path);
-          const guide = assets.find(asset => asset.entry_id === entry?.id)?.guide_text;
+          const guide = availableAssets.find(asset => asset.entry_id === entry?.id)?.guide_text;
           view.documents[path] = guide || '原始资料含有旧的仓库获取步骤；应用安装请使用广场接入说明。';
           derived.add(path);
         }
         view.derivedDocumentPaths = [...derived].sort();
         view.installationBasis = 'manifest 为原始来源记录；安装以对应入口的广场接入说明及分发包为准。Skill 正文可能包含业务操作，不代替安装说明。';
+      }
+      const agentEntries = view.manifest.entries.filter((entry): entry is AgentEntry => entry.kind === 'agent');
+      if (agentEntries.length && agentEntries.every(entry => disabled[entry.id])) {
+        const notice = `# 安装暂不可用\n\n${agentEntries.map(entry => disabled[entry.id]!.reason).join('\n\n')}`;
+        const paths = new Set([view.manifest.docs.usage, ...agentEntries.map(entry => entry.instructionsPath)]);
+        view.documents = { ...view.documents };
+        const derived = new Set(view.derivedDocumentPaths ?? []);
+        for (const path of paths) {
+          if (path.split('/').at(-1)?.toLowerCase() === 'skill.md' || typeof view.documents[path] !== 'string') continue;
+          view.documents[path] = notice;
+          derived.add(path);
+        }
+        view.derivedDocumentPaths = [...derived].sort();
+        view.installationBasis = '该入口暂不可安装；原始 manifest 为来源记录，等待广场维护者补齐并验证。';
       }
       return view;
     },
@@ -991,6 +1017,8 @@ export function createService(config: ServiceConfig): PlazaService {
       const asset = (await config.db.query<DistributionAssetRecord>(
         'SELECT * FROM distribution_assets WHERE snapshot_id = $1 AND id = $2', [record.snap_id, assetId])).rows[0];
       if (!asset) throw new DomainError(404, 'ASSET_NOT_FOUND', '分发包不存在。');
+      const disabled = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: asset.entry_id });
+      if (disabled) throw new DomainError(409, 'INSTALL_DISABLED', disabled.reason);
       return { id: asset.id, sha256: asset.sha256, bytes: await readDistribution(asset) };
     },
 
@@ -1001,6 +1029,11 @@ export function createService(config: ServiceConfig): PlazaService {
       const view = appView(record, true);
       const entry = view.manifest.entries.find((item): item is AgentEntry => item.id === entryId && item.kind === "agent");
       if (!entry) throw new DomainError(404, "ENTRY_NOT_FOUND", "Agent 接入入口不存在。");
+      const disabled = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId });
+      if (disabled) {
+        return { text: `# ${view.manifest.name} · 安装暂不可用\n\n${disabled.reason}\n\n请等待广场维护者补齐并验证，不要从其他仓库或地址自行安装。`,
+          compatibility: [...entry.compatibility], source: view.source, instructionsPath: entry.instructionsPath, version: view.version, distribution: { ...disabled } };
+      }
       const text = view.documents[entry.instructionsPath];
       if (typeof text !== "string") throw new DomainError(404, "ENTRY_NOT_FOUND", "该入口的固定版本说明不可用。");
       const storedAsset = (await config.db.query<DistributionAssetRecord>(
