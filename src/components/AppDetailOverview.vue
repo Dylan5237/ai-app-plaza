@@ -29,7 +29,8 @@ const visibleLimitations = computed(() => limitations.value.slice(0, 2))
 const hiddenConditionCount = computed(() => Math.max(0, requirements.value.length - 2) + Math.max(0, limitations.value.length - 2))
 const useSteps = computed(() => {
   const entries = Array.isArray(manifest.value.entries) ? manifest.value.entries : []
-  const kinds = new Set(entries.map((entry) => entry?.kind).filter(Boolean))
+  const kinds = new Set(entries.filter((entry) => entry?.kind !== 'agent' || props.app?.entryAvailability?.[entry.id]?.status !== 'disabled')
+    .map((entry) => entry?.kind).filter(Boolean))
   const hasAgent = kinds.has('agent')
   const hasWeb = kinds.has('web')
 

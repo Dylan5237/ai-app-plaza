@@ -40,7 +40,7 @@ async function submit(index: number, confirm: boolean) {
   return { ...publication, appId: result.appId };
 }
 const ready = await submit(1, true);
-await submit(2, true);
+const missingApp = await submit(2, true);
 const candidate = await submit(3, false);
 harness.gitlab.state.offline = true;
 const initialRequests = harness.gitlab.state.requests.length;
@@ -92,10 +92,33 @@ if (process.argv.includes('--serve')) {
     await page.getByRole('button', { name: '查看 历史应用缺包示例（模拟） 详情' }).click();
     await page.getByTestId('use-agent').click();
     await page.getByTestId('copy-agent-prompt').click();
-    const missing = String(await page.evaluate(() => (window as any).copiedText));
-    assert.match(missing, /安装暂不可用/);
-    assert.match(missing, /停止安装和升级/);
-    assert.doesNotMatch(missing, /git clone|example\.invalid\/private/i);
+    const missingText = String(await page.evaluate(() => (window as any).copiedText));
+    assert.match(missingText, /安装暂不可用/);
+    assert.match(missingText, /停止安装和升级/);
+    assert.doesNotMatch(missingText, /git clone|example\.invalid\/private/i);
+    await page.keyboard.press('Escape');
+    await page.getByTestId('agent-instruction-content').waitFor({ state: 'hidden' });
+    await page.keyboard.press('Escape');
+    await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
+
+    // Model a known incomplete fixed snapshot without a stored distribution asset.
+    const snapshot = (await harness.db.query<{ id: string; manifest: any }>('SELECT id, manifest FROM published_snapshots WHERE app_id = $1', [missingApp.appId])).rows[0]!;
+    snapshot.manifest.appKey = 'zoe-extend-project-dsh';
+    snapshot.manifest.entries[0].id = 'agent-install';
+    snapshot.manifest.primaryEntry = 'agent-install';
+    snapshot.manifest.requirements = ['源码安装需要 Node.js 18，以及固定来源的仓库读取权限和依赖下载网络；通过 Git 取得源码时还需要 Git。'];
+    await harness.db.query('UPDATE catalog_apps SET instance_id = $1, project_id = $2, app_key = $3 WHERE id = $4',
+      ['http://192.168.2.145:11980', '26', snapshot.manifest.appKey, missingApp.appId]);
+    await harness.db.query('UPDATE published_snapshots SET manifest = $1::jsonb, commit_sha = $2 WHERE id = $3',
+      [JSON.stringify(snapshot.manifest), 'e880e9a86c36524606f2db5e535a44371a7cbe98', snapshot.id]);
+    await page.reload();
+    await page.getByRole('button', { name: '查看 历史应用缺包示例（模拟） 详情' }).click();
+    const disabledDetail = page.getByTestId('app-detail');
+    assert.match(await disabledDetail.getByTestId('disabled-agent-reason').innerText(), /上游源码/);
+    assert.equal(await disabledDetail.locator('.overview-steps-section').count(), 0, 'disabled agent has no active installation steps');
+    const conditions = await disabledDetail.locator('.overview-conditions').innerText();
+    assert.match(conditions, /Node\.js 18/);
+    assert.doesNotMatch(conditions, /仓库读取权限|通过 Git/);
     assert.equal(harness.gitlab.state.requests.length, initialRequests, 'consumer and author-preview browsing must not contact GitLab');
     assert.deepEqual(errors, []);
     console.log('PASS: author preview, fixed package download, copied instructions, and legacy fail-closed flow (local fixtures).');
