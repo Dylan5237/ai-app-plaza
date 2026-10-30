@@ -730,7 +730,8 @@ export function createService(config: ServiceConfig): PlazaService {
       await cleanupExpiredTokens();
       const record = (await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id])).rows[0];
       if (!record || record.request_hash !== hashInput(input)) throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "原发布回执与本次固定来源不一致，已停止恢复。");
-      if (new Date(record.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+      // Preview expiry must not hide completed history after ownership and source checks.
+      if (record.status !== 'registered' && new Date(record.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
       return submitView(record);
     },
 
@@ -749,7 +750,7 @@ export function createService(config: ServiceConfig): PlazaService {
       if (record.request_hash !== requestHash) {
         throw new DomainError(409, "IDEMPOTENCY_CONFLICT", "相同幂等键已用于不同的候选内容。");
       }
-      if (new Date(record.expires_at).getTime() <= Date.now()) {
+      if (record.status !== 'registered' && new Date(record.expires_at).getTime() <= Date.now()) {
         throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，无法通过该回执恢复。");
       }
       return submitView(record);
