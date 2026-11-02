@@ -8,6 +8,33 @@ const nonLocalRequirements = {
   PLAZA_SECRET: 'test-only-production-config-with-long-secret',
 };
 
+test('optional HTTPS ingress preserves the canonical HTTP origin and requires an exact same-host private IP', async () => {
+  const base = { ...nonLocalRequirements, PUBLIC_ORIGIN: 'http://192.168.2.145:16090', ALLOW_INSECURE_PORTAL: '1' };
+  const disabled = await loadConfig(base);
+  assert.equal(disabled.httpsOrigin, undefined);
+  const enabled = await loadConfig({ ...base, PLAZA_HTTPS_ORIGIN: 'https://192.168.2.145:16490' });
+  assert.equal(enabled.publicOrigin, base.PUBLIC_ORIGIN);
+  assert.equal(enabled.httpsOrigin, 'https://192.168.2.145:16490');
+  for (const value of ['http://192.168.2.145:16490', 'https://192.168.2.146:16490',
+    'https://192.168.2.145:16090', 'https://plaza.example.invalid:16490', 'https://192.168.2.145:16490/entry',
+    'https://user:fixture@192.168.2.145:16490', 'https://192.168.2.145:16490?x=1',
+    'https://192.168.2.145:16490#x', 'https://3232236181:16490', ' https://192.168.2.145:16490']) {
+    await assert.rejects(loadConfig({ ...base, PLAZA_HTTPS_ORIGIN: value }), /PLAZA_HTTPS_ORIGIN/);
+  }
+  await assert.rejects(loadConfig({ ...nonLocalRequirements, PUBLIC_ORIGIN: 'https://192.168.2.145:16090', PLAZA_HTTPS_ORIGIN: 'https://192.168.2.145:16490' }), /PLAZA_HTTPS_ORIGIN/);
+});
+
+test('portal widget uses the explicit HTTPS ingress while old-origin test configuration remains separate', async () => {
+  const config = await loadConfig({ ...nonLocalRequirements, PUBLIC_ORIGIN: 'http://192.168.2.145:16090', ALLOW_INSECURE_PORTAL: '1',
+    PLAZA_HTTPS_ORIGIN: 'https://192.168.2.145:16490', PLAZA_FUXI_ENABLED: '1',
+    PLAZA_FUXI_APP_ID: '7e17af1b-23d2-4a10-a8d5-32dd0ae51bef', PLAZA_FUXI_ENTRY_ID: 'web',
+    PLAZA_FUXI_MODE: 'portal-widget', PLAZA_FUXI_ORIGIN: 'https://192.168.2.145:16488',
+    PLAZA_FUXI_WIDGET_URL: 'https://portal.example.invalid/web/design-portal-web/fuxi-portal-widget.html' });
+  assert.equal(config.publicOrigin, 'http://192.168.2.145:16090');
+  assert.equal(config.fuxiEntry?.plazaOrigin, 'https://192.168.2.145:16490');
+  assert.equal(config.fuxiTest?.plazaOrigin, config.publicOrigin);
+});
+
 test('configuration never silently downgrades production or invents a GitLab source', async () => {
   await assert.rejects(loadConfig({ PLAZA_LOCAL: '1', NODE_ENV: 'production' }), /生产环境/);
   await assert.rejects(loadConfig({ PLAZA_LOCAL: '1', HOST: '0.0.0.0' }), /127.0.0.1/);

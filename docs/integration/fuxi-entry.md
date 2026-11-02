@@ -1,5 +1,27 @@
 # 从广场进入伏羲
 
+## 保留 HTTP 的新增 HTTPS 入口
+
+本节为本地代码候选的配置说明，不表示已经正式部署或启用。广场仍使用同一后端和数据库，原 `PUBLIC_ORIGIN`、MCP、作者发布回执与规范下载指引继续沿用原地址。
+
+可显式增加 `PLAZA_HTTPS_ORIGIN`，限定为原 HTTP 入口的同一固定私网 IPv4、HTTPS 和可区分的独立端口。不设置时完全沿用原入口行为；路径、凭据、查询、片段、其他主机、IP 别名和 Host 不可区分的端口配置均拒绝。
+
+```dotenv
+PUBLIC_ORIGIN=http://192.168.2.145:16090
+ALLOW_INSECURE_PORTAL=1
+PLAZA_HTTPS_ORIGIN=https://192.168.2.145:16490
+```
+
+HTTPS 由固定网关终结。网关须以 `127.0.0.1` 为源地址连接现有后端，保留浏览器的 Host 和 Origin，并用实际连接客户端地址覆盖单值 `X-Real-IP`；不得透传客户端自带值。Nginx 对应核心设置为 `proxy_bind 127.0.0.1`、`proxy_set_header Host $http_host`、`proxy_set_header Origin $http_origin` 和 `proxy_set_header X-Real-IP $remote_addr`。网关自身也须拒绝不匹配的入口 Host，配置证书和合适的 HTTPS 安全头，并分别准备恢复步骤。
+
+应用保留 `trustProxy:false`：只有来自回环代理、匹配 HTTPS Host 且带有效客户 IP 的连接才能使用该别名；Origin 必须与选中的入口完全一致。外部伪造 X-Forwarded-* 或 X-Real-IP 不会获得该入口。逐客户限流保留 IPv4、IPv4-mapped 和 IPv6 /64 分桶语义，不把全部 HTTPS 使用者合并到代理地址的同一个桶。
+
+配置 `portal-widget` 时，策略绑定 HTTPS 别名，且只在这个入口返回和重检；原 HTTP 目录继续提供普通入口。独立 HTTP 测试配置也不会出现在 HTTPS 正式入口。固定接收方、两个服务端开关、可信点击和一次性交接约束保持；广场不接收天宫凭据。
+
+新增 HTTPS 入口需匹配 IP 的受信任证书。维护者须分别核对使用者浏览器信任、天宫来源证书和伏羲后端核验接口；本地合成浏览器预授存储权限不能代替真实用户许可。停用时关闭新入口的服务端策略并撤销新增网关配置，保留原 HTTP 地址及最新业务数据。
+
+## 入口边界与既有接入说明
+
 本接入只负责伏羲入口和天宫凭证交接。广场保持匿名目录，不保存用户库、不解析用户角色，不调用跨域身份兑换接口。伏羲验证门户凭证、建立或查找账号映射并管理自身会话。对应需求为 [#78](https://github.com/Dylan5237/ai-app-plaza/issues/78)，伏羲接收方合同为 [#111](https://github.com/Dylan5237/prototype-manager/issues/111)。
 
 ## 部署前核实来源
@@ -8,7 +30,7 @@
 
 策略只绑定指定entry ID。同一应用的其他Web入口仍是普通外链，不会取得门户凭证；需要受控接入的入口应明确配置，不能靠显示名称推断。
 
-本实现从**当前广场origin**的既有 `sessionStorage` 或 `localStorage` 指定单一键读取原始token字符串。只在主动点击时读取，不扫描存储、不写回、不读取用户JSON/父页面存储/URL凭证，也不要求用户粘贴token。存储为空、不可访问或格式不符时明确失败。
+原有存储模式从**当前广场origin**的既有 `sessionStorage` 或 `localStorage` 指定单一键读取原始token字符串。只在主动点击时读取，不扫描存储、不写回、不读取用户JSON/父页面存储/URL凭证，也不要求用户粘贴token。存储为空、不可访问或格式不符时明确失败。跨站门户按钮模式见下文；它不把天宫凭证交给广场。
 
 门户 `sky-token` 属于 `https://192.168.5.143:17090`；用户确认独立广场为 `http://192.168.2.145:16090`。两者不同origin，广场不能直接读取门户存储。原目录接入继续保持默认关闭；本期另外提供下文的专用测试桥，不接受旧全局状态消息或URL凭证。
 
@@ -40,6 +62,8 @@ HTTPS可直接配置，回环HTTP只在本地模式接受；非本地模式拒�
 
 ## 消息交接
 
+本节描述原有同源存储模式；跨站门户按钮模式使用下文独立交接。
+
 1. 用户点击卡片或详情，广场读取指定既有token，打开固定伏羲 `/auth/tiangong`，仅此入口保留opener。其他Web外链继续 `noopener noreferrer`。
 2. 伏羲在自身后端创建Cookie绑定的短时一次性请求，向允许的广场origin发送 `{ type: 'fuxi:tiangong:ready', requestId }`。
 3. 广场同时核对精确event.origin、本次窗口event.source、消息类型和有界requestId；重新向广场服务读取策略，确认绑定仍启用、接收方和凭证来源均未改变。
@@ -70,6 +94,49 @@ npm run test:fuxi-entry:browser
 联合测试默认采用门户普通浏览器实际使用的localStorage方式；设置 `PLAZA_FUXI_TEST_STORAGE=sessionStorage` 可单独验证另一个显式配置的存储方式。这仅选择合成测试上下文，不会读取真实门户存储。
 
 本地模拟通过不等于真实门户接通、真实账号上传/归属验收或AI Host接入。真实来源、两名有效天宫用户和两端部署仍需分别验证。
+
+## 门户同源按钮模式：本地候选
+
+[#81](https://github.com/Dylan5237/ai-app-plaza/issues/81) 为跨站门户准备独立按钮模式，未部署。广场卡片和详情嵌入固定门户页面，用户直接点击门户页面中的按钮；广场不读取或接收天宫凭证。原有同源存储模式、普通外链和匿名目录保持。此模式用于可信的广场来源，不能把允许执行不受信任脚本的页面当作可信广场。
+
+服务端仅在显式配置时为指定应用 UUID 和入口 ID 返回策略。`PLAZA_FUXI_MODE=portal-widget` 还需要固定 `PLAZA_FUXI_ORIGIN` 和 `PLAZA_FUXI_WIDGET_URL`；按钮 URL 必须为 HTTPS、无用户信息/查询/片段，路径以 `/fuxi-portal-widget.html` 结尾。广场自身也必须使用 HTTPS；仅隔离测试允许回环 HTTP。不要同时配置 `PLAZA_FUXI_CREDENTIAL_STORAGE` 或 `PLAZA_FUXI_CREDENTIAL_KEY`。伏羲目标如需内网 HTTP，仍须满足原有显式开关和 RFC1918 限制。
+
+```text
+PLAZA_FUXI_APP_ID=<已收录的伏羲应用 UUID>
+PLAZA_FUXI_ENTRY_ID=<对应 Web 入口 ID>
+PLAZA_FUXI_ENABLED=0
+PLAZA_FUXI_MODE=portal-widget
+PLAZA_FUXI_ORIGIN=<核实后的伏羲完整 origin>
+PLAZA_FUXI_WIDGET_URL=<核实后的门户 HTTPS 目录>/fuxi-portal-widget.html
+```
+
+上面是关闭状态的配置示意，不是可直接发布的配置。绑定已配置时，停用会阻止对应入口退回未经核实的普通外链。不要为了测试将共享 16090 上指向正式 16088 的卡片切换到 16077；测试应使用独立的 HTTPS 广场实例或隔离配置和测试目录。
+
+门户候选资产位于 `ops/integration/tiangong-widget/`：HTML、同目录 JavaScript、CSS 以及 `fuxi-widget-test-policy.json`。默认 JSON 的 `enabled` 为 `false`，其中广场 HTTPS 地址为不可用占位符；维护者须在独立目标环境核实精确门户、广场和伏羲 origin 以及 appId/entryId 后才可准备启用配置。门户 JavaScript 只读取同目录固定策略文件，不接受查询参数或 Manifest 指定凭证接收方。资产应使用正确 MIME 类型；JSON 响应应设置 `Cache-Control: no-store`，不得重定向到其他来源。
+
+交接顺序：
+
+1. 非可信脚本点击或单独打开门户按钮页面均不发起交接。用户在广场内点击后，门户按钮向浏览器请求非分区 localStorage 访问；未获得权限、安全上下文不可用或浏览器不支持时安全停止。浏览器可能提示用户授权。
+2. 门户按钮打开固定伏羲窗口。伏羲返回一次性请求后，按钮向固定广场父窗口发送随机请求；广场校验消息来源、当前 iframe 窗口、请求值及应用/入口，并重新读取自身策略。
+3. 广场只返回策略确认，不接收 token。门户再次读取自身同源策略，核对全部固定值并消费该次点击授权，才读取一次 `sky-token` 并向固定伏羲 origin 发送。缺失、停用、配置变化、来源不匹配、超时和重复消息均不转交。
+
+策略请求发生网络异常或超时时最多重试一次；每次请求最长 5 秒。只有重新取得并核对启用的固定策略后才交接，非成功响应、无效配置或连续失败均安全停止。页面卸载或本次授权过期后不会再重试交接检查。
+
+门户可在失败时向原广场窗口发送固定枚举状态码，广场校验精确来源和当前 iframe 后显示固定提示；状态消息不包含凭证或用户资料。
+
+实施部署前，维护者必须核实实际门户→广场的窗口层级、证书、浏览器版本及存储权限；确认 iframe 的 sandbox 和 `storage-access` 权限策略允许需要的操作，同时用精确的 CSP `frame-ancestors` 约束所有实际祖先来源，避免入口被不受信任的页面套入。门户及广场的 CSP、COOP、反向代理和静态文件缓存策略应以实际响应核验，不应为了通过测试关闭安全保护。伏羲必须允许**门户**的精确 origin；现有 16077 配置是否包含它需在部署前核对。门户停用和广场停用均可阻止新交接；建议需要回退时同时关闭两侧并核验。
+
+联合回归使用构建后的本地广场、真实伏羲候选代码及临时数据库，天宫身份为合成数据：
+
+```powershell
+$env:PLAZA_FUXI_FIXTURE_ROOT='<伏羲联合候选源码目录>'
+$env:PLAYWRIGHT_CHANNEL='chrome'
+node --import tsx tests/tiangong-widget-browser.ts
+$env:PLAYWRIGHT_CHANNEL='msedge'
+node --import tsx tests/tiangong-widget-browser.ts
+```
+
+伏羲源码需具备其后端依赖和构建好的前端；依赖放在其他隔离目录时可用 `PLAZA_FUXI_NODE_MODULES` 指定。测试显式启用存储分区，并仅在测试上下文授予存储访问；另外使用真实广场页面和合成 HTTPS 来源验证嵌入链，伏羲接收端在该 HTTPS 场景为模拟对象，广场本机 API 通过测试代理转发。测试代理对 Host/Origin 的转换仅用于夹具，不代表真实代理配置已经验证。截图仅含合成数据，位于忽略的 `artifacts/tiangong-widget/`。
 
 ## 不改正式卡片的跨域测试桥
 
