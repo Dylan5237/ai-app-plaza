@@ -58,15 +58,22 @@ function parseManagedCandidate(value: unknown) {
 
 export async function createApp(config: Config, db: Database) {
   assertManagementConfig(config);
-  const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience });
+  const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience,
+    distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false });
   let managedActive = 0;
+  let downloadActive = 0;
   const releaseManagedSlot = (request: any) => {
     if (!request.managedSlot) return;
     request.managedSlot = false;
     managedActive -= 1;
+  };
+  const releaseDownloadSlot = (request: any) => {
+    if (!request.distributionSlot) return;
+    request.distributionSlot = false;
+    downloadActive -= 1;
   };
   let cleanupTimer: NodeJS.Timeout | undefined;
   let cleanupInFlight: Promise<void> | undefined;
@@ -94,6 +101,11 @@ export async function createApp(config: Config, db: Database) {
       return reply.code(403).send({ error: { code: 'HOST_DENIED', message: '访问地址与 PUBLIC_ORIGIN 不一致' } });
     }
     const path = request.url.split('?')[0];
+    if (request.method === 'GET' && /^\/api\/apps\/[^/]+\/packages\/[^/]+$/.test(path)) {
+      if (downloadActive >= 4) return reply.code(429).send({ error: { code: 'ASSET_BUSY', message: '分发下载繁忙，请稍后重试' } });
+      downloadActive++;
+      (request as any).distributionSlot = true;
+    }
     if (managementEnabled(config) && /^\/api\/management(?:\/|$)/.test(path)) {
       const fetchSite = request.headers['sec-fetch-site'];
       const values = Array.isArray(fetchSite) ? fetchSite : fetchSite === undefined ? [] : [fetchSite];
@@ -111,8 +123,8 @@ export async function createApp(config: Config, db: Database) {
       (request as any).releaseManagedSlot = () => releaseManagedSlot(request);
     }
   });
-  app.addHook('onResponse', async request => releaseManagedSlot(request));
-  app.addHook('onRequestAbort', async request => { if (!(request as any).managedRunning) releaseManagedSlot(request); });
+  app.addHook('onResponse', async request => { releaseManagedSlot(request); releaseDownloadSlot(request); });
+  app.addHook('onRequestAbort', async request => { if (!(request as any).managedRunning) releaseManagedSlot(request); releaseDownloadSlot(request); });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: 'INVALID_REQUEST', message: '请求字段不符合发布规范' } });
     if (error instanceof DomainError) return reply.code(error.statusCode).send({ error: {
@@ -165,6 +177,12 @@ export async function createApp(config: Config, db: Database) {
   app.get('/api/apps/:id/instructions/:entryId', (request) => {
     const params = request.params as any;
     return service.instructions(idValue.parse(params.id), z.string().min(1).max(64).parse(params.entryId));
+  });
+  app.get('/api/apps/:id/packages/:assetId', async (request, reply) => {
+    const params = request.params as any;
+    const asset = await service.distributionPackage(idValue.parse(params.id), idValue.parse(params.assetId));
+    return reply.type('application/zip').header('Content-Disposition', `attachment; filename="plaza-${asset.id}.zip"`)
+      .header('Content-Length', asset.bytes.length).header('X-Content-SHA256', asset.sha256).send(asset.bytes);
   });
   app.post('/api/publications', async (request, reply) => {
     const token = request.headers['x-gitlab-token'];

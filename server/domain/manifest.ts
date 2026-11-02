@@ -19,6 +19,7 @@ export interface AgentEntry {
   instructionsPath: string;
   compatibility: string[];
   artifacts?: Array<{ url: string; sha256: string }>;
+  distribution?: { type: 'source' | 'artifact'; files: string[]; delivery?: 'package' | 'remote' };
 }
 
 export type ManifestEntry = WebEntry | AgentEntry;
@@ -149,7 +150,10 @@ export function validateManifest(value: unknown, expectedAppKey: string): AppMan
   for (const entry of manifest.entries) {
     if (entryIds.has(entry.id)) throw new DomainError(400, "VALIDATION_FAILED", "Manifest 中的入口 ID 必须唯一。");
     entryIds.add(entry.id);
-    if (entry.kind === "agent") validateRepoPath(entry.instructionsPath, "Agent 接入说明路径");
+    if (entry.kind === "agent") {
+      validateRepoPath(entry.instructionsPath, "Agent 接入说明路径");
+      for (const path of entry.distribution?.files ?? []) validateRepoPath(path, "分发文件路径");
+    }
   }
   if (!entryIds.has(manifest.primaryEntry)) {
     throw new DomainError(400, "VALIDATION_FAILED", "primaryEntry 必须指向已声明的入口。");

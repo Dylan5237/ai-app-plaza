@@ -925,7 +925,12 @@ onUnmounted(() => {
             </template>
             <template v-else-if="entry.kind === 'agent'">
               <span v-if="selectedAppEntries.length > 1 && entry.label" class="entry-label">{{ entry.label }}</span>
-              <button class="primary-button entry-button" data-testid="use-agent" @click="loadAgentInstructions(entry)">接入我的Agent</button>
+              <button class="primary-button entry-button" data-testid="use-agent"
+                :disabled="selectedApp.entryAvailability?.[entry.id]?.status === 'disabled'"
+                @click="loadAgentInstructions(entry)">接入我的Agent</button>
+              <p v-if="selectedApp.entryAvailability?.[entry.id]?.status === 'disabled'" class="entry-label" data-testid="agent-disabled-reason">
+                {{ selectedApp.entryAvailability[entry.id].reason }}
+              </p>
             </template>
           </div>
 
@@ -961,6 +966,7 @@ onUnmounted(() => {
           <p v-if="instruction.source" class="instruction-source">说明来源：{{ typeof instruction.source === 'string' ? instruction.source : JSON.stringify(instruction.source) }}</p>
           <div class="instruction-markdown markdown-body" v-html="instructionHtml" />
           <el-button
+            v-if="instruction.distribution?.status !== 'disabled'"
             class="copy-instruction-button"
             data-testid="copy-agent-prompt"
             @click="copyText(instruction.text, '接入说明已复制')"

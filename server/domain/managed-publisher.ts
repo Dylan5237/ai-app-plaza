@@ -7,6 +7,7 @@ import type { AppView, PlazaService, SubmitInput, SubmitResult } from "./service
 import { compareProjectVersions, decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath, type StoredAppManifest } from "./manifest.js";
 import { validateTagReuse } from './tags.js';
 import { parseTree, type ParseError } from "jsonc-parser";
+import { hasConflictingInstallSource, isDependencyManifestPath, isInstallRelevantPath, validateDistributionBytes, validateDistributionPath } from './distribution.js';
 
 const MAX_FILES = 1_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -241,7 +242,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
   }
 
   async function validateInput(input: ManagedSubmitInput): Promise<ValidatedBundle> {
-    const bundle = validateBundle(input, config.gitlabToken);
+    const bundle = validateBundle(input, config.gitlabToken, 'full_source', config.gitlabUrl);
     assertTagReuse(bundle.manifest.tags, await config.service.tags(), bundle.manifestPath);
     return bundle;
   }
@@ -792,7 +793,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     },
 
     async submit(input, publishKey, idempotencyKey) {
-      const bundle = validateBundle(input, config.gitlabToken);
+      const bundle = validateBundle(input, config.gitlabToken, 'full_source', config.gitlabUrl);
       validatePublishKey(publishKey);
       validateIdempotencyKey(idempotencyKey);
       const keyHash = keyDigest(publishKey);
@@ -835,7 +836,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
           expectedAppRevision: input.expectedAppRevision,
           files,
         };
-        const bundle = validateBundle(submitInput, config.gitlabToken, "metadata_patch");
+        const bundle = validateBundle(submitInput, config.gitlabToken, "metadata_patch", config.gitlabUrl);
         assertMetadataIdentity(app.manifest, bundle.manifest, input.documents);
         const submitted = await submitWithBinding(submitInput, bundle, binding, idempotencyKey, "metadata_patch");
         return { ...submitted.result, operationId: submitted.operationId };
@@ -938,6 +939,7 @@ function validateBundle(
   input: ManagedSubmitInput,
   serverGitLabToken: string,
   operationKind: OperationRecord["operation_kind"] = "full_source",
+  gitlabUrl?: string,
 ): ValidatedBundle {
   if (!input || typeof input !== "object" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.appKey) || input.appKey.length > 64) {
     throw bundleFailure("APP_KEY_INVALID", "app_key", "appKey 格式无效。", "使用小写字母、数字和单个连字符组成 appKey。", { field: "appKey" }, serverGitLabToken);
@@ -1021,6 +1023,31 @@ function validateBundle(
     manifest = manifestJson(manifestText, input.appKey);
   } catch (error) {
     throw manifestFailure(error, manifestPath, manifestText, serverGitLabToken);
+  }
+  for (const entry of manifest.entries) {
+    if (entry.kind !== 'agent' || !entry.distribution) continue;
+    const guide = files.get(entry.instructionsPath);
+    if (guide && gitlabUrl && hasConflictingInstallSource(Buffer.from(guide).toString('utf8'), gitlabUrl)) {
+      throw bundleFailure('INSTALL_SOURCE_CONFLICT', 'install_source', '安装说明仍包含仓库获取步骤或 GitLab 来源。',
+        '将安装与升级步骤修订为广场分发包，重新校验。', { path: entry.instructionsPath, field: 'entries' }, serverGitLabToken);
+    }
+    for (const path of entry.distribution.files) {
+      try { validateDistributionPath(path); }
+      catch { throw bundleFailure('DISTRIBUTION_PATH_INVALID', 'distribution_path', '分发文件路径不允许分享。',
+        '移除凭据或本地配置路径。', { path, field: 'entries' }, serverGitLabToken); }
+      const bytes = files.get(path);
+      if (!bytes && operationKind === 'full_source') throw bundleFailure('DISTRIBUTION_FILE_MISSING', 'distribution_file',
+        '分发清单中的文件未包含在上传源码中。', '补齐清单中的必要文件后重新校验。', { path, field: 'entries' }, serverGitLabToken);
+      if (!bytes) continue;
+      try { validateDistributionBytes(path, bytes, serverGitLabToken); }
+      catch { throw bundleFailure('DISTRIBUTION_FILE_INVALID', 'distribution_invalid', '分发文件不符合分享条件。',
+        '检查文件大小、LFS 指针及疑似凭据后重新校验。', { path, field: 'entries' }, serverGitLabToken); }
+      if (gitlabUrl && isInstallRelevantPath(path)
+          && hasConflictingInstallSource(Buffer.from(bytes).toString('utf8'), gitlabUrl, isDependencyManifestPath(path))) {
+        throw bundleFailure('INSTALL_SOURCE_CONFLICT', 'install_source', '分发文件的安装脚本或依赖仍引用 GitLab。',
+          '补齐可用的安装依赖后重新校验。', { path, field: 'entries' }, serverGitLabToken);
+      }
+    }
   }
   const documents = new Set([manifest.docs.readme, manifest.docs.usage]);
   for (const entry of manifest.entries) if (entry.kind === "agent") documents.add(entry.instructionsPath);

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "disabledEntries": [
+    {
+      "instanceId": "http://192.168.2.145:11980",
+      "projectId": "26",
+      "appKey": "zoe-extend-project-dsh",
+      "entryId": "agent-install",
+      "commitSha": "e880e9a86c36524606f2db5e535a44371a7cbe98",
+      "reason": "当前应用包未包含构建所需的 DeepSeek Harness 上游源码，构建还需要 Bun；广场尚未完成完整安装验证，暂不开放安装。"
+    }
+  ]
+}

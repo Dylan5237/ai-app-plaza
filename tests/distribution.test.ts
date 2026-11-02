@@ -1,0 +1,263 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { makeDistributionPackage, validateDistributionPath } from '../server/domain/distribution.js';
+import { createApp } from '../server/app.js';
+import { openDatabase } from '../server/domain/database.js';
+import { DEFAULT_TAG, manifest, SHA, SHA2, TOKEN } from './helpers/gitlab-fixture.js';
+import { startHarness } from './helpers/harness.js';
+import { bundle, performanceHarness } from './helpers/managed-performance.js';
+
+const testRoot = resolve('artifacts', 'distribution-tests');
+async function tempDirectory() { await mkdir(testRoot, { recursive: true }); return mkdtemp(join(testRoot, 'plaza-distribution-test-')); }
+async function removeTemp(path: string) {
+  assert.ok(resolve(path).startsWith(testRoot + sep));
+  assert.ok(path.split(/[\\/]/).at(-1)?.startsWith('plaza-distribution-test-'));
+  await rm(path, { recursive: true, force: true });
+}
+function inspectZip(bytes: Buffer): any {
+  const python = spawnSync('python', ['-c', 'import sys,zipfile,json,io; z=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())); print(json.dumps({i.filename:{"text":z.read(i).decode("utf-8"),"mode":i.external_attr >> 16} for i in z.infolist()},ensure_ascii=False))'], { input: bytes, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+  assert.equal(python.status, 0, python.stderr);
+  return JSON.parse(python.stdout);
+}
+
+test('fixed ZIP is deterministic, extractable by standard tools, preserves names and executable mode', () => {
+  const files = new Map([['目录/a.txt', Buffer.from('你好')], ['bin/run.sh', Buffer.from('#!/bin/sh\necho ok\n')]]);
+  const a = makeDistributionPackage('agent', files, new Set(['bin/run.sh']));
+  const b = makeDistributionPackage('agent', new Map([...files].reverse()), new Set(['bin/run.sh']));
+  assert.deepEqual(a.bytes, b.bytes);
+  assert.equal(a.sha256, createHash('sha256').update(a.bytes).digest('hex'));
+  const actual = inspectZip(a.bytes);
+  assert.equal(actual['目录/a.txt'].text, '你好');
+  assert.equal(actual['bin/run.sh'].text, '#!/bin/sh\necho ok\n');
+  assert.equal(actual['bin/run.sh'].mode & 0o777, 0o755);
+  for (const path of ['../outside', '.env', 'a/CON.txt', 'a/x?.txt', 'secrets/key.txt', `a/${'中'.repeat(86)}.txt`]) assert.throws(() => validateDistributionPath(path));
+  assert.throws(() => makeDistributionPackage('agent', new Map([['A/file', Buffer.from('a')], ['a/File', Buffer.from('b')]])));
+});
+
+test('publisher CLI requires and includes explicitly declared distribution files even when Git ignores them', async t => {
+  const temp = await tempDirectory();
+  t.after(() => removeTemp(temp));
+  const project = join(temp, 'project');
+  await mkdir(join(project, 'docs'), { recursive: true });
+  await mkdir(join(project, 'release'), { recursive: true });
+  const value: any = manifest();
+  value.entries[1].distribution = { type: 'source', files: ['release/needed.mjs'] };
+  await writeFile(join(project, 'ai-app.json'), JSON.stringify(value));
+  await writeFile(join(project, 'docs', 'usage-1.md'), '模拟应用说明');
+  await writeFile(join(project, 'docs', 'agent-1.md'), '解压广场分发包后运行程序。');
+  await writeFile(join(project, '.gitignore'), 'release/\n');
+  const git = (...args: string[]) => spawnSync('git', ['-C', project, ...args], { encoding: 'utf8' });
+  assert.equal(git('init', '-q').status, 0);
+  assert.equal(git('add', 'ai-app.json', 'docs', '.gitignore').status, 0);
+  const dryRun = () => spawnSync('python', [resolve('server/publisher-cli.py'), '--origin', 'http://127.0.0.1:9999', '--project', project, '--dry-run'],
+    { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+  assert.notEqual(dryRun().status, 0, 'a missing declared file must stop publication');
+  await writeFile(join(project, 'release', 'needed.mjs'), 'console.log("first")\n');
+  assert.equal(git('check-ignore', 'release/needed.mjs').status, 0);
+  const first = dryRun();
+  assert.equal(first.status, 0, first.stderr);
+  await writeFile(join(project, 'release', 'needed.mjs'), 'console.log("second")\n');
+  const second = dryRun();
+  assert.equal(second.status, 0, second.stderr);
+  assert.notEqual(JSON.parse(first.stdout).digest, JSON.parse(second.stdout).digest, 'the ignored required file participates in the bundle digest');
+});
+
+test('direct publication binds a reviewed package to the current public snapshot and works without GitLab', async t => {
+  const temp = await tempDirectory();
+  const h = await startHarness(1, 'memory://', { dataDir: temp } as any);
+  t.after(async () => { await h.close(); await removeTemp(temp); });
+  const value: any = manifest();
+  value.entries[1].distribution = { type: 'source', files: ['src/hello.mjs', 'bin/run.sh'] };
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('docs/agent-1.md', '# 安装\n解压广场分发包，运行 node src/hello.mjs。');
+  h.gitlab.state.files.set('src/hello.mjs', 'console.log("hello")\n');
+  h.gitlab.state.files.set('bin/run.sh', '#!/bin/sh\nnode src/hello.mjs\n');
+  h.gitlab.state.files.set('private.txt', 'not included');
+  h.gitlab.state.modes.set('bin/run.sh', '100755');
+  const input = { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const p = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(p.status, 'preview_ready', JSON.stringify(p.error));
+  assert.equal(p.preview?.distributions?.[0]?.files.length, 2);
+  assert.equal((await h.db.query('SELECT * FROM distribution_assets')).rows.length, 0, 'candidate is not yet downloadable');
+  const registered = await h.service.confirm(p.id, p.ticket, { revision: p.revision, digest: p.digest! });
+  assert.equal(registered.status, 'registered', JSON.stringify(registered.error));
+  assert.equal(registered.preview?.distributions?.[0]?.sha256, p.preview?.distributions?.[0]?.sha256, 'confirmed record preserves the reviewed package');
+  assert.equal((await h.service.publication(p.id, p.ticket)).preview?.distributions?.[0]?.files.length, 2);
+  const duplicate = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(duplicate.status, 'registered');
+  assert.equal(duplicate.preview?.distributions?.[0]?.sha256, p.preview?.distributions?.[0]?.sha256, 'idempotent re-publication keeps the package details');
+  const appId = registered.appId!;
+  const guide = await h.service.instructions(appId, 'agent');
+  assert.equal(guide.distribution.status, 'ready');
+  assert.match(guide.text, /应用代码使用此广场分发包/);
+  assert.match(guide.text, /\.plaza-installation\.json/);
+  assert.match(guide.text, /commit 为 unknown，须如实报告/);
+  assert.doesNotMatch(guide.text, /git clone/i);
+  const url = String(guide.distribution.url);
+  h.gitlab.state.offline = true;
+  const requestCount = h.gitlab.state.requests.length;
+  const response = await fetch(url);
+  assert.equal(response.status, 200);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), guide.distribution.sha256);
+  assert.equal(h.gitlab.state.requests.length, requestCount, 'consumer download never accesses GitLab');
+  assert.deepEqual(Object.keys(inspectZip(bytes)).sort(), ['bin/run.sh', 'src/hello.mjs']);
+  const installDir = join(temp, 'fresh-host');
+  await mkdir(installDir);
+  const unpack = spawnSync('python', ['-c', 'import io,sys,zipfile; zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).extractall(sys.argv[1])', installDir], { input: bytes });
+  assert.equal(unpack.status, 0, unpack.stderr.toString());
+  const launched = spawnSync(process.execPath, ['src/hello.mjs'], { cwd: installDir, encoding: 'utf8', env: { SystemRoot: process.env.SystemRoot ?? '', PATH: '' } });
+  assert.equal(launched.status, 0, launched.stderr);
+  assert.match(launched.stdout, /hello/);
+  assert.equal((await fetch(`${h.origin}/api/apps/${randomUUID()}/packages/${guide.distribution.assetId}`)).status, 404);
+  await h.service.changeLifecycle(appId, 'offline', 1, 1);
+  assert.equal((await fetch(url)).status, 404, 'offline applications cannot download');
+  await h.service.changeLifecycle(appId, 'online', 1, 2);
+  assert.equal((await fetch(url)).status, 200);
+  await h.service.changeLifecycle(appId, 'delete', 1, 3);
+  assert.equal((await fetch(url)).status, 404, 'deleted applications cannot download');
+  await h.service.changeLifecycle(appId, 'restore', 1, 4);
+  await h.service.changeLifecycle(appId, 'online', 1, 5);
+  assert.equal((await fetch(url)).status, 200);
+  await writeFile(join(temp, 'distribution', `${guide.distribution.sha256}.zip`), 'tampered');
+  assert.equal((await fetch(url)).status, 503);
+  await assert.rejects(h.service.instructions(appId, 'agent'), (e: any) => e.code === 'ASSET_UNAVAILABLE');
+});
+
+test('changed executable mode between preview and confirmation is rejected', async t => {
+  const temp = await tempDirectory();
+  const h = await startHarness(1, 'memory://', { dataDir: temp } as any);
+  t.after(async () => { await h.close(); await removeTemp(temp); });
+  const value: any = manifest();
+  value.entries[1].distribution = { type: 'source', files: ['run.sh'] };
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('docs/agent-1.md', '从广场下载并解压，使用 bash run.sh。');
+  h.gitlab.state.files.set('run.sh', '#!/bin/sh\necho hello');
+  const p = await h.service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());
+  assert.equal(p.status, 'preview_ready');
+  h.gitlab.state.modes.set('run.sh', '100755');
+  const result = await h.service.confirm(p.id, p.ticket, { revision: p.revision, digest: p.digest! });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error?.code, 'SOURCE_MISMATCH');
+  assert.equal((await h.db.query('SELECT * FROM distribution_assets')).rows.length, 0);
+});
+
+test('legacy conflicting instructions never direct the user to clone or to provide credentials', async t => {
+  const temp = await tempDirectory();
+  const h = await startHarness(1, 'memory://', { dataDir: temp } as any);
+  t.after(async () => { await h.close(); await removeTemp(temp); });
+  h.gitlab.state.files.set('docs/agent-1.md', '# 安装\n从旧仓库运行 git clone https://example.invalid/private.git');
+  const p = await h.service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());
+  const result = await h.service.confirm(p.id, p.ticket, { revision: p.revision, digest: p.digest! });
+  assert.equal(result.status, 'registered');
+  const guide = await h.service.instructions(result.appId!, 'agent');
+  assert.equal(guide.distribution.status, 'unavailable');
+  assert.match(guide.text, /停止安装和升级/);
+  assert.doesNotMatch(guide.text, /git clone|example\.invalid\/private/i);
+});
+
+test('conflicting install source and missing distribution file stop publication before confirmation', async t => {
+  const temp = await tempDirectory();
+  const h = await startHarness(1, 'memory://', { dataDir: temp } as any);
+  t.after(async () => { await h.close(); await removeTemp(temp); });
+  const value: any = manifest();
+  value.entries[1].distribution = { type: 'source', files: ['src/main.mjs'] };
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('docs/agent-1.md', 'git clone https://example.invalid/project.git');
+  const input = { projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const badGuide = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(badGuide.status, 'failed');
+  assert.equal(badGuide.error?.code, 'VALIDATION_FAILED');
+  h.gitlab.state.files.set('docs/agent-1.md', '先执行 wget https://example.invalid/other-release.zip');
+  const externalGuide = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(externalGuide.status, 'failed', 'an external archive cannot become a second installation source');
+  h.gitlab.state.files.set('docs/agent-1.md', '解压广场分发包并运行 src/main.mjs。');
+  const missing = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(missing.status, 'failed');
+  assert.equal(missing.error?.code, 'VALIDATION_FAILED');
+  value.entries[1].distribution.files = ['README.md'];
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('README.md', '旧版本安装：git clone https://example.invalid/old.git');
+  const unsafeReadme = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(unsafeReadme.status, 'failed', 'conflicting install instructions inside the package must be fixed');
+  assert.equal(unsafeReadme.error?.code, 'VALIDATION_FAILED');
+  value.entries[1].distribution.files = ['package-lock.json'];
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('package-lock.json', '{"resolved":"https://registry.npmjs.org/example/-/example-1.0.0.tgz"}');
+  const publicRegistry = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(publicRegistry.status, 'preview_ready', 'ordinary public dependency registry archives are not an alternative application source');
+  h.gitlab.state.files.set('package-lock.json', JSON.stringify({ resolved: `${h.gitlab.url}/private/dep.tgz` }));
+  const privateRegistry = await h.service.submit(input, TOKEN, randomUUID());
+  assert.equal(privateRegistry.status, 'failed', 'a lockfile must not require the private GitLab host');
+  assert.equal((await h.db.query('SELECT * FROM distribution_assets')).rows.length, 0);
+});
+
+test('candidate packages cannot be staged beneath a public static directory', async t => {
+  const temp = await tempDirectory();
+  const h = await startHarness(1, 'memory://', { dataDir: temp, staticDir: temp } as any);
+  t.after(async () => { await h.close(); await removeTemp(temp); });
+  const value: any = manifest();
+  value.entries[1].distribution = { type: 'source', files: ['src/main.mjs'] };
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('docs/agent-1.md', '从广场下载并运行 src/main.mjs。');
+  h.gitlab.state.files.set('src/main.mjs', 'console.log("hello")');
+  const result = await h.service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error?.code, 'ASSET_STORAGE_INVALID');
+  assert.equal((await h.db.query('SELECT * FROM distribution_assets')).rows.length, 0);
+});
+
+test('a new confirmation atomically replaces the public package and preserves the old one before confirmation', async t => {
+  const temp = await tempDirectory();
+  const h = await startHarness(1, 'memory://', { dataDir: temp } as any);
+  t.after(async () => { await h.close(); await removeTemp(temp); });
+  const value: any = manifest();
+  value.entries[1].distribution = { type: 'source', files: ['src/main.mjs'] };
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('docs/agent-1.md', '解压广场分发包，执行 node src/main.mjs。');
+  h.gitlab.state.files.set('src/main.mjs', 'console.log("v1")');
+  const first = await h.service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, randomUUID());
+  const registered = await h.service.confirm(first.id, first.ticket, { revision: first.revision, digest: first.digest! });
+  const oldGuide = await h.service.instructions(registered.appId!, 'agent');
+  const oldUrl = String(oldGuide.distribution.url);
+  value.projectVersion = '1.1.0';
+  h.gitlab.state.files.set('ai-app.json', JSON.stringify(value));
+  h.gitlab.state.files.set('src/main.mjs', 'console.log("v2")');
+  h.gitlab.state.tagName = 'v1.1.0'; h.gitlab.state.tagSha = SHA2; h.gitlab.state.releaseSha = SHA2;
+  const next = await h.service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA2, tag: 'v1.1.0', expectedAppRevision: 1 }, TOKEN, randomUUID());
+  assert.equal(next.status, 'preview_ready');
+  assert.equal((await fetch(oldUrl)).status, 200);
+  const updated = await h.service.confirm(next.id, next.ticket, { revision: next.revision, digest: next.digest! });
+  assert.equal(updated.status, 'registered');
+  assert.equal((await fetch(oldUrl)).status, 404, 'old asset cannot bypass current snapshot');
+  const current = await h.service.instructions(updated.appId!, 'agent');
+  assert.notEqual(current.distribution.sha256, oldGuide.distribution.sha256);
+  assert.equal((await fetch(String(current.distribution.url))).status, 200);
+});
+
+test('managed publisher packages explicitly declared files without providing GitLab credentials to consumers', async t => {
+  const temp = await tempDirectory();
+  const h = await performanceHarness(0, { openDatabase, createApp: (config, db) => createApp({ ...config, dataDir: temp }, db) });
+  t.after(async () => { await h.close(); await removeTemp(temp); });
+  const value = bundle();
+  const manifestFile = value.files.find(item => item.path === 'ai-app.json')!;
+  const doc: any = JSON.parse(Buffer.from(manifestFile.content, 'base64').toString());
+  doc.entries[1].distribution = { type: 'source', files: ['src/hello.mjs'] };
+  manifestFile.content = Buffer.from(JSON.stringify(doc)).toString('base64');
+  value.files.push({ path: 'src/hello.mjs', content: Buffer.from('console.log("managed")').toString('base64') });
+  const { result } = await h.submit(value);
+  assert.equal(result.status, 'preview_ready', JSON.stringify(result.error));
+  assert.equal(result.preview.distributions[0].files[0].path, 'src/hello.mjs');
+  const confirmed = await h.confirm(result);
+  assert.equal(confirmed.status, 'registered', JSON.stringify(confirmed.error));
+  const guide = await h.service.instructions(confirmed.appId, 'agent');
+  const response = await fetch(String(guide.distribution.url));
+  assert.equal(response.status, 200);
+  assert.equal(inspectZip(Buffer.from(await response.arrayBuffer()))['src/hello.mjs'].text, 'console.log("managed")');
+  assert.ok(!JSON.stringify(guide).includes(h.config.managedPublishing.token));
+  assert.notEqual((await readFile(join(temp, 'distribution', `${guide.distribution.sha256}.zip`))).length, 0);
+});

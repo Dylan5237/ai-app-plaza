@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from 'node:util';
 import { DomainError } from "./errors.js";
 import { GitLabConcurrency, gitlabConcurrency } from "./gitlab-concurrency.js";
-import { decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath, type AppManifest } from "./manifest.js";
+import { decodeUtf8, manifestJson, normalizeProjectVersion, parseStrictJson, validateRepoPath, type AppManifest, type StoredAppManifest } from "./manifest.js";
+import { hasConflictingInstallSource, isDependencyManifestPath, isInstallRelevantPath, makeDistributionPackage, MAX_DISTRIBUTION_BYTES, MAX_DISTRIBUTION_FILE_BYTES,
+  MAX_DISTRIBUTION_FILES, validateDistributionBytes, validateDistributionPath, type DistributionPackage } from './distribution.js';
+import { legacySourceRoot } from './legacy-distribution.js';
 
 export interface SourceInput {
   projectId: string | number;
@@ -26,6 +30,7 @@ export interface LoadedSource {
   version: string;
   source: AppSource;
   sourceCreatedAt: string;
+  distributions: DistributionPackage[];
 }
 
 interface GitLabUser {
@@ -57,6 +62,7 @@ interface GitLabRelease {
 
 interface GitLabTreeEntry {
   name?: string;
+  path?: string;
   type?: string;
   mode?: string;
 }
@@ -73,7 +79,8 @@ const MAX_API_BYTES = 1024 * 1024;
 const MAX_TREE_PAGES = 10;
 const REQUEST_TIMEOUT_MS = 8_000;
 const LOAD_TIMEOUT_MS = 30_000;
-const MAX_LOAD_REQUESTS = 80;
+// Explicit package files can require one immutable blob read each, in addition to bounded tree pages.
+const MAX_LOAD_REQUESTS = 1600;
 
 interface RequestBudget {
   deadline: number;
@@ -124,6 +131,85 @@ export class GitLabSourceReader {
     const budget = this.context();
     try { return await this.loadSource(input, token, budget); }
     finally { await this.finish(budget); }
+  }
+
+  /** Read only the catalog's existing immutable snapshot with the service credential. */
+  async loadLegacySnapshot(input: {
+    projectId: string; appKey: string; manifestPath: string; commitSha: string; projectUrl: string;
+    digest: string; manifest: StoredAppManifest; documents: Record<string, string>;
+  }, token: string): Promise<{ files: Map<string, Uint8Array>; executable: Set<string> }> {
+    const budget = this.context();
+    // A historical project can contain hundreds of fixed files; retain per-request and concurrency limits.
+    budget.deadline = performance.now() + 180_000;
+    try {
+      const projectId = validateProjectId(input.projectId);
+      const manifestPath = validateRepoPath(input.manifestPath, 'Manifest 路径');
+      if (!/^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(input.commitSha)) throw new DomainError(400, 'VALIDATION_FAILED', '固定提交标识无效。');
+      const project = await this.getProject(projectId, token, budget);
+      const projectUrl = checkedProjectUrl(project.web_url, this.baseUrl);
+      if (String(project.id) !== projectId || projectUrl !== input.projectUrl.replace(/\/$/, '')) {
+        throw new DomainError(409, 'SOURCE_MISMATCH', '目录项目身份与固定源码不一致。');
+      }
+      const commit = await this.getJson<GitLabCommit>(`api/v4/projects/${projectId}/repository/commits/${input.commitSha}`, token, budget);
+      if (commit.id?.toLowerCase() !== input.commitSha) throw new DomainError(409, 'SOURCE_MISMATCH', '目录固定提交不可确认。');
+      const manifestBytes = await this.readRegularBlob(projectId, manifestPath, input.commitSha, token, MAX_MANIFEST_BYTES, budget);
+      const manifest = parseStrictJson(decodeUtf8(manifestBytes, 'Manifest'));
+      if (!isDeepStrictEqual(manifest, input.manifest) || input.manifest.appKey !== input.appKey) {
+        throw new DomainError(409, 'SOURCE_MISMATCH', '目录资料与固定源码不一致。');
+      }
+      const documentPaths = new Set<string>([input.manifest.docs.readme, input.manifest.docs.usage]);
+      for (const entry of input.manifest.entries) if (entry.kind === 'agent') documentPaths.add(entry.instructionsPath);
+      const documentBytes = new Map<string, Uint8Array>();
+      for (const path of [...documentPaths].sort()) {
+        const bytes = await this.readRegularBlob(projectId, validateRepoPath(path, '说明路径'), input.commitSha, token, MAX_DOCUMENT_BYTES, budget);
+        if (decodeUtf8(bytes, '共享说明') !== input.documents[path]) throw new DomainError(409, 'SOURCE_MISMATCH', '目录说明与固定源码不一致。');
+        documentBytes.set(path, bytes);
+      }
+      if (digestFiles(new Map([[manifestPath, manifestBytes], ...documentBytes])) !== input.digest) {
+        throw new DomainError(409, 'SOURCE_MISMATCH', '目录确认摘要与固定源码不一致。');
+      }
+      const nested = legacySourceRoot(manifestPath, input.manifest);
+      const tree: GitLabTreeEntry[] = [];
+      for (let page = 1; page <= MAX_TREE_PAGES; page++) {
+        const url = this.apiUrl(`api/v4/projects/${projectId}/repository/tree`);
+        url.searchParams.set('ref', input.commitSha); url.searchParams.set('recursive', 'true');
+        url.searchParams.set('per_page', '100'); url.searchParams.set('page', String(page));
+        const rows = await this.getJson<GitLabTreeEntry[]>(url, token, budget);
+        if (!Array.isArray(rows)) throw new DomainError(502, 'SOURCE_UNAVAILABLE', 'GitLab 文件树格式无效。');
+        tree.push(...rows);
+        if (rows.length < 100) break;
+        if (page === MAX_TREE_PAGES) throw new DomainError(400, 'VALIDATION_FAILED', '固定源码文件树超过刷新上限。');
+      }
+      const paths: Array<{ path: string; mode: string }> = [];
+      for (const item of tree) {
+        if (item.type === 'tree') continue;
+        const path = validateRepoPath(item.path, '固定源码路径');
+        if (!path.startsWith(nested)) continue;
+        if (item.type !== 'blob' || !['100644', '100755'].includes(item.mode ?? '')) {
+          throw new DomainError(400, 'VALIDATION_FAILED', '固定源码包含链接或子模块，不能自动分发。');
+        }
+        paths.push({ path, mode: item.mode! });
+      }
+      if (!paths.length || paths.length > MAX_DISTRIBUTION_FILES) throw new DomainError(400, 'VALIDATION_FAILED', '固定源码文件数量超出分发范围。');
+      paths.sort((a, b) => a.path.localeCompare(b.path));
+      const files = new Map<string, Uint8Array>();
+      const executable = new Set<string>();
+      let total = 0;
+      for (let index = 0; index < paths.length; index += 3) {
+        const results = await Promise.all(paths.slice(index, index + 3).map(async item => {
+          const bytes = documentBytes.get(item.path) ?? (item.path === manifestPath ? manifestBytes :
+            await this.readRegularBlob(projectId, item.path, input.commitSha, token, MAX_DISTRIBUTION_FILE_BYTES, budget));
+          return { ...item, bytes };
+        }));
+        for (const item of results) {
+          total += item.bytes.byteLength;
+          if (total > MAX_DISTRIBUTION_BYTES) throw new DomainError(400, 'VALIDATION_FAILED', '固定源码超过分发大小限制。');
+          files.set(item.path, item.bytes);
+          if (item.mode === '100755') executable.add(item.path);
+        }
+      }
+      return { files, executable };
+    } finally { await this.finish(budget); }
   }
 
   /** One authorization scope per submission/confirmation. No cross-request cache. */
@@ -226,9 +312,50 @@ export class GitLabSourceReader {
       }
     }
 
+    const distributionPaths = new Set<string>();
+    for (const entry of manifest.entries) {
+      if (entry.kind !== 'agent' || !entry.distribution) continue;
+      if (hasConflictingInstallSource(documents[entry.instructionsPath]!, this.baseUrl.href)) {
+        throw new DomainError(400, 'VALIDATION_FAILED', 'Agent 安装说明仍引用仓库获取命令或 GitLab 来源，请修正为广场分发包安装步骤。');
+      }
+      for (const path of entry.distribution.files) distributionPaths.add(validateDistributionPath(path));
+    }
+    if (distributionPaths.size > MAX_DISTRIBUTION_FILES) throw new DomainError(400, 'VALIDATION_FAILED', '分发文件数量超过 1000 个。');
+    let distributionBytesTotal = 0;
+    const distributionFiles = new Map<string, Uint8Array>();
+    const executableFiles = new Set<string>();
+    const readDistributionFile = async (filePath: string) => {
+      const mode = await this.assertRegularFile(projectId, filePath, commitSha, token, budget);
+      const bytes = documentBytes.get(filePath) ?? (filePath === manifestPath ? manifestBytes :
+        await this.readRegularBlob(projectId, filePath, commitSha, token, MAX_DISTRIBUTION_FILE_BYTES, budget));
+      validateDistributionBytes(filePath, bytes, token);
+      if (isInstallRelevantPath(filePath)
+          && hasConflictingInstallSource(Buffer.from(bytes).toString('utf8'), this.baseUrl.href, isDependencyManifestPath(filePath))) {
+        throw new DomainError(400, 'VALIDATION_FAILED', '分发文件的安装脚本或依赖仍引用仓库获取命令或 GitLab，请先补齐可用依赖。');
+      }
+      distributionBytesTotal += bytes.byteLength;
+      if (distributionBytesTotal > MAX_DISTRIBUTION_BYTES) throw new DomainError(400, 'VALIDATION_FAILED', '分发文件总大小不能超过 20 MiB。');
+      return { filePath, bytes, mode };
+    };
+    const sortedPaths = [...distributionPaths].sort();
+    for (let index = 0; index < sortedPaths.length; index += 3) {
+      const loaded = await Promise.all(sortedPaths.slice(index, index + 3).map(readDistributionFile));
+      for (const { filePath, bytes, mode } of loaded) {
+        distributionFiles.set(filePath, bytes);
+        if (mode === '100755') executableFiles.add(filePath);
+      }
+    }
+    const distributions = manifest.entries.flatMap(entry => {
+      if (entry.kind !== 'agent' || !entry.distribution) return [];
+      const files = new Map(entry.distribution.files.map(path => [path, distributionFiles.get(path)!]));
+      return [makeDistributionPackage(entry.id, files, executableFiles)];
+    });
+
     const digest = digestFiles(new Map([
       [manifestPath, manifestBytes],
       ...documentBytes,
+      ...distributionFiles,
+      ...distributions.map(pack => [`\u0000distribution:${pack.entryId}`, pack.bytes] as [string, Uint8Array]),
     ]));
     const sourceCreatedAt = validIsoDate(project.created_at);
     if (!sourceCreatedAt) {
@@ -248,6 +375,7 @@ export class GitLabSourceReader {
       version: manifest.projectVersion,
       source,
       sourceCreatedAt,
+      distributions,
     };
   }
 
@@ -276,14 +404,14 @@ export class GitLabSourceReader {
     }
   }
 
-  private async assertRegularFile(projectId: string, filePath: string, commitSha: string, token: string, budget: RequestBudget): Promise<void> {
+  private async assertRegularFile(projectId: string, filePath: string, commitSha: string, token: string, budget: RequestBudget): Promise<string> {
     const segments = filePath.split("/");
     let parent = "";
     for (let index = 0; index < segments.length; index++) {
       const name = segments[index]!;
       const entry = await this.findTreeEntry(projectId, parent, name, commitSha, token, budget);
       const isFile = index === segments.length - 1;
-      if (isFile && entry.type === "blob" && ["100644", "100755"].includes(entry.mode ?? "")) return;
+      if (isFile && entry.type === "blob" && ["100644", "100755"].includes(entry.mode ?? "")) return entry.mode!;
       if (!isFile && entry.type === "tree" && entry.mode === "040000") {
         parent = parent ? `${parent}/${name}` : name;
         continue;
