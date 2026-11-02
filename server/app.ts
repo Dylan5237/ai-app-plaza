@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import staticPlugin from '@fastify/static';
 import rateLimit from '@fastify/rate-limit';
 import { access, readFile } from 'node:fs/promises';
@@ -14,6 +14,7 @@ import { publisherScript } from './managed-publish-contract.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
 import { registerPreviewAdmin } from './preview-admin.js';
 import { registerManagement } from './management.js';
+import { parseHttpsOrigin, publicClientRateKey, publicOriginForRequest } from './public-origins.js';
 
 const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
@@ -58,6 +59,7 @@ function parseManagedCandidate(value: unknown) {
 
 export async function createApp(config: Config, db: Database) {
   assertManagementConfig(config);
+  parseHttpsOrigin(config.httpsOrigin, config);
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience,
     distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret }) : undefined;
@@ -88,16 +90,18 @@ export async function createApp(config: Config, db: Database) {
     cleanupTimer.unref();
   });
   app.addHook('onClose', async () => { clearInterval(cleanupTimer); await cleanupInFlight; });
-  if (config.rateLimit) await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+  if (config.rateLimit) await app.register(rateLimit, { max: 120, timeWindow: '1 minute',
+    ...(config.httpsOrigin ? { keyGenerator: (request: FastifyRequest) => publicClientRateKey(config, request) } : {}) });
   app.addHook('onRequest', async (request, reply) => {
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer');
     if (request.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
     const requestOrigin = request.headers.origin;
-    if (requestOrigin && requestOrigin !== config.publicOrigin) {
+    const expectedOrigin = publicOriginForRequest(config, request);
+    if (requestOrigin && requestOrigin !== expectedOrigin) {
       return reply.code(403).send({ error: { code: 'ORIGIN_DENIED', message: '请从本门户页面操作' } });
     }
     // Host checking also prevents websites using DNS rebinding to address a local portal.
-    if (request.headers.host !== new URL(config.publicOrigin).host) {
+    if (!expectedOrigin) {
       return reply.code(403).send({ error: { code: 'HOST_DENIED', message: '访问地址与 PUBLIC_ORIGIN 不一致' } });
     }
     const path = request.url.split('?')[0];
@@ -161,8 +165,12 @@ export async function createApp(config: Config, db: Database) {
     return service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage });
   });
   app.get('/api/tags', async () => ({ tags: await service.tags(), maxTagsPerApp: 3 }));
-  app.get('/api/entry-policies', async () => ({ policies: config.fuxiEntry ? [config.fuxiEntry] : [] }));
-  app.get('/api/integration/fuxi-test/config', async () => config.fuxiTest || { enabled: false, plazaOrigin: config.publicOrigin });
+  app.get('/api/entry-policies', async request => ({ policies: config.fuxiEntry &&
+    (!config.httpsOrigin || config.fuxiEntry.plazaOrigin === publicOriginForRequest(config, request)) ? [config.fuxiEntry] : [] }));
+  app.get('/api/integration/fuxi-test/config', async request => {
+    const origin = publicOriginForRequest(config, request)!;
+    return config.fuxiTest && (!config.httpsOrigin || config.fuxiTest.plazaOrigin === origin) ? config.fuxiTest : { enabled: false, plazaOrigin: origin };
+  });
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
   app.get('/api/apps/:id/publish-contract', async (request) => {
     const id = publicationId(request.params);

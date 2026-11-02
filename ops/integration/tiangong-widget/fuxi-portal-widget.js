@@ -182,7 +182,7 @@ export function startPortalWidget(host, profile) {
   button.addEventListener('click', open)
   host.addEventListener('message', receive)
   host.addEventListener('pagehide', dispose)
-  show('点击进入伏羲测试环境。')
+  show('点击进入伏羲。')
   return { dispose }
 }
 

@@ -1,5 +1,27 @@
 # 从广场进入伏羲
 
+## 保留 HTTP 的新增 HTTPS 入口
+
+本节为本地代码候选的配置说明，不表示已经正式部署或启用。广场仍使用同一后端和数据库，原 `PUBLIC_ORIGIN`、MCP、作者发布回执与规范下载指引继续沿用原地址。
+
+可显式增加 `PLAZA_HTTPS_ORIGIN`，限定为原 HTTP 入口的同一固定私网 IPv4、HTTPS 和可区分的独立端口。不设置时完全沿用原入口行为；路径、凭据、查询、片段、其他主机、IP 别名和 Host 不可区分的端口配置均拒绝。
+
+```dotenv
+PUBLIC_ORIGIN=http://192.168.2.145:16090
+ALLOW_INSECURE_PORTAL=1
+PLAZA_HTTPS_ORIGIN=https://192.168.2.145:16490
+```
+
+HTTPS 由固定网关终结。网关须以 `127.0.0.1` 为源地址连接现有后端，保留浏览器的 Host 和 Origin，并用实际连接客户端地址覆盖单值 `X-Real-IP`；不得透传客户端自带值。Nginx 对应核心设置为 `proxy_bind 127.0.0.1`、`proxy_set_header Host $http_host`、`proxy_set_header Origin $http_origin` 和 `proxy_set_header X-Real-IP $remote_addr`。网关自身也须拒绝不匹配的入口 Host，配置证书和合适的 HTTPS 安全头，并分别准备恢复步骤。
+
+应用保留 `trustProxy:false`：只有来自回环代理、匹配 HTTPS Host 且带有效客户 IP 的连接才能使用该别名；Origin 必须与选中的入口完全一致。外部伪造 X-Forwarded-* 或 X-Real-IP 不会获得该入口。逐客户限流保留 IPv4、IPv4-mapped 和 IPv6 /64 分桶语义，不把全部 HTTPS 使用者合并到代理地址的同一个桶。
+
+配置 `portal-widget` 时，策略绑定 HTTPS 别名，且只在这个入口返回和重检；原 HTTP 目录继续提供普通入口。独立 HTTP 测试配置也不会出现在 HTTPS 正式入口。固定接收方、两个服务端开关、可信点击和一次性交接约束保持；广场不接收天宫凭据。
+
+新增 HTTPS 入口需匹配 IP 的受信任证书。维护者须分别核对使用者浏览器信任、天宫来源证书和伏羲后端核验接口；本地合成浏览器预授存储权限不能代替真实用户许可。停用时关闭新入口的服务端策略并撤销新增网关配置，保留原 HTTP 地址及最新业务数据。
+
+## 入口边界与既有接入说明
+
 本接入只负责伏羲入口和天宫凭证交接。广场保持匿名目录，不保存用户库、不解析用户角色，不调用跨域身份兑换接口。伏羲验证门户凭证、建立或查找账号映射并管理自身会话。对应需求为 [#78](https://github.com/Dylan5237/ai-app-plaza/issues/78)，伏羲接收方合同为 [#111](https://github.com/Dylan5237/prototype-manager/issues/111)。
 
 ## 部署前核实来源

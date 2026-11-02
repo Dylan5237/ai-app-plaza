@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, request as requestHttp } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
@@ -9,6 +9,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { startHarness } from './helpers/harness.js';
 import { seedTagCatalog } from './helpers/tag-catalog.js';
 import { loadFuxiEntryPolicy } from '../server/fuxi-entry.js';
+import { parseHttpsOrigin } from '../server/public-origins.js';
 
 // Both servers and all identities are isolated local fixtures; never use a live URL.
 const fixtureRoot = process.env.PLAZA_FUXI_FIXTURE_ROOT;
@@ -22,6 +23,33 @@ const js = await readFile('ops/integration/tiangong-widget/fuxi-portal-widget.js
 const css = await readFile('ops/integration/tiangong-widget/fuxi-portal-widget.css', 'utf8');
 assert.equal(JSON.parse(await readFile('ops/integration/tiangong-widget/fuxi-widget-test-policy.json', 'utf8')).enabled, false);
 const harness = await startHarness();
+// Node fetch rewrites Host to the destination URL. A reverse proxy must send
+// the browser's public Host unchanged, so this fixture uses the HTTP client.
+async function ingressRequest(path: string, headers: Record<string, string>, method = 'GET', body?: Buffer | null) {
+  return new Promise<{ status: number; headers: Record<string, string>; body: Buffer }>((accept, reject) => {
+    const request = requestHttp(`${harness.origin}${path}`, { method, headers }, response => {
+      const chunks: Buffer[] = []; let bytes = 0;
+      response.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > 8 * 1024 * 1024) request.destroy(new Error('fixture response too large'));
+        else chunks.push(Buffer.from(chunk));
+      });
+      response.once('error', reject);
+      response.once('end', () => {
+        const responseHeaders: Record<string, string> = {};
+        for (const [key, value] of Object.entries(response.headers)) {
+          if (value !== undefined && !['connection', 'transfer-encoding', 'keep-alive', 'content-length'].includes(key)) {
+            responseHeaders[key] = Array.isArray(value) ? value.join(', ') : value;
+          }
+        }
+        accept({ status: response.statusCode || 500, headers: responseHeaders, body: Buffer.concat(chunks) });
+      });
+    });
+    request.setTimeout(10000, () => request.destroy(new Error('fixture ingress timeout')));
+    request.once('error', reject);
+    request.end(body || undefined);
+  });
+}
 let portalOrigin = '', fuxiOrigin = '', appId = '', portalEnabled = true;
 let portalPolicyRequests = 0, portalPolicyResponses = 0;
 let policyNetworkAttempts = 0, injectedPolicyFailures = 0;
@@ -350,14 +378,23 @@ try {
 
   // Different synthetic HTTPS sites, with the real plaza page and portal widget.
   // Only the Fuxi receiver is synthetic here; the previous checks use real Fuxi code.
-  const sitePortal = 'https://portal-fixture.test', sitePlaza = 'https://plaza-fixture.test', siteFuxi = 'https://fuxi-fixture.test';
+  const sitePortal = 'https://portal-fixture.test', siteFuxi = 'https://fuxi-fixture.test';
+  const sitePlaza = `https://127.0.0.1:${new URL(harness.origin).port === '44473' ? '44474' : '44473'}`;
+  harness.config.httpsOrigin = parseHttpsOrigin(sitePlaza, { local: true, publicOrigin: harness.origin });
   harness.config.fuxiEntry = loadFuxiEntryPolicy({ PLAZA_FUXI_ENABLED: '1', PLAZA_FUXI_APP_ID: appId,
     PLAZA_FUXI_ENTRY_ID: entryId, PLAZA_FUXI_ORIGIN: siteFuxi, PLAZA_FUXI_MODE: 'portal-widget',
     PLAZA_FUXI_WIDGET_URL: `${sitePortal}/fuxi-portal-widget.html`,
   }, { local: false, publicOrigin: sitePlaza });
+  const aliasHeaders = { host: new URL(sitePlaza).host, origin: sitePlaza, 'x-real-ip': '198.51.100.30' };
+  const admitted = await ingressRequest('/api/health', aliasHeaders);
+  assert.equal(admitted.status, 200);
+  const crossed = await ingressRequest('/api/health', { ...aliasHeaders, origin: harness.origin });
+  assert.equal(crossed.status, 403);
+  const legacyPolicies = await fetch(`${harness.origin}/api/entry-policies`);
+  assert.deepEqual(await legacyPolicies.json(), { policies: [] });
   const siteContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   await siteContext.grantPermissions(['storage-access'], { origin: sitePortal });
-  let siteReads = 0; const siteViolations: string[] = [], siteResponses: string[] = [];
+  let siteReads = 0, aliasBackendRequests = 0; const siteViolations: string[] = [], siteResponses: string[] = [];
   await siteContext.exposeFunction('__fixtureSiteRead', () => { siteReads++; });
   await siteContext.addInitScript(origin => {
     if (location.origin !== origin) return;
@@ -379,13 +416,13 @@ try {
     if (url.origin === sitePortal && url.pathname === '/fuxi-widget-test-policy.json') return send('application/json',
       JSON.stringify({ enabled: true, portalOrigin: sitePortal, plazaOrigin: sitePlaza, fuxiOrigin: siteFuxi, appId, entryId }));
     if (url.origin === sitePlaza) {
-      // This in-memory HTTPS fixture forwards to the loopback backend; adapt
-      // Host/Origin only inside the test proxy to satisfy its local checks.
-      const headers: Record<string, string> = { ...request.headers(), host: new URL(harness.origin).host };
-      if (headers.origin) headers.origin = harness.origin;
-      const response = await route.fetch({ url: `${harness.origin}${url.pathname}${url.search}`, headers });
-      siteResponses.push(`${url.pathname}: ${response.status()}`);
-      return route.fulfill({ response });
+      // Match the planned gateway: preserve HTTPS Host/Origin and overwrite
+      // X-Real-IP. The real backend validates its configured HTTPS ingress.
+      const headers: Record<string, string> = { ...request.headers(), host: new URL(sitePlaza).host, 'x-real-ip': '198.51.100.30' };
+      const response = await ingressRequest(`${url.pathname}${url.search}`, headers, request.method(), request.postDataBuffer());
+      aliasBackendRequests++;
+      siteResponses.push(`${url.pathname}: ${response.status}`);
+      return route.fulfill({ status: response.status, headers: response.headers, body: response.body });
     }
     if (url.origin === siteFuxi && url.pathname === '/auth/tiangong') return send('text/html', `<!doctype html><p id="result">waiting</p><script>
       const sourceWindow=window.opener;
@@ -416,8 +453,9 @@ try {
   const sitePopup = await sitePopupPromise;
   await sitePopup.locator('#result').filter({ hasText: 'accepted' }).waitFor({ timeout: 6000 });
   assert.equal(siteReads, 1); assert.deepEqual(siteViolations, []);
+  assert(aliasBackendRequests > 0, 'the real backend must serve the configured HTTPS ingress');
   console.log(`PASS 合成跨站 HTTPS 门户→真实广场页面→门户按钮一次点击 (${channel})`);
-  console.log(JSON.stringify({ syntheticHttps: true, realPlazaPage: true, syntheticFuxiReceiver: true,
+  console.log(JSON.stringify({ syntheticHttps: true, realPlazaPage: true, syntheticFuxiReceiver: true, configuredHttpsIngress: true, hostOriginPreserved: true, aliasBackendRequests,
     partitioningEnabled: true, storagePermissionGrantedForTest: true, violations: siteViolations.length }));
   await siteContext.close();
   }
