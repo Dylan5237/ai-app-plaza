@@ -45,6 +45,7 @@ onUnmounted(() => responder?.dispose())
 
 <style scoped>
 .fuxi-widget { display: block; border: 0; height: 30px; max-width: 100%; }
-.fuxi-widget--card { width: 92px; }
+/* Keep the portal's label on one line when the browser raises its minimum font size. */
+.fuxi-widget--card { width: 144px; flex-shrink: 0; }
 .fuxi-widget--detail { width: 100%; }
 </style>
