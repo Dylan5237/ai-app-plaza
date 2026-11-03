@@ -6,8 +6,9 @@ export interface FuxiEntryPolicy {
   plazaOrigin: string;
   enabled: boolean;
   fuxiOrigin?: string;
-  mode?: 'portal-widget';
+  mode?: 'portal-widget' | 'portal-parent';
   widget?: { url: string; portalOrigin: string };
+  portal?: { origin: string };
   credential?: { storage: 'localStorage' | 'sessionStorage'; key: string };
 }
 
@@ -48,13 +49,14 @@ export function loadFuxiEntryPolicy(
   env: NodeJS.ProcessEnv,
   context: { local: boolean; publicOrigin: string },
 ): FuxiEntryPolicy | undefined {
-  const names = ['ENABLED', 'APP_ID', 'ENTRY_ID', 'ORIGIN', 'CREDENTIAL_STORAGE', 'CREDENTIAL_KEY', 'ALLOW_INTRANET_HTTP', 'MODE', 'WIDGET_URL'];
+  const names = ['ENABLED', 'APP_ID', 'ENTRY_ID', 'ORIGIN', 'CREDENTIAL_STORAGE', 'CREDENTIAL_KEY', 'ALLOW_INTRANET_HTTP', 'MODE', 'WIDGET_URL', 'PORTAL_ORIGIN'];
   if (!names.some(name => Boolean(env[`PLAZA_FUXI_${name}`]))) return undefined;
   const invalid = () => new Error('伏羲入口配置无效，请核对固定应用、入口、来源及既有凭证存储配置');
   if (env.PLAZA_FUXI_ENABLED && !['0', '1'].includes(env.PLAZA_FUXI_ENABLED)) throw invalid();
   if (env.PLAZA_FUXI_ALLOW_INTRANET_HTTP && !['0', '1'].includes(env.PLAZA_FUXI_ALLOW_INTRANET_HTTP)) throw invalid();
   const mode = env.PLAZA_FUXI_MODE || 'storage';
-  if (!['storage', 'portal-widget'].includes(mode)) throw invalid();
+  if (!['storage', 'portal-widget', 'portal-parent'].includes(mode)) throw invalid();
+  if (env.PLAZA_FUXI_PORTAL_ORIGIN && mode !== 'portal-parent') throw invalid();
   const appId = env.PLAZA_FUXI_APP_ID || '';
   const entryId = env.PLAZA_FUXI_ENTRY_ID || '';
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(appId) ||
@@ -73,13 +75,23 @@ export function loadFuxiEntryPolicy(
     (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) || (octets[0] === 192 && octets[1] === 168));
   if (url.protocol === 'http:' && !(context.local && loopback) &&
     !(env.PLAZA_FUXI_ALLOW_INTRANET_HTTP === '1' && privateIpv4)) throw invalid();
-  if (mode === 'portal-widget') {
+  if (mode === 'portal-widget' || mode === 'portal-parent') {
     if (env.PLAZA_FUXI_CREDENTIAL_STORAGE || env.PLAZA_FUXI_CREDENTIAL_KEY) throw invalid();
-    // A cross-site embedded portal needs a secure context for storage access.
+    // Both portal bridges require secure deployment origins.
     // Loopback HTTP is reserved for isolated local fixtures.
     const plaza = new URL(context.publicOrigin);
     if (plaza.protocol !== 'https:' && !(context.local && plaza.protocol === 'http:' &&
       ['localhost', '127.0.0.1', '[::1]'].includes(plaza.hostname))) throw invalid();
+    if (mode === 'portal-parent') {
+      if (env.PLAZA_FUXI_WIDGET_URL || url.protocol !== 'https:' && !(context.local && loopback)) throw invalid();
+      const value = env.PLAZA_FUXI_PORTAL_ORIGIN || '';
+      let portal: URL;
+      try { portal = new URL(value); } catch { throw invalid(); }
+      const localPortal = ['localhost', '127.0.0.1', '[::1]'].includes(portal.hostname);
+      if (value !== portal.origin || portal.username || portal.password || localPortal && !context.local ||
+        portal.protocol !== 'https:' && !(context.local && localPortal && portal.protocol === 'http:')) throw invalid();
+      return { ...policy, fuxiOrigin: url.origin, mode: 'portal-parent', portal: { origin: portal.origin } };
+    }
     const widgetValue = env.PLAZA_FUXI_WIDGET_URL || '';
     let widget: URL;
     try { widget = new URL(widgetValue); } catch { throw invalid(); }

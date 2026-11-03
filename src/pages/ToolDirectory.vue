@@ -7,6 +7,8 @@ import AppPublicContent from '../components/AppPublicContent.vue'
 import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
 import FuxiPortalWidget from '../components/FuxiPortalWidget.vue'
+import PlatformOpenButton from '../components/PlatformOpenButton.vue'
+import PortalParentEntryButton from '../components/PortalParentEntryButton.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, safeHttpUrl } from '../lib/catalog.ts'
@@ -821,28 +823,28 @@ onUnmounted(() => {
               </div>
               <div class="app-card-footer">
                 <div class="app-card-author-action">
+                  <PortalParentEntryButton
+                    v-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))?.mode === 'portal-parent' && webEntryPolicy(app, platformEntry(app))?.enabled"
+                    :policy="webEntryPolicy(app, platformEntry(app))"
+                    :confirm-policy="confirmFuxiPolicy"
+                  />
                   <FuxiPortalWidget
-                    v-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))?.mode === 'portal-widget' && webEntryPolicy(app, platformEntry(app))?.enabled && webEntryPolicy(app, platformEntry(app))?.widget"
+                    v-else-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))?.mode === 'portal-widget' && webEntryPolicy(app, platformEntry(app))?.enabled && webEntryPolicy(app, platformEntry(app))?.widget"
                     :policy="webEntryPolicy(app, platformEntry(app))"
                     :confirm-policy="confirmFuxiPolicy"
                     variant="card"
                   />
-                  <button
+                  <PlatformOpenButton
                     v-else-if="catalogUsage(app) === 'platform' && webEntryPolicy(app, platformEntry(app))"
-                    class="platform-open-button"
                     data-testid="open-platform"
                     @click.stop="fuxiLauncher.launch(webEntryPolicy(app, platformEntry(app)))"
-                  >打开平台 <span aria-hidden="true">↗</span></button>
-                  <a
+                  />
+                  <PlatformOpenButton
                     v-else-if="catalogUsage(app) === 'platform' && platformEntry(app) && entryPolicies !== null"
-                    class="platform-open-button"
                     data-testid="open-platform"
                     :href="safeHttpUrl(platformEntry(app).url)"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    @click.stop
-                  >打开平台 <span aria-hidden="true">↗</span></a>
-                  <button v-else-if="catalogUsage(app) === 'platform'" class="platform-open-button" disabled>入口不可用</button>
+                  />
+                  <PlatformOpenButton v-else-if="catalogUsage(app) === 'platform'" disabled />
                   <span class="app-author">{{ appMaintainers(app) }}</span>
                 </div>
                 <div class="app-dates">
@@ -901,8 +903,15 @@ onUnmounted(() => {
           <div v-for="entry in selectedAppEntries" :key="entry.id" class="entry-action">
             <template v-if="entry.kind === 'web'">
               <span v-if="selectedAppEntries.length > 1 && entry.label" class="entry-label">{{ entry.label }}</span>
+              <PortalParentEntryButton
+                v-if="webEntryPolicy(selectedApp, entry)?.mode === 'portal-parent' && webEntryPolicy(selectedApp, entry)?.enabled"
+                :policy="webEntryPolicy(selectedApp, entry)"
+                :confirm-policy="confirmFuxiPolicy"
+                variant="detail"
+                data-testid="use-web"
+              />
               <FuxiPortalWidget
-                v-if="webEntryPolicy(selectedApp, entry)?.mode === 'portal-widget' && webEntryPolicy(selectedApp, entry)?.enabled && webEntryPolicy(selectedApp, entry)?.widget"
+                v-else-if="webEntryPolicy(selectedApp, entry)?.mode === 'portal-widget' && webEntryPolicy(selectedApp, entry)?.enabled && webEntryPolicy(selectedApp, entry)?.widget"
                 :policy="webEntryPolicy(selectedApp, entry)"
                 :confirm-policy="confirmFuxiPolicy"
                 variant="detail"
@@ -1106,7 +1115,7 @@ onUnmounted(() => {
 .usage-filter-button { min-height: 32px; padding: 5px 12px; border: 0; border-radius: 5px; background: transparent; color: #68778c; font: inherit; font-size: 13px; cursor: pointer; }
 .usage-filter-button:hover { background: #e9eef7; color: #315fbd; }
 .usage-filter-button.active { background: #e6eeff; color: #165dff; font-weight: 600; }
-.usage-filter-button:focus-visible, .platform-open-button:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
+.usage-filter-button:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
 .catalog-heading-row h2 { margin: 0; color: #253347; font-size: 17px; font-weight: 650; }
 .catalog-total { color: #8a94a3; font-size: 12px; }
 .catalog-group + .catalog-group { margin-top: var(--catalog-group-gap); }
@@ -1133,9 +1142,6 @@ onUnmounted(() => {
 .app-tag { max-width: calc((100% - 10px) / 3); min-width: 0; flex-shrink: 1; }
 .app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-top: auto; padding-top: 6px; border-top: 1px solid #edf0f3; }
 .app-card-author-action { display: flex; min-width: 0; align-items: center; gap: 10px; }
-.platform-open-button { display: inline-flex; flex: none; min-height: 30px; align-items: center; gap: 3px; padding: 5px 9px; border: 1px solid #165dff; border-radius: 4px; background: #165dff; color: #fff; font: inherit; font-size: 12px; line-height: 18px; text-decoration: none; cursor: pointer; }
-.platform-open-button:hover { background: #4080ff; border-color: #4080ff; }
-.platform-open-button:disabled { border-color: #d6dde7; background: #f1f3f6; color: #8993a2; cursor: not-allowed; }
 .app-author { max-width: 150px; overflow: hidden; color: #53647a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .app-dates { display: grid; gap: 2px; color: #8993a2; font-size: 11px; line-height: 1.4; text-align: right; white-space: nowrap; }
 .catalog-state { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 28px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; color: #748094; font-size: 13px; text-align: center; }

@@ -10,6 +10,7 @@ export function sameEntryPolicy(left: FuxiEntryPolicy, right?: FuxiEntryPolicy):
     left.plazaOrigin === right.plazaOrigin && left.fuxiOrigin === right.fuxiOrigin &&
     left.mode === right.mode && left.widget?.url === right.widget?.url &&
     left.widget?.portalOrigin === right.widget?.portalOrigin &&
+    left.portal?.origin === right.portal?.origin &&
     left.credential?.storage === right.credential?.storage && left.credential?.key === right.credential?.key);
 }
 
@@ -24,7 +25,7 @@ export function createFuxiLauncher(host: Window, onError: (message: string) => v
     launch(policy: FuxiEntryPolicy) {
       cancelActive?.();
       if (!policy.enabled) return fail('伏羲身份接入暂未启用，请联系广场维护者。');
-      if (policy.mode === 'portal-widget') return fail('请从天宫入口按钮进入伏羲。');
+      if (policy.mode === 'portal-widget' || policy.mode === 'portal-parent') return fail('请从天宫入口按钮进入伏羲。');
       if (!policy.fuxiOrigin || host.location.origin !== policy.plazaOrigin ||
         (!options.getCredential && (!policy.credential || !['localStorage', 'sessionStorage'].includes(policy.credential.storage)))) {
         return fail('当前页面没有可用的天宫身份接入配置。');
