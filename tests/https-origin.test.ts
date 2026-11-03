@@ -8,20 +8,36 @@ import { loadFuxiEntryPolicy } from '../server/fuxi-entry.js';
 
 const primary = 'http://127.0.0.1:4173';
 const secure = 'https://127.0.0.1:44173';
-async function fixture(rateLimit = false) {
+async function fixture(rateLimit = false, mode: 'portal-widget' | 'portal-parent' = 'portal-widget') {
   const db = await openDatabase({ path: 'memory://' });
   const config: Config = { host: '127.0.0.1', port: 4173, publicOrigin: primary, httpsOrigin: secure,
     gitlabUrl: 'https://gitlab.example.invalid', secret: 'synthetic-https-ingress-test-secret-only',
     dataDir: '', local: true, audience: 'fixture audience', staticDir: resolve('dist'), rateLimit };
   config.fuxiEntry = loadFuxiEntryPolicy({ PLAZA_FUXI_ENABLED: '1', PLAZA_FUXI_APP_ID: '7e17af1b-23d2-4a10-a8d5-32dd0ae51bef',
-    PLAZA_FUXI_ENTRY_ID: 'web', PLAZA_FUXI_MODE: 'portal-widget', PLAZA_FUXI_ORIGIN: 'https://127.0.0.1:44188',
-    PLAZA_FUXI_WIDGET_URL: 'https://portal.example.invalid/web/design-portal-web/fuxi-portal-widget.html' }, { local: true, publicOrigin: secure });
+    PLAZA_FUXI_ENTRY_ID: 'web', PLAZA_FUXI_MODE: mode, PLAZA_FUXI_ORIGIN: 'https://127.0.0.1:44188',
+    ...(mode === 'portal-parent' ? { PLAZA_FUXI_PORTAL_ORIGIN: 'https://portal.example.invalid' }
+      : { PLAZA_FUXI_WIDGET_URL: 'https://portal.example.invalid/web/design-portal-web/fuxi-portal-widget.html' }) }, { local: true, publicOrigin: secure });
   const { app } = await createApp(config, db);
   await app.ready();
   return { app, config, close: async () => { await app.close(); await db.close(); } };
 }
 const tlsHeaders = (client = '198.51.100.20') => ({ host: '127.0.0.1:44173', origin: secure, 'x-real-ip': client });
 const plainHeaders = { host: '127.0.0.1:4173', origin: primary };
+
+test('parent policy is returned only on the trusted HTTPS ingress without widget or credential fields', async t => {
+  const f = await fixture(false, 'portal-parent'); t.after(f.close);
+  const http = await f.app.inject({ url: '/api/entry-policies', headers: plainHeaders, remoteAddress: '198.51.100.20' });
+  assert.deepEqual(http.json(), { policies: [] });
+  const https = await f.app.inject({ url: '/api/entry-policies', headers: tlsHeaders(), remoteAddress: '127.0.0.1' });
+  assert.equal(https.statusCode, 200);
+  assert.equal(https.json().policies[0].mode, 'portal-parent');
+  assert.equal(https.json().policies[0].portal.origin, 'https://portal.example.invalid');
+  assert.equal(https.json().policies[0].widget, undefined);
+  assert.equal(https.json().policies[0].credential, undefined);
+  f.config.fuxiEntry = { ...f.config.fuxiEntry!, enabled: false };
+  const disabled = await f.app.inject({ url: '/api/entry-policies', headers: tlsHeaders(), remoteAddress: '127.0.0.1' });
+  assert.equal(disabled.json().policies[0].enabled, false);
+});
 
 test('legacy HTTP and the trusted HTTPS ingress share business APIs while retaining canonical publication URLs', async t => {
   const f = await fixture(); t.after(f.close);

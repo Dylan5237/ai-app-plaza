@@ -136,7 +136,8 @@ export async function loadConfig(env = process.env): Promise<Config> {
     throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
   }
   const previewAdmin = trustedProxyIp ? { trustedProxyIp } : undefined;
-  const entryOrigin = env.PLAZA_FUXI_MODE === 'portal-widget' ? httpsOrigin || publicOrigin : publicOrigin;
+  const portalMode = ['portal-widget', 'portal-parent'].includes(env.PLAZA_FUXI_MODE || '');
+  const entryOrigin = portalMode ? httpsOrigin || publicOrigin : publicOrigin;
   const fuxiEntry = loadFuxiEntryPolicy(env, { local, publicOrigin: entryOrigin });
   const fuxiTest = loadFuxiTestProfile(env, { local, publicOrigin });
   const config: Config = { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,

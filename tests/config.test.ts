@@ -35,6 +35,21 @@ test('portal widget uses the explicit HTTPS ingress while old-origin test config
   assert.equal(config.fuxiTest?.plazaOrigin, config.publicOrigin);
 });
 
+test('portal parent mode binds the HTTPS ingress for both enabled and disabled policies', async () => {
+  for (const enabled of ['1', '0']) {
+    const config = await loadConfig({ ...nonLocalRequirements, PUBLIC_ORIGIN: 'http://192.168.2.145:16090',
+      ALLOW_INSECURE_PORTAL: '1', PLAZA_HTTPS_ORIGIN: 'https://192.168.2.145:16490',
+      PLAZA_FUXI_ENABLED: enabled, PLAZA_FUXI_APP_ID: '7e17af1b-23d2-4a10-a8d5-32dd0ae51bef',
+      PLAZA_FUXI_ENTRY_ID: 'web', PLAZA_FUXI_MODE: 'portal-parent',
+      PLAZA_FUXI_ORIGIN: 'https://192.168.2.145:16488', PLAZA_FUXI_PORTAL_ORIGIN: 'https://portal.example.invalid' });
+    assert.equal(config.publicOrigin, 'http://192.168.2.145:16090');
+    assert.equal(config.fuxiEntry?.plazaOrigin, 'https://192.168.2.145:16490');
+    assert.equal(config.fuxiEntry?.enabled, enabled === '1');
+    assert.equal(config.fuxiTest?.plazaOrigin, config.publicOrigin);
+    if (enabled === '1') assert.equal(config.fuxiEntry?.portal?.origin, 'https://portal.example.invalid');
+  }
+});
+
 test('configuration never silently downgrades production or invents a GitLab source', async () => {
   await assert.rejects(loadConfig({ PLAZA_LOCAL: '1', NODE_ENV: 'production' }), /生产环境/);
   await assert.rejects(loadConfig({ PLAZA_LOCAL: '1', HOST: '0.0.0.0' }), /127.0.0.1/);
