@@ -23,9 +23,7 @@
     "test:distribution:browser": "node --import tsx tests/distribution-browser.ts",
     "dev:distribution-preview": "node --import tsx tests/distribution-browser.ts --serve",
     "test:prototype": "node tests/mock-v13-qa.cjs && node tests/publisher-v13-qa.cjs",
-    "test:admin-basics:browser": "node --import tsx tests/admin-basics-browser.ts",
-    "test:fuxi-entry:browser": "node --import tsx tests/fuxi-entry-browser.ts",
-    "test:tiangong-bridge:browser": "node --import tsx tests/tiangong-credential-browser.ts"
+    "test:admin-basics:browser": "node --import tsx tests/admin-basics-browser.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.8",

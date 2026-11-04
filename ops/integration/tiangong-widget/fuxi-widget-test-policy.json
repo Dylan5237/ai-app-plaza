@@ -1,8 +1,0 @@
-{
-  "enabled": false,
-  "portalOrigin": "https://192.168.5.143:17090",
-  "plazaOrigin": "https://plaza.example.invalid",
-  "fuxiOrigin": "http://192.168.2.145:16077",
-  "appId": "2b549391-93c5-4335-9c87-dd5677e59d3f",
-  "entryId": "platform-web"
-}

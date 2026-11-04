@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { resolve } from 'node:path';
-import { loadFuxiEntryPolicy, loadFuxiTestProfile, type FuxiEntryPolicy, type FuxiTestProfile } from './fuxi-entry.js';
 import { parseHttpsOrigin } from './public-origins.js';
 
 export interface Config {
@@ -13,8 +12,6 @@ export interface Config {
   previewAdmin?: { trustedProxyIp?: string };
   localManagement?: boolean;
   intranetManagement?: true;
-  fuxiEntry?: FuxiEntryPolicy;
-  fuxiTest?: FuxiTestProfile;
   httpsOrigin?: string;
 }
 
@@ -136,16 +133,10 @@ export async function loadConfig(env = process.env): Promise<Config> {
     throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
   }
   const previewAdmin = trustedProxyIp ? { trustedProxyIp } : undefined;
-  const portalMode = ['portal-widget', 'portal-parent'].includes(env.PLAZA_FUXI_MODE || '');
-  const entryOrigin = portalMode ? httpsOrigin || publicOrigin : publicOrigin;
-  const fuxiEntry = loadFuxiEntryPolicy(env, { local, publicOrigin: entryOrigin });
-  const fuxiTest = loadFuxiTestProfile(env, { local, publicOrigin });
   const config: Config = { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
     dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true,
     ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}),
-    ...(fuxiEntry ? { fuxiEntry } : {}),
     ...(httpsOrigin ? { httpsOrigin } : {}),
-    fuxiTest,
     ...(env.PLAZA_LOCAL_MANAGEMENT === '1' ? { localManagement: true } : {}),
     ...(env.PLAZA_INTRANET_MANAGEMENT === '1' ? { intranetManagement: true } : {}) };
   assertManagementConfig(config);
