@@ -1,10 +1,8 @@
 ## Summary
 
-<!-- What changed in product/library/docs **code**. One Phase / one task. -->
+<!-- What changed in product/library/docs code. One task / one PR. -->
 
-- Issue: #
-- Phase: #
-- Freeze ACK comment:
+- Task / Issue: #
 
 ## Type
 
@@ -14,7 +12,7 @@
 
 ## Worktree
 
-`{repo}/.worktrees/{issue-or-phase}-{owner}-{slug}`
+`{repo}/.worktrees/{issue-or-task}-{owner}-{slug}`
 
 Branch: `feat|fix|docs/{issue}-{slug}` → target `main` via **origin only**
 
@@ -22,28 +20,17 @@ Branch: `feat|fix|docs/{issue}-{slug}` → target `main` via **origin only**
 
 - In-scope items touched:
 - NON-GOALS respected:
-- Frozen interfaces unchanged? **yes / no** (if no → stop; open Architecture Exception)
+- Frozen interfaces unchanged? **yes / no** (if no → stop and discuss the contract change)
 
-## Test plan (implementation)
+## Test plan
 
-<!-- Automated/manual tests that **are code** belong here. Proof artifacts belong on an evidence PR. -->
-
--
-
-## Evidence
-
-This PR must **not** be the evidence pack. Link evidence PR or Issue proofs:
+<!-- Automated/manual tests that are code belong here. -->
 
 -
-
-## Merge ≠ PASS
-
-Merging this PR does not close the Phase. Disposer still records `PHASE ACCEPT` on the Phase issue.
 
 ## Checklist
 
 - [ ] One task, one branch, one worktree
-- [ ] No `evidence/`-only files mixed in
 - [ ] No push to `main`
 - [ ] Secrets not committed
-- [ ] **CC §1 updated** (or GitHub `BLOCKED:` if Command Center could not be edited)
+- [ ] Verification result recorded (command + outcome)

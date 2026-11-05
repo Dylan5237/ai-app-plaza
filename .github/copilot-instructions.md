@@ -1,5 +1,5 @@
-Read root `AGENTS.md` and `.agent-project-ops/PRINCIPLES.md` before changing repository state.
+Read root `AGENTS.md` before changing repository state. APO 已停用：不加载、调用或恢复 `.agent-project-ops/` 或历史 APO 流程。
 
-GitHub `origin` is the single write authority. Push topic branches to `origin` only. Projection remotes are same-history mirror/fast-forward only. Colleague GitLab is share-export (filtered business tree), not a projection. Unknown remotes fail closed. Use `.worktrees/` for task work and keep the primary checkout clean. PR merge is not Phase PASS; the named disposer owns Freeze/Accept/Exception decisions.
+GitHub `origin` 是唯一写入权威；主题分支只推 `origin`，通过 PR 合入 `main`。未知远端先核对用途，不绕过 GitHub 权威流程。
 
-On a fresh clone, verify `core.hooksPath=.githooks` before first push and run `.agent-project-ops/scripts/install-hooks.sh` if needed.
+首次 push 前确认 `core.hooksPath=.githooks`。`.githooks/pre-push` 是项目自有安全检查，不依赖 APO。

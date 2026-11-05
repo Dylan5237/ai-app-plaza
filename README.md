@@ -114,7 +114,7 @@ npm run test:prototype
 - `server/contracts/app-manifest.schema.json`：唯一完整可执行资料 Schema；`docs/integration/publishing.md`：统一接入规范；`docs/product/mainflow-scope.md`：本次最小范围。
 - `prototype/`、`scripts/apply_compact_portal.py` 与 `build_fuxi_portal.cjs`：历史 Mock 原型。不要直接修改生成的 `public/portal.html`。
 - `tests/`：领域、HTTP、MCP 进程和浏览器测试；`archive/`、`artifacts/`：本地历史和证据，不提交。
-- 唯一写入权威为 [GitHub origin](https://github.com/Dylan5237/ai-app-plaza)，APO 约定见 `AGENTS.md`。主题分支提交后按既有授权推送；不自动合并、部署或宣布 Phase Accept。
+- 唯一写入权威为 [GitHub origin](https://github.com/Dylan5237/ai-app-plaza)，协作约定见 `AGENTS.md`（APO 已停用）。主题分支提交后按既有授权推送；不自动合并或部署。
 
 技术依据：[GitLab 文件 API](https://docs.gitlab.com/api/repository_files/)、[PGlite 本地 PostgreSQL](https://pglite.dev/docs/)、[MCP 官方 SDK](https://modelcontextprotocol.io/docs/sdk)。本地嵌入式数据库用于开发和测试，生产配置使用外部 PostgreSQL；未声称已在公司环境完成上线。
 
