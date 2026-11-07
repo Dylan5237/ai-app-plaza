@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElDialog, ElMessage } from 'element-plus'
+import { ElDialog, ElMessage, ElPopover } from 'element-plus'
 import PlazaIcon from '../components/PlazaIcon.vue'
 import '../styles/design-tokens.css'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
@@ -107,6 +107,38 @@ const usageOptions = [
 ]
 const apps = ref([])
 const authorTags = ref([])
+const tagRow = ref(null)
+const tagMeasure = ref(null)
+const visibleTagCount = ref(0)
+const visibleTags = computed(() => authorTags.value.slice(0, visibleTagCount.value))
+const overflowTags = computed(() => authorTags.value.slice(visibleTagCount.value))
+let tagObserver
+let tagFrame = 0
+function measureTags() {
+  cancelAnimationFrame(tagFrame)
+  tagFrame = requestAnimationFrame(() => {
+    const row = tagRow.value, measure = tagMeasure.value
+    if (!row || !measure || !row.clientWidth) return
+    const chips = [...measure.querySelectorAll('.filter-chip')]
+    const gap = parseFloat(getComputedStyle(row).gap) || 0
+    const fixed = [...row.querySelectorAll(':scope > .tag-filter-label, :scope > .tag-all, :scope > .clear-filters')]
+    const available = row.clientWidth - fixed.reduce((sum, item) => sum + item.offsetWidth + gap, 0) - 8
+    const allWidth = chips.reduce((sum, chip) => sum + chip.offsetWidth + gap, 0)
+    let remaining = available - (allWidth > available ? measure.querySelector('.tag-more').offsetWidth + gap : 0)
+    let count = 0
+    for (const chip of chips) {
+      if (chip.offsetWidth + gap > remaining) break
+      remaining -= chip.offsetWidth + gap
+      count++
+    }
+    visibleTagCount.value = count
+  })
+}
+watch(tagRow, row => {
+  tagObserver?.disconnect()
+  if (row) { tagObserver = new ResizeObserver(measureTags); tagObserver.observe(row); measureTags() }
+}, { flush: 'post' })
+watch([authorTags, query, selectedTags, selectedUsage], async () => { await nextTick(); measureTags() }, { flush: 'post' })
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(8)
@@ -259,6 +291,8 @@ function scheduleCatalogLayout() {
 
 watch(directoryMain, (main) => {
   layoutObserver?.disconnect()
+  tagObserver?.disconnect()
+  cancelAnimationFrame(tagFrame)
   if (!main) return
   layoutObserver = new ResizeObserver(scheduleCatalogLayout)
   layoutObserver.observe(main)
@@ -811,7 +845,7 @@ onUnmounted(() => {
       <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
-          <div class="catalog-intro"><div class="catalog-heading-main"><h1 id="catalog-heading">发现好用的 AI 应用</h1><span class="catalog-total" aria-label="应用数量">{{ total }}</span></div><p>找到工作里的好帮手，分享你的新发现。</p></div>
+          <div class="catalog-intro"><div class="catalog-heading-main"><h1 id="catalog-heading">发现好用的 AI 应用</h1><span class="catalog-total" aria-label="应用数量">{{ total }}</span></div></div>
           <div class="catalog-controls">
             <div class="search-row">
               <el-input v-model="query" class="search-input" data-testid="search-input" clearable placeholder="搜索应用名称、用途或能力" aria-label="搜索应用名称、用途或能力" @keyup.enter="searchCatalog" @clear="searchCatalog"><template #prefix><PlazaIcon name="search"/></template></el-input>
@@ -821,12 +855,17 @@ onUnmounted(() => {
             <span class="catalog-sort" aria-label="排序：最近更新">最近更新 ↓</span>
           </div>
         </div>
-        <div class="tag-filter-row" aria-label="按作者标签筛选">
+        <div ref="tagRow" class="tag-filter-row" aria-label="按作者标签筛选">
           <span class="tag-filter-label">想做什么</span>
-          <button class="filter-chip" :class="{active: !selectedTags.length}" :aria-pressed="!selectedTags.length" @click="selectedTags = []; searchCatalog()">全部</button>
-          <button v-for="tag in authorTags" :key="tag" class="filter-chip" :class="{ active: selectedTags.includes(tag) }" data-testid="tag-chip" :aria-pressed="selectedTags.includes(tag)" @click="toggleTag(tag)">{{ tag }}</button>
+          <button class="filter-chip tag-all" :class="{active: !selectedTags.length}" :aria-pressed="!selectedTags.length" @click="selectedTags = []; searchCatalog()">全部</button>
+          <button v-for="tag in visibleTags" :key="tag" class="filter-chip" :class="{ active: selectedTags.includes(tag) }" data-testid="tag-chip" :aria-pressed="selectedTags.includes(tag)" @click="toggleTag(tag)">{{ tag }}</button>
+          <ElPopover v-if="overflowTags.length" trigger="click" placement="bottom-end" :width="280">
+            <template #reference><button class="tag-more" data-testid="tag-more" :aria-label="`还有 ${overflowTags.length} 个标签`">+{{ overflowTags.length }}</button></template>
+            <div class="overflow-tags" aria-label="更多标签"><button v-for="tag in overflowTags" :key="tag" class="filter-chip" :class="{ active: selectedTags.includes(tag) }" data-testid="tag-chip" :aria-pressed="selectedTags.includes(tag)" @click="toggleTag(tag)">{{ tag }}</button></div>
+          </ElPopover>
           <button v-if="query || selectedTags.length || selectedUsage !== 'all'" class="clear-filters" @click="clearFilters">清除筛选</button>
         </div>
+        <div ref="tagMeasure" class="tag-measure" aria-hidden="true" inert><span v-for="tag in authorTags" :key="tag" class="filter-chip">{{ tag }}</span><span class="tag-more">+{{ authorTags.length }}</span></div>
       </section>
       <section v-show="discoveryTab === 'catalog'" class="catalog-section" aria-labelledby="catalog-heading">
         <div ref="catalogHeading" class="catalog-heading-row"></div>
@@ -871,7 +910,7 @@ onUnmounted(() => {
       @close="closeDetail"
     >
       <header v-if="!props.management" class="public-detail-heading">
-        <button class="secondary-button" data-testid="return-discovery" @click="returnFromDetail">{{ detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : '返回应用目录' }}</button>
+        <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : '返回应用目录' }}</button>
         <h1 tabindex="-1" ref="detailHeading">应用详情</h1>
       </header>
       <template v-if="props.management" #header>
@@ -1071,10 +1110,11 @@ onUnmounted(() => {
 .discovery-tabs{display:flex;flex-direction:column;gap:4px}.discovery-tabs button{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 14px;border:0;border-radius:10px;background:transparent;color:var(--plaza-text);font:inherit;font-size:13px;text-align:left;cursor:pointer}.discovery-tabs button:hover{background:#efeee9}.discovery-tabs button[aria-pressed=true]{color:var(--plaza-brand);background:#e9edff;font-weight:650}
 .search-section{flex:none;margin:0 0 22px}.catalog-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:18px;margin-bottom:24px}.catalog-intro h1{font-size:24px;line-height:32px;font-weight:650;letter-spacing:-.35px;margin:0}.catalog-intro p{color:var(--plaza-muted);font-size:12px;margin:8px 0 0}.catalog-heading-main{display:flex;align-items:center;gap:14px}.catalog-total{display:grid;place-items:center;min-width:38px;min-height:34px;padding:4px 10px;border:1px solid var(--plaza-line);border-radius:6px;background:#fff;color:var(--plaza-muted);font-size:12px}
 .catalog-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.search-row{display:flex;gap:8px}.search-input{width:260px;--el-input-height:36px}.search-submit{min-height:36px}.catalog-usage-filter{display:flex;gap:2px;padding:3px;border:1px solid var(--plaza-line);border-radius:9px;background:#fff}.usage-filter-button{min-height:28px;padding:3px 9px;border:0;border-radius:6px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.usage-filter-button.active{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.catalog-sort{font-size:12px;color:var(--plaza-muted);white-space:nowrap}
-.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted)}.filter-chip{flex:none;min-height:32px;padding:5px 12px;border:1px solid transparent;border-radius:20px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;cursor:pointer}.filter-chip:hover{background:#eae9e5}.filter-chip.active{background:var(--plaza-ink);color:#fff}.clear-filters{border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;cursor:pointer}
+.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted)}.filter-chip,.tag-more{flex:none;min-height:32px;padding:5px 12px;border:1px solid transparent;border-radius:20px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:#eae9e5}.filter-chip.active{background:var(--plaza-ink);color:#fff}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
 .catalog-section{display:flex;flex:1;flex-direction:column;min-height:0}.catalog-heading-row{height:0;margin:0;flex:none}.catalog-results{flex:1 0 auto;position:relative}.catalog-refreshing{position:absolute;right:0;top:-20px;color:var(--plaza-muted);font-size:11px}.app-grid{display:grid;grid-template-columns:repeat(var(--catalog-columns),minmax(0,1fr));gap:var(--catalog-gap)}.pagination-row{display:flex;flex:0 0 48px;align-items:center;justify-content:center;margin-top:auto}
 .catalog-state{display:flex;min-height:200px;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:28px;border:1px solid var(--plaza-line);border-radius:16px;background:#fff;color:var(--plaza-muted);font-size:13px;text-align:center}.catalog-state strong{color:var(--plaza-ink);font-size:15px}.catalog-state p{margin:0 0 4px}.catalog-state.is-error{color:var(--plaza-danger);margin-bottom:16px}.empty-mark{font-size:27px}.catalog-notice{margin-bottom:12px;padding:9px 12px;border:1px solid #dce8dc;border-radius:9px;background:#f8fcf7;color:var(--plaza-success);font-size:12px}
 .public-detail{width:calc(100% - 252px);margin:28px 28px 28px 224px;padding:24px;border:1px solid var(--plaza-line);border-radius:16px;background:#fff}.public-detail-heading{display:flex;align-items:center;gap:20px;margin-bottom:24px}.public-detail-heading h1{margin:0;font-size:20px}.public-detail .detail-layout{height:calc(100vh - 240px)}.public-app-version{padding:3px 7px;color:#61748f;font-size:11px}
+.detail-return{min-height:40px;border-color:var(--plaza-brand);background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.detail-return:hover{background:#dce4ff}
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
 .detail-update-link { border: 0; background: none; color: #5d6d8a; font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }
 .detail-update-link:hover { color: #3d5bbb; text-decoration: underline; }
