@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -79,6 +79,11 @@ for (const format of ['Skill', 'CLI', 'MCP', '插件'] as const) {
 }
 const dualApp = await seedApp('dual', '双入口 Skill 应用', 'Skill', { comboTag: true, searchText: 'needle', dualMarker: true });
 
+if (process.argv.includes('--serve')) {
+  console.log(`PREVIEW_ORIGIN=${harness.origin}`);
+  await new Promise(() => {});
+}
+
 async function waitForCatalog(page: any) {
   await page.waitForLoadState('networkidle');
   await page.waitForFunction(() => {
@@ -87,12 +92,50 @@ async function waitForCatalog(page: any) {
   });
 }
 
+async function assertCardOverlay(card: any) {
+  await card.locator('.card-actions').evaluate(async (el: HTMLElement) => {
+    const deadline = performance.now() + 1500;
+    while (getComputedStyle(el).opacity !== '1') {
+      if (performance.now() > deadline) throw new Error('Card actions did not finish appearing');
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+  });
+  const layout = await card.evaluate((el: HTMLElement) => {
+    const actions = el.querySelector('.card-actions')!;
+    const row = el.querySelector('.card-action-buttons')!;
+    const [card, mask, buttonsRow, tags, ...buttons] = [el, actions, row, el.querySelector('.app-tags')!, ...row.children].map(node => {
+      const { x, y, width, height, bottom } = node.getBoundingClientRect();
+      return { x, y, width, height, bottom, background: getComputedStyle(node).backgroundColor };
+    });
+    return {
+      card, mask, row: buttonsRow, tags,
+      opacity: getComputedStyle(actions).opacity,
+      background: getComputedStyle(actions).backgroundImage,
+      buttons,
+    };
+  });
+  assert.equal(layout.opacity, '1', 'hover/focus reveals the actions');
+  for (const dimension of ['x', 'y', 'width', 'height'] as const) {
+    assert.ok(Math.abs(layout.card[dimension] - layout.mask[dimension]) <= 2, `the mask covers the full card (${dimension})`);
+  }
+  const stops = [...layout.background.matchAll(/rgba\(([^)]+)\)/g)].map(match => match[1].split(',').map(Number));
+  assert.equal(stops.length, 2, 'the mask uses the reviewed two-stop blue-gray gradient');
+  assert.deepEqual(stops, [[64, 83, 117, .54], [44, 62, 94, .62]], 'mask opacity remains at the approved light levels');
+  assert.ok(Math.abs(layout.row.x + layout.row.width / 2 - layout.card.x - layout.card.width / 2) <= 2, 'actions are centered horizontally');
+  assert.ok(Math.abs(layout.row.y + layout.row.height / 2 - layout.card.y - layout.card.height / 2) <= 2, 'actions are centered vertically');
+  assert.equal(layout.buttons.length, 2);
+  assert.ok(Math.abs(layout.buttons[0].y - layout.buttons[1].y) <= 1, 'primary and detail actions are side by side');
+  assert.ok(layout.buttons[0].x + layout.buttons[0].width < layout.buttons[1].x, 'primary action is on the left');
+  assert.ok(layout.buttons.every((button: { background: string }) => ['rgb(255, 255, 255)', 'rgba(255, 255, 255, 0.92)'].includes(button.background)), 'both actions use white button surfaces');
+  assert.ok(layout.row.bottom <= layout.tags.y, 'the centered actions leave tags independently clickable');
+}
+
 async function visibleCards(page: any): Promise<CardSnapshot[]> {
   return page.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => ({
     name: card.querySelector('.app-title')?.textContent?.trim() || '',
     usage: card.dataset.usage || null,
     formats: Array.from(card.querySelectorAll<HTMLElement>('[data-testid="app-format"]')).map(format => format.textContent?.trim() || ''),
-    hasDirectUse: Boolean(card.querySelector('[data-testid="use-agent"]')),
+    hasDirectUse: Boolean(card.querySelector('[data-testid="card-primary-agent"]')),
     hasPlatformLink: Boolean(card.querySelector('[data-testid="open-platform"]')),
   })));
 }
@@ -115,13 +158,14 @@ async function collectPages(page: any, usage: Usage, payload: ListResponse): Pro
       assert.equal(groups[0].testId, `catalog-group-${usage}`);
       assert.ok(groups[0].cardUsages.every(value => value === usage), 'the category section contains only its matching apps');
     }
+    assert.equal(await page.locator('.catalog-group-heading').count(), 0, 'filters never add another navigation or heading level');
     const currentCards = await visibleCards(page);
     assert.deepEqual(currentCards.map(card => card.name), payload.items.map(app => app.manifest.name), 'cards preserve the server page order');
     assert.ok(currentCards.every(card => card.usage === 'platform' || card.usage === 'agent'), 'every card declares its rendered category');
     assert.ok(currentCards.every(card => card.usage !== 'platform' || card.hasPlatformLink), 'platform cards keep their direct links in every view');
-    assert.ok(currentCards.every(card => card.usage !== 'agent' || (!card.hasDirectUse && !card.hasPlatformLink)), 'Agent cards keep setup in details in every view');
+    assert.ok(currentCards.every(card => card.usage !== 'agent' || (card.hasDirectUse && !card.hasPlatformLink)), 'Agent cards expose the author primary setup action in every view');
     if (usage !== 'all') assert.ok(currentCards.every(card => card.usage === usage), `${usage} filtering is applied to each server page`);
-    if (usage === 'agent') assert.ok(currentCards.every(card => !card.hasDirectUse && !card.hasPlatformLink), 'Agent cards keep use actions in details');
+    if (usage === 'agent') assert.ok(currentCards.every(card => card.hasDirectUse && !card.hasPlatformLink), 'Agent primary setup is directly available');
     cards.push(...currentCards);
 
     const pagination = page.getByTestId('pagination');
@@ -235,8 +279,9 @@ try {
   const allNames = allPages.map(card => card.name);
   assert.equal(new Set(allNames).size, 14, 'paging does not repeat an application');
   assert.deepEqual(new Set(allNames), new Set([...webApps, ...agentApps, dualApp].map(app => app.name)), 'all applications remain reachable across all pages');
-  const firstAgent = allPages.findIndex(card => card.usage === 'agent');
-  assert.ok(firstAgent >= 0 && allPages.slice(0, firstAgent).every(card => card.usage === 'platform'), 'platform cards precede Agent cards across pages');
+  assert.ok(apiQueries.every(query => new URLSearchParams(query).get('sort') === 'updated'), 'web explicitly requests updated ordering');
+  const expectedOrder = await (await fetch(`${harness.origin}/api/apps?sort=updated&pageSize=100`)).json() as ListResponse;
+  assert.deepEqual(allNames, expectedOrder.items.map(app => app.manifest.name), 'updated order is preserved across all web pages');
   assert.equal(allPages.filter(card => card.usage === 'platform').length, 6);
   assert.equal(allPages.filter(card => card.usage === 'agent').length, 8);
   for (const format of ['Skill', 'CLI', 'MCP', '插件']) assert.ok(allPages.some(card => card.usage === 'agent' && card.formats.includes(format)), `Agent format ${format} is identified`);
@@ -261,7 +306,16 @@ try {
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await waitForCatalog(page);
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
+    && document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false'
+    && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1');
   assertNoViewportOverflow(await overflowMetrics(), '1440x900');
+  assert.ok((await page.getByTestId('app-card').first().boundingBox())!.y <= 300, 'desktop first row starts within the UI/UX limit');
+  assert.equal(await page.getByRole('heading', { name: '发现好用的 AI 应用', exact: true }).count(), 1);
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await waitForCatalog(page);
+  assertNoViewportOverflow(await overflowMetrics(), '1920x1080');
+  assert.equal(await page.locator('.app-grid').evaluate((el: HTMLElement) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 4, 'wide screens use four columns');
   await page.setViewportSize({ width: 390, height: 844 });
   await waitForCatalog(page);
   const mobileOverflow = await page.evaluate(() => {
@@ -294,8 +348,34 @@ try {
   assert.ok(relTokens.includes('noopener') && relTokens.includes('noreferrer'));
   const platformHref = await platformLink.getAttribute('href');
   assert.ok(platformHref?.startsWith('https://example.invalid/'));
-  const popupPromise = page.waitForEvent('popup');
   const originalUrl = page.url();
+  await page.mouse.move(0, 0);
+  assert.equal(await webCard.locator('.card-actions').evaluate((el: HTMLElement) => getComputedStyle(el).opacity), '0', 'desktop actions are hidden until hover or focus');
+  await webCard.evaluate((el: HTMLElement) => {
+    el.addEventListener('pointerenter', () => {
+      const start = performance.now();
+      const observer = new MutationObserver(() => {
+        if (el.classList.contains('actions-open')) {
+          el.dataset.hoverDelay = String(performance.now() - start);
+          observer.disconnect();
+        }
+      });
+      observer.observe(el, { attributes: true, attributeFilter: ['class'] });
+    }, { once: true });
+  });
+  await webCard.hover();
+  await assertCardOverlay(webCard);
+  const hoverDelay = Number(await webCard.getAttribute('data-hover-delay'));
+  assert.ok(hoverDelay >= 100 && hoverDelay < 450, `hover waits about 120ms, observed ${hoverDelay}ms`);
+  await platformLink.focus();
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.app-card.actions-open'));
+  assert.equal(await webCard.locator('.app-title').evaluate((el: HTMLElement) => document.activeElement === el), true, 'Esc restores focus to the title');
+  await page.screenshot({ path: 'artifacts/catalog-card-hover.png' });
+  await page.mouse.move(0, 0);
+  await platformLink.focus();
+  await assertCardOverlay(webCard);
+  const popupPromise = page.waitForEvent('popup');
   await platformLink.click();
   const popup = await popupPromise;
   await externalRequest;
@@ -313,7 +393,7 @@ try {
   const agentPages = await collectPages(page, 'agent', agentResponse);
   assert.equal(new Set(agentPages.map(card => card.name)).size, 8);
   assert.deepEqual(new Set(agentPages.map(card => card.name)), new Set(agentApps.map(app => app.name)));
-  assert.ok(agentPages.every(card => !card.hasDirectUse && !card.hasPlatformLink), 'Agent cards have no direct setup or platform action');
+  assert.ok(agentPages.every(card => card.hasDirectUse && !card.hasPlatformLink), 'Agent cards expose setup without a platform action');
 
   const agentSearch = await search(page, 'needle', 'agent');
   assert.equal(agentSearch.total, 1);
@@ -379,7 +459,7 @@ try {
     return url.pathname === '/api/apps' && url.searchParams.get('usage') === 'all'
       && !url.searchParams.has('query') && !url.searchParams.has('tags') && url.searchParams.get('page') === '1';
   });
-  await page.getByRole('button', { name: '清除筛选', exact: true }).click();
+  await page.getByLabel('按作者标签筛选').getByRole('button', { name: '清除筛选', exact: true }).click();
   const clearResponse = await clearResponsePromise;
   assert.equal(clearResponse.status(), 200);
   const cleared = await clearResponse.json() as ListResponse;
@@ -390,6 +470,312 @@ try {
   const clearedPages = await collectPages(page, 'all', cleared);
   assert.equal(new Set(clearedPages.map(card => card.name)).size, 14);
   report.checks.push('clear filters returns from the Agent category to the flat all-results grid, preserving API order and full pagination');
+
+
+  // S4: preserve the exact filtered page and scroll position, without re-querying on return.
+  await page.setViewportSize({ width: 390, height: 500 });
+  await search(page, 'needle', 'all');
+  await page.getByTestId('tag-chip').filter({ hasText: '组合筛选' }).click();
+  await waitForCatalog(page);
+  await page.getByTestId('pagination').locator('button.btn-next').click();
+  await waitForCatalog(page);
+  await page.evaluate(() => { document.querySelector('.directory-shell')!.scrollTop = 80; });
+  await page.getByTestId('app-card').first().getByTestId('card-detail').focus();
+  // Keyboard focus may scroll an action into view; restore the actual state immediately before opening.
+  const returnState = await page.evaluate(() => {
+    const shell = document.querySelector('.directory-shell')!;
+    return { scroll: shell.scrollTop, page: document.querySelector('.number.is-active')?.textContent, names: Array.from(document.querySelectorAll('.app-title')).map(x => x.textContent) };
+  });
+  assert.ok(returnState.scroll > 0, 'exercise nonzero scroll restoration');
+  const queriesBeforeDetail = apiQueries.length;
+  await page.keyboard.press('Enter');
+  await detail.waitFor();
+  assert.equal(await page.locator('.public-detail').count(), 1, 'public detail is a standalone view');
+  assert.equal(await page.locator('.app-detail-dialog').count(), 0);
+  await page.getByTestId('return-discovery').click();
+  await detail.waitFor({ state: 'hidden' });
+  assert.equal(apiQueries.length, queriesBeforeDetail, 'return reuses the original list, not a newly paginated result');
+  assert.deepEqual(await page.evaluate(() => ({ scroll: document.querySelector('.directory-shell')!.scrollTop, page: document.querySelector('.number.is-active')?.textContent, names: Array.from(document.querySelectorAll('.app-title')).map(x => x.textContent) })), returnState);
+  assert.equal(await page.getByRole('textbox', { name: '搜索应用名称、用途或能力' }).inputValue(), 'needle');
+  assert.equal(await page.getByTestId('tag-chip').filter({ hasText: '组合筛选' }).getAttribute('aria-pressed'), 'true');
+  await page.goForward();
+  await detail.waitFor();
+  await page.goBack();
+  await detail.waitFor({ state: 'hidden' });
+  report.checks.push('standalone detail and browser Back/Forward preserve filtered page, sort and nonzero scroll position');
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByLabel('按作者标签筛选').getByRole('button', { name: '清除筛选', exact: true }).click();
+  await waitForCatalog(page);
+  await page.screenshot({ path: 'artifacts/catalog-discovery-directory.png' });
+  let randomRequests = 0;
+  page.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps/random') randomRequests++; });
+  await page.getByTestId('tab-random').click();
+  await page.getByTestId('wheel-current').waitFor();
+  await page.waitForLoadState('networkidle');
+  const wheel = page.getByTestId('catalog-wheel');
+  const batchIds = () => wheel.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
+  const refreshRandom = async () => {
+    const response = page.waitForResponse((res: any) => new URL(res.url()).pathname === '/api/apps/random');
+    await page.getByTestId('random-refresh').click();
+    await response;
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="random-refresh"]')!.disabled);
+  };
+  const currentId = () => page.getByTestId('wheel-current').getByTestId('app-card').getAttribute('data-app-id');
+  const batch = await batchIds();
+  assert.equal(batch.length, 6);
+  assert.equal(new Set(batch).size, 6);
+  assert.equal(randomRequests, 1);
+  assert.equal(await page.getByTestId('random-all-shown').count(), 0);
+  await page.getByRole('button', { name: '下一个应用', exact: true }).click();
+  assert.equal(await currentId(), batch[1]);
+  await wheel.focus();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await currentId(), batch[2]);
+  const side = page.getByTestId('wheel-side').filter({ has: page.locator(`[data-app-id="${batch[1]}"]`) });
+  await side.getByRole('button', { name: /切换到/ }).click();
+  assert.equal(await currentId(), batch[1]);
+  assert.equal(randomRequests, 1, 'buttons, keyboard and side cards never resample');
+  assert.equal(await page.getByTestId('app-detail').count(), 0, 'side card only selects');
+  const wheelBox = await wheel.boundingBox();
+  await page.mouse.move(wheelBox!.x + wheelBox!.width / 2, wheelBox!.y + 12);
+  const beforeWheel = await currentId();
+  await page.mouse.wheel(0, 110);
+  await page.waitForFunction((id: string) => document.querySelector('[data-testid="wheel-current"] [data-app-id]')?.getAttribute('data-app-id') !== id, beforeWheel);
+  const middleOffset = await page.getByTestId('wheel-current').evaluate((el: HTMLElement) => Math.abs(Number(el.style.getPropertyValue('--offset'))));
+  assert.ok(middleOffset > .002 && middleOffset < 1.01, 'wheel advances through intermediate positions instead of jumping');
+  await page.waitForFunction(() => Number((document.querySelector('[data-testid="wheel-current"]') as HTMLElement).style.getPropertyValue('--offset')) === 0);
+  assert.deepEqual(await batchIds(), batch);
+  assert.equal(randomRequests, 1, 'mouse wheel movement never requests another batch');
+  const currentOffset = await page.getByTestId('wheel-current').evaluate((el: HTMLElement) => el.style.getPropertyValue('--offset'));
+  await wheel.dispatchEvent('wheel', { deltaY: 110, ctrlKey: true });
+  assert.equal(await page.getByTestId('wheel-current').evaluate((el: HTMLElement) => el.style.getPropertyValue('--offset')), currentOffset, 'Ctrl-wheel remains a browser zoom gesture');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: '下一个应用', exact: true }).click();
+  assert.equal(await page.getByTestId('wheel-current').evaluate((el: HTMLElement) => Number(el.style.getPropertyValue('--offset'))), 0, 'reduced motion changes cards without animation');
+  assert.equal(randomRequests, 1);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const selected = await currentId();
+  await page.getByTestId('wheel-current').getByTestId('card-detail').focus();
+  await assertCardOverlay(page.getByTestId('wheel-current').getByTestId('app-card'));
+  await page.screenshot({ path: 'artifacts/catalog-wheel-card-focus.png' });
+  await page.keyboard.press('Enter');
+  await detail.waitFor();
+  await page.getByTestId('return-discovery').click();
+  await detail.waitFor({ state: 'hidden' });
+  assert.deepEqual(await batchIds(), batch);
+  assert.equal(await currentId(), selected);
+  await page.getByTestId('tab-catalog').click();
+  await page.getByTestId('tab-random').click();
+  assert.deepEqual(await batchIds(), batch);
+  assert.equal(await currentId(), selected);
+  assert.equal(randomRequests, 1);
+  await page.screenshot({ path: 'artifacts/catalog-discovery-wheel.png' });
+
+  await page.route('**/api/apps/random?**', (route: any) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: '抽样服务暂时不可用' } }) }));
+  await refreshRandom();
+  await page.getByRole('alert').filter({ hasText: '当前批次已保留' }).waitFor();
+  assert.deepEqual(await batchIds(), batch);
+  assert.equal(await currentId(), selected);
+  await page.unroute('**/api/apps/random?**');
+  await refreshRandom();
+  await page.waitForLoadState('networkidle');
+  const nextBatch = await batchIds();
+  assert.ok(nextBatch.every((id: string) => !batch.includes(id)), '14 candidates allow disjoint batches');
+  assert.equal(await currentId(), nextBatch[0]);
+  assert.equal(await page.getByTestId('random-all-shown').count(), 0, 'allShown does not accumulate across batches');
+  report.checks.push('wheel buttons, side cards and arrows reuse one batch; return restores batch/current item; failed refresh retains it; successful refresh excludes the previous six');
+
+  // Actual touch gestures and taps use the same card actions.
+  const touchContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const touchPage = await touchContext.newPage();
+  touchPage.on('pageerror', (error: Error) => report.errors.push(error.message));
+  let touchSamples = 0;
+  touchPage.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps/random') touchSamples++; });
+  await touchPage.goto(harness.origin);
+  await waitForCatalog(touchPage);
+  const touchCatalogLayout = await touchPage.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('[data-testid="app-card"]'));
+    const footer = document.querySelector('[data-testid="pagination"]')!.getBoundingClientRect();
+    return { cardBottom: Math.max(...cards.map(card => card.getBoundingClientRect().bottom)), footerTop: footer.top, horizontal: document.documentElement.scrollWidth > innerWidth };
+  });
+  assert.equal(touchCatalogLayout.horizontal, false, 'visible touch actions do not create horizontal overflow');
+  assert.ok(touchCatalogLayout.cardBottom <= touchCatalogLayout.footerTop, 'touch cards fit above pagination');
+  await touchPage.getByTestId('tab-random').tap();
+  await touchPage.getByTestId('wheel-current').waitFor();
+  const touchFirst = await touchPage.getByTestId('wheel-current').getByTestId('app-card').getAttribute('data-app-id');
+  const box = await touchPage.getByTestId('catalog-wheel').boundingBox();
+  const cdp = await touchContext.newCDPSession(touchPage);
+  const y = box!.y + 70;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 280, y }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 170, y }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await touchPage.waitForFunction((id: string) => document.querySelector('[data-testid="wheel-current"] [data-app-id]')?.getAttribute('data-app-id') !== id, touchFirst);
+  assert.equal(touchSamples, 1);
+  assert.equal(await touchPage.getByTestId('app-detail').count(), 0, 'swiping cannot open a card');
+  await touchPage.waitForFunction(() => Number((document.querySelector('[data-testid="wheel-current"]') as HTMLElement).style.getPropertyValue('--offset')) === 0);
+  await touchPage.waitForFunction(() => document.getAnimations().every(animation => animation.playState !== 'running'));
+  const touchDetailButton = touchPage.getByTestId('wheel-current').getByTestId('card-detail');
+  assert.equal(await touchDetailButton.evaluate((el: HTMLElement) => getComputedStyle(el.parentElement!.parentElement!).opacity), '1', 'touch actions are visible without hover');
+  const touchActions = await touchPage.getByTestId('wheel-current').getByTestId('app-card').evaluate((el: HTMLElement) => {
+    const row = el.querySelector('.card-action-buttons')!.getBoundingClientRect();
+    const footer = el.querySelector('.app-card-footer')!.getBoundingClientRect();
+    return { top: row.top, footerBottom: footer.bottom, heights: Array.from(el.querySelector('.card-action-buttons')!.children).map(button => button.getBoundingClientRect().height) };
+  });
+  assert.ok(touchActions.top >= touchActions.footerBottom, 'persistent touch actions do not cover card content');
+  assert.ok(touchActions.heights.every((height: number) => height >= 44), 'touch buttons have usable tap targets');
+  await touchDetailButton.tap();
+  await touchPage.getByTestId('app-detail').waitFor();
+  await touchPage.getByTestId('return-discovery').tap();
+  await touchPage.getByTestId('app-detail').waitFor({ state: 'hidden' });
+  await touchContext.close();
+  report.checks.push('real touch swipe changes the current item without resampling or opening details; visible detail action supports tapping');
+
+  // S3: a mixed app remains a platform while its author changes the primary action.
+  await page.getByTestId('tab-catalog').click();
+  await search(page, 'dualmarker', 'all');
+  const mixedCard = page.getByTestId('app-card');
+  const mixed = await harness.service.app(dualApp.id);
+  const agentEntry = mixed.manifest.entries.find(entry => entry.kind === 'agent')!;
+  const setPrimary = async (id: string) => harness.db.query("UPDATE published_snapshots SET manifest = jsonb_set(manifest, '{primaryEntry}', $2::jsonb) WHERE app_id = $1", [dualApp.id, JSON.stringify(id)]);
+  await setPrimary(agentEntry.id);
+  await search(page, 'dualmarker', 'all');
+  assert.equal(await mixedCard.getAttribute('data-usage'), 'platform');
+  assert.equal(await mixedCard.getByTestId('open-platform').count(), 0);
+  await mixedCard.getByTestId('card-primary-agent').focus();
+  await page.keyboard.press('Space');
+  await page.getByTestId('copy-agent-prompt').waitFor();
+  assert.equal(await detail.count(), 0, 'primary Agent action does not open detail');
+  assert.match(await page.getByTestId('agent-instruction-content').innerText(), /SOURCE-INSTRUCTIONS-UNCHANGED/);
+  await page.keyboard.press('Escape');
+  await page.getByTestId('agent-instruction-dialog').waitFor({ state: 'hidden' });
+  // The decorative mask must allow a real mouse drag to select the underlying text.
+  await page.mouse.move(0, 0);
+  const summaryBox = await mixedCard.locator('.app-summary').boundingBox();
+  await page.mouse.move(summaryBox!.x + 1, summaryBox!.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(summaryBox!.x + 95, summaryBox!.y + 10, { steps: 10 });
+  await page.mouse.up();
+  assert.ok(await page.evaluate(() => Boolean(window.getSelection()?.toString().trim())), 'text remains selectable through the hovered mask');
+  assert.equal(await detail.count(), 0, 'text selection does not navigate');
+  // A later click on selected text must not turn into navigation either.
+  await mixedCard.locator('.app-summary').evaluate((el: HTMLElement) => {
+    const range = document.createRange(); range.selectNodeContents(el);
+    const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  assert.equal(await detail.count(), 0);
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  const tagRequest = page.waitForResponse((response: any) => new URL(response.url()).pathname === '/api/apps' && new URL(response.url()).searchParams.has('tags'));
+  await mixedCard.getByRole('button', { name: '按标签 组合筛选 筛选', exact: true }).click();
+  await tagRequest;
+  assert.equal(await detail.count(), 0, 'tag only changes filters');
+  await waitForCatalog(page);
+
+  // Public details fetch the current snapshot instead of rendering the card snapshot.
+  await harness.db.query("UPDATE published_snapshots SET manifest = jsonb_set(manifest, '{name}', $2::jsonb) WHERE app_id = $1", [dualApp.id, JSON.stringify('当前公开快照名称')]);
+  await mixedCard.getByTestId('card-detail').focus();
+  await page.keyboard.press('Enter');
+  await detail.waitFor();
+  assert.equal(await page.locator('.overview-title-row h2').innerText(), '当前公开快照名称');
+  await page.getByTestId('return-discovery').click();
+  await detail.waitFor({ state: 'hidden' });
+  await harness.db.query("UPDATE published_snapshots SET manifest = jsonb_set(manifest, '{name}', $2::jsonb) WHERE app_id = $1", [dualApp.id, JSON.stringify(dualApp.name)]);
+
+  await setPrimary('missing');
+  await search(page, 'dualmarker', 'all');
+  await mixedCard.hover();
+  assert.equal(await mixedCard.getByTestId('unavailable-entry').isDisabled(), true);
+  assert.match(await mixedCard.getByTestId('primary-disabled-reason').innerText(), /缺失/);
+  await mixedCard.getByTestId('card-detail').click();
+  await detail.waitFor();
+  assert.equal(await detail.getByTestId('use-web').count(), 1);
+  assert.equal(await detail.getByTestId('use-agent').count(), 1);
+  await page.getByTestId('return-discovery').click();
+  await detail.waitFor({ state: 'hidden' });
+  await setPrimary('web');
+  await harness.db.query("UPDATE published_snapshots SET manifest = jsonb_set(manifest, '{entries,0,url}', $2::jsonb) WHERE app_id = $1", [dualApp.id, JSON.stringify('javascript:alert(1)')]);
+  await search(page, 'dualmarker', 'all');
+  await mixedCard.hover();
+  assert.equal(await mixedCard.getByTestId('unavailable-entry').isDisabled(), true);
+  assert.match(await mixedCard.getByTestId('primary-disabled-reason').innerText(), /不安全/);
+  await harness.db.query("UPDATE published_snapshots SET manifest = $2::jsonb WHERE app_id = $1", [dualApp.id, JSON.stringify({ ...mixed.manifest, primaryEntry: agentEntry.id })]);
+  await search(page, 'dualmarker', 'all');
+  await page.route(`**/api/apps/${dualApp.id}/instructions/*`, (route: any) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: '指引读取失败' } }) }));
+  await mixedCard.getByTestId('card-primary-agent').focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('alert').filter({ hasText: '指引读取失败' }).waitFor();
+  assert.equal(await page.getByTestId('copy-agent-prompt').count(), 0);
+  assert.ok(!(await page.getByTestId('agent-instruction-content').innerText()).includes('SOURCE-INSTRUCTIONS-UNCHANGED'));
+  await page.keyboard.press('Escape');
+  await page.getByTestId('agent-instruction-dialog').waitFor({ state: 'hidden' });
+  await page.unroute(`**/api/apps/${dualApp.id}/instructions/*`);
+  await mixedCard.getByTestId('card-primary-agent').focus();
+  await page.keyboard.press('Enter');
+  await page.getByTestId('copy-agent-prompt').waitFor();
+  await harness.db.query("INSERT INTO catalog_app_lifecycle (app_id, status, revision, updated_at) VALUES ($1, 'offline', 2, now())", [dualApp.id]);
+  await page.getByTestId('copy-agent-prompt').click();
+  await page.getByRole('alert').filter({ hasText: '应用不存在' }).waitFor();
+  assert.equal(await page.getByTestId('copy-agent-prompt').count(), 0, 'copy revalidates the current lifecycle');
+  assert.ok(!(await page.getByTestId('agent-instruction-content').innerText()).includes('SOURCE-INSTRUCTIONS-UNCHANGED'));
+  await page.keyboard.press('Escape');
+  await page.getByTestId('agent-instruction-dialog').waitFor({ state: 'hidden' });
+  await mixedCard.getByTestId('card-detail').focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('alert').filter({ hasText: '请返回刷新' }).waitFor();
+  assert.equal(await detail.count(), 0, 'offline detail does not disclose stale content');
+  await page.getByTestId('return-discovery').click();
+  await page.locator('.public-detail').waitFor({ state: 'hidden' });
+  await waitForCatalog(page);
+  assert.equal(await page.locator('.catalog-section [data-testid="app-card"]').count(), 0, 'return-and-refresh removes the offline card');
+  report.checks.push('mixed Web/Agent primary actions, keyboard, selection, tags, current public snapshot, missing/unsafe primary and failure/offline instruction clearing');
+  report.checks.push('catalog and wheel use a full translucent mask with centered white actions on hover/focus; real text selection, independent tags and visible touch actions remain usable');
+
+
+  // A known disabled fixed entry is projected by the real service into both card and detail.
+  const profile = JSON.parse(await readFile(new URL('../server/contracts/legacy-distribution-profiles.json', import.meta.url), 'utf8')).disabledEntries[0];
+  const disabledApp = await seedApp('dual', '停用主入口测试应用', 'Skill', { searchText: 'disabledmarker' });
+  const disabledSource = await harness.service.app(disabledApp.id);
+  const disabledManifest = { ...disabledSource.manifest, appKey: profile.appKey, primaryEntry: profile.entryId,
+    entries: disabledSource.manifest.entries.map(entry => entry.kind === 'agent' ? { ...entry, id: profile.entryId } : entry) };
+  await harness.db.query('UPDATE catalog_apps SET instance_id = $2, project_id = $3, app_key = $4 WHERE id = $1', [disabledApp.id, profile.instanceId, profile.projectId, profile.appKey]);
+  await harness.db.query('UPDATE published_snapshots SET commit_sha = $2, manifest = $3::jsonb WHERE app_id = $1', [disabledApp.id, profile.commitSha, JSON.stringify(disabledManifest)]);
+  await page.getByLabel('按作者标签筛选').getByRole('button', { name: '清除筛选', exact: true }).click();
+  await waitForCatalog(page);
+  await search(page, 'disabledmarker', 'all');
+  const disabledCard = page.getByTestId('app-card');
+  await disabledCard.hover();
+  assert.equal(await disabledCard.getByTestId('card-primary-agent').isDisabled(), true);
+  assert.equal(await disabledCard.getByTestId('open-platform').count(), 0, 'disabled Agent primary must not fall back to the available Web entry');
+  assert.equal(await disabledCard.getByTestId('primary-disabled-reason').innerText(), profile.reason);
+  await disabledCard.getByTestId('card-detail').click();
+  await detail.waitFor();
+  assert.equal(await detail.getByTestId('use-agent').isDisabled(), true);
+  assert.equal(await detail.getByTestId('agent-disabled-reason').innerText(), profile.reason);
+  assert.equal(await detail.getByTestId('use-web').count(), 1, 'other entries remain accessible in detail');
+  await page.getByTestId('return-discovery').click();
+  await detail.waitFor({ state: 'hidden' });
+  report.checks.push('real disabled-entry projection disables the author primary with its reason, preserves detail and never substitutes an alternate Web entry');
+
+  // Random empty/single states use the same real service; no duplicate fillers.
+  await harness.db.query("INSERT INTO catalog_app_lifecycle (app_id, status, revision, updated_at) SELECT id, 'offline', 2, now() FROM catalog_apps ON CONFLICT (app_id) DO UPDATE SET status = 'offline'");
+  await harness.db.query("UPDATE catalog_app_lifecycle SET status = 'published' WHERE app_id = $1", [webApps[0].id]);
+  await page.getByTestId('tab-random').click();
+  await refreshRandom();
+  await page.waitForLoadState('networkidle');
+  assert.equal(await wheel.getByTestId('app-card').count(), 1);
+  assert.equal(await page.getByRole('button', { name: '下一个应用', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: '上一个应用', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByTestId('random-all-shown').innerText(), ' · 已展示全部');
+  await harness.db.query("UPDATE catalog_app_lifecycle SET status = 'offline' WHERE app_id = $1", [webApps[0].id]);
+  await refreshRandom();
+  await page.getByText('目录中还没有可展示的应用。', { exact: true }).waitFor();
+  assert.equal(await wheel.count(), 0);
+  await page.route('**/api/apps/random?**', (route: any) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: '抽样服务暂时不可用' } }) }));
+  await refreshRandom();
+  await page.getByRole('alert').filter({ hasText: '抽样服务暂时不可用' }).waitFor();
+  assert.equal(await page.getByText('目录中还没有可展示的应用。', { exact: true }).count(), 0, 'error is not presented as empty');
+  report.checks.push('single-item wheel disables switching and says all shown; zero items and service errors have separate states');
 
   assert.deepEqual(report.errors, [], 'browser reports no uncaught page errors');
   report.status = 'PASS';

@@ -74,7 +74,9 @@ if (process.argv.includes('--serve')) {
     await page.goto(harness.origin);
     await page.getByRole('button', { name: '查看 统一分发示例（模拟） 详情' }).click();
     await page.getByTestId('use-agent').click();
+    await page.evaluate(() => { (window as any).copiedText = undefined; });
     await page.getByTestId('copy-agent-prompt').click();
+    await page.waitForFunction(() => typeof (window as any).copiedText === 'string');
     const copied = String(await page.evaluate(() => (window as any).copiedText));
     assert.match(copied, /广场固定分发包/);
     assert.match(copied, /SHA-256/);
@@ -91,7 +93,9 @@ if (process.argv.includes('--serve')) {
 
     await page.getByRole('button', { name: '查看 历史应用缺包示例（模拟） 详情' }).click();
     await page.getByTestId('use-agent').click();
+    await page.evaluate(() => { (window as any).copiedText = undefined; });
     await page.getByTestId('copy-agent-prompt').click();
+    await page.waitForFunction(() => typeof (window as any).copiedText === 'string');
     const missingText = String(await page.evaluate(() => (window as any).copiedText));
     assert.match(missingText, /安装暂不可用/);
     assert.match(missingText, /停止安装和升级/);

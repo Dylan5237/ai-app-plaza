@@ -8,6 +8,8 @@ interface CatalogEntry {
 
 interface CatalogApp {
   manifest?: { entries?: CatalogEntry[]; primaryEntry?: string; summary?: string };
+  entryAvailability?: Record<string, { status?: string; reason?: string }>;
+  lifecycle?: { status?: string };
 }
 
 export function safeHttpUrl(value: unknown): string {
@@ -22,6 +24,19 @@ export function safeHttpUrl(value: unknown): string {
 
 export function catalogUsage(app: CatalogApp): 'platform' | 'agent' {
   return app.manifest?.entries?.some(entry => entry.kind === 'web') ? 'platform' : 'agent';
+}
+
+export function primaryAction(app: CatalogApp) {
+  const primaryId = app.manifest?.primaryEntry;
+  const entry = primaryId ? app.manifest?.entries?.find(item => item.id === primaryId) : undefined;
+  let reason = '';
+  if (app.lifecycle?.status && app.lifecycle.status !== 'published') reason = '应用已下架或删除，请返回刷新。';
+  else if (!entry) reason = '作者指定的主入口缺失，请查看详情。';
+  else if (app.entryAvailability?.[entry.id!]?.status === 'disabled') reason = app.entryAvailability[entry.id!]!.reason || '主入口已停用。';
+  else if (entry.kind === 'web' && !safeHttpUrl(entry.url)) reason = '主入口地址无效或不安全。';
+  else if (entry.kind === 'agent' && !entry.instructionsPath) reason = '主入口缺少接入说明。';
+  else if (!['web', 'agent'].includes(entry.kind || '')) reason = '主入口类型不可用。';
+  return { entry, reason, label: entry?.kind === 'web' ? '打开平台' : entry?.kind === 'agent' ? '接入我的Agent' : '入口不可用' };
 }
 
 export function platformEntry(app: CatalogApp): CatalogEntry | undefined {

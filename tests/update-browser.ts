@@ -80,6 +80,8 @@ try {
       await page.goto(appUrl);
       await page.getByTestId('use-agent').click();
       await page.getByTestId('copy-agent-prompt').click();
+      // Public copying revalidates the current entry before writing to the clipboard.
+      await page.waitForFunction(() => typeof (window as any).copiedText === 'string');
       const latestGuide = await page.evaluate(() => (window as any).copiedText);
       assert.ok(latestGuide.includes(SHA2) && latestGuide.includes('# 新版升级说明') && !latestGuide.includes(SHA));
       await page.keyboard.press('Escape');

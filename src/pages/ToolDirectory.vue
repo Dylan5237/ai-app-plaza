@@ -1,17 +1,100 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import plazaMark from '../assets/plaza-mark.svg'
+import { ElDialog, ElMessage } from 'element-plus'
+import PlazaIcon from '../components/PlazaIcon.vue'
+import '../styles/design-tokens.css'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
 import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
-import PlatformOpenButton from '../components/PlatformOpenButton.vue'
+import CatalogCard from '../components/CatalogCard.vue'
+import CatalogWheel from '../components/CatalogWheel.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
-import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, safeHttpUrl } from '../lib/catalog.ts'
+import { catalogPageCapacity, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false } })
+
+const discoveryTab = ref('catalog')
+const randomItems = ref([])
+const randomIndex = ref(0)
+const randomLoading = ref(false)
+const randomError = ref('')
+const randomAllShown = ref(false)
+let randomLoaded = false
+let randomRequestSequence = 0
+const scrollPositions = { catalog: 0, random: 0 }
+const detailHeading = ref(null)
+let detailOriginFocus = null
+let detailOriginUrl = ''
+let refreshOnReturn = false
+let primaryRequestSequence = 0
+
+function shell() { return directoryMain.value?.closest('.directory-shell') }
+
+async function selectDiscovery(tab) {
+  scrollPositions[discoveryTab.value] = shell()?.scrollTop || 0
+  discoveryTab.value = tab
+  await nextTick()
+  if (shell()) shell().scrollTop = scrollPositions[tab]
+  if (tab === 'random' && !randomLoaded) await loadRandom()
+}
+
+async function loadRandom() {
+  const sequence = ++randomRequestSequence
+  randomLoading.value = true
+  randomError.value = ''
+  const params = new URLSearchParams(randomItems.value.map(app => ['exclude', app.id]))
+  try {
+    const result = await apiRequest(`/api/apps/random?${params}`)
+    if (sequence !== randomRequestSequence) return
+    randomItems.value = result.items
+    randomAllShown.value = result.allShown
+    randomIndex.value = 0
+    randomLoaded = true
+  } catch (error) {
+    if (sequence === randomRequestSequence) randomError.value = errorText(error)
+  } finally {
+    if (sequence === randomRequestSequence) randomLoading.value = false
+  }
+}
+
+async function filterFromWheel(tag) {
+  await selectDiscovery('catalog')
+  toggleTag(tag)
+}
+
+async function usePrimary(app) {
+  const action = primaryAction(app)
+  if (action.reason) return
+  const sequence = ++primaryRequestSequence
+  // Reserve the tab during the user gesture; never navigate to an unchecked stale URL.
+  const tab = action.entry.kind === 'web' ? window.open('about:blank', '_blank') : null
+  if (tab) tab.opener = null
+  try {
+    const current = await apiRequest(appPath(app.id))
+    if (sequence !== primaryRequestSequence) { tab?.close(); return }
+    const latest = primaryAction(current)
+    if (latest.reason) throw new Error(latest.reason)
+    if (latest.entry.id !== action.entry.id || latest.entry.kind !== action.entry.kind) throw new Error('作者主入口已变更，请查看最新详情。')
+    if (latest.entry.kind === 'web') {
+      if (!tab) throw new Error('浏览器阻止了新标签页，请允许弹出窗口后重试。')
+      // A noreferrer link also prevents the portal URL being sent to the target.
+      const link = tab.document.createElement('a')
+      link.href = safeHttpUrl(latest.entry.url)
+      link.rel = 'noreferrer'
+      tab.document.body.appendChild(link)
+      link.click()
+    } else {
+      selectedApp.value = current
+      await loadAgentInstructions(latest.entry)
+    }
+  } catch (error) {
+    tab?.close()
+    ElMessage.error(errorText(error))
+    if (error?.status === 404) await openApp(app.id)
+  }
+}
 
 const query = ref('')
 const selectedTags = ref([])
@@ -77,15 +160,8 @@ const publication = ref(null)
 const publicationLoading = ref(false)
 const publicationBusy = ref(false)
 const publicationError = ref('')
-let brandClickCount = 0
-let brandClickTimer = 0
 
-const catalogGroups = computed(() => selectedUsage.value === 'all'
-  ? [{ value: 'all', label: '全部应用', description: '', apps: apps.value }]
-  : [
-  { value: 'platform', label: '平台类应用', description: '打开即用，常用平台的统一入口', apps: apps.value.filter(app => catalogUsage(app) === 'platform') },
-  { value: 'agent', label: 'Agent能力', description: '查看详情，按说明接入你的 Agent', apps: apps.value.filter(app => catalogUsage(app) === 'agent') },
-].filter(group => group.apps.length))
+const catalogGroups = computed(() => [{ value: selectedUsage.value, label: '应用目录', apps: apps.value }])
 const selectedAppEntries = computed(() => {
   const manifest = selectedApp.value?.manifest || {}
   const entries = Array.isArray(manifest.entries) ? [...manifest.entries] : []
@@ -107,34 +183,10 @@ function errorText(error) {
   return error?.message || '操作未完成，请稍后重试。'
 }
 
-function appName(app) {
-  return app?.manifest?.name || '未命名应用'
-}
-
-function appSummary(app) {
-  return app?.manifest?.summary || '暂无应用简介。'
-}
-
 function formatVersion(value) {
   if (value === null || value === undefined || value === '') return ''
   const version = String(value)
   return /^\d/.test(version) ? `v${version}` : version
-}
-
-function appTags(app) {
-  return Array.isArray(app?.tags) ? app.tags : Array.isArray(app?.manifest?.tags) ? app.manifest.tags : []
-}
-
-function maintainerName(value) {
-  if (typeof value === 'string') return value
-  if (!value || typeof value !== 'object') return ''
-  return typeof value.name === 'string' ? value.name : ''
-}
-
-function appMaintainers(app) {
-  const maintainers = app?.manifest?.maintainers
-  const values = Array.isArray(maintainers) ? maintainers : maintainers ? [maintainers] : []
-  return values.map(maintainerName).filter(Boolean).join('、') || '作者未登记'
 }
 
 function formatDate(value) {
@@ -142,21 +194,6 @@ function formatDate(value) {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return String(value)
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed)
-}
-
-function handleBrandClick() {
-  if (brandClickTimer) window.clearTimeout(brandClickTimer)
-  brandClickCount += 1
-  if (brandClickCount >= 3) {
-    brandClickCount = 0
-    brandClickTimer = 0
-    window.location.assign('/admin')
-    return
-  }
-  brandClickTimer = window.setTimeout(() => {
-    brandClickCount = 0
-    brandClickTimer = 0
-  }, 1500)
 }
 
 async function loadCatalog({ preserveNotice = false } = {}) {
@@ -171,6 +208,7 @@ async function loadCatalog({ preserveNotice = false } = {}) {
   params.set('page', String(page.value))
   params.set('pageSize', String(pageSize.value))
   params.set('usage', selectedUsage.value)
+  params.set('sort', 'updated')
 
   try {
     const result = await apiRequest(`/api/apps?${params.toString()}`)
@@ -182,8 +220,6 @@ async function loadCatalog({ preserveNotice = false } = {}) {
     page.value = Number.isFinite(Number(result.page)) && Number(result.page) > 0 ? Number(result.page) : page.value
   } catch (error) {
     if (requestSequence !== catalogRequestSequence) return
-    apps.value = []
-    total.value = 0
     catalogError.value = errorText(error)
   } finally {
     if (requestSequence === catalogRequestSequence) catalogLoading.value = false
@@ -194,18 +230,20 @@ function updateCatalogPageSize(reload = true) {
   const main = directoryMain.value
   const heading = catalogHeading.value
   const footer = paginationRow.value
-  if (!main || !heading || !footer) return
+  if (!main || !heading || !footer || detailVisible.value || discoveryTab.value !== 'catalog') return
   const style = getComputedStyle(main)
   const columns = Number(style.getPropertyValue('--catalog-columns'))
   const cardHeight = parseFloat(style.getPropertyValue('--catalog-card-height'))
   const gap = parseFloat(style.getPropertyValue('--catalog-gap'))
   const notice = main.querySelector('.catalog-notice')
   const noticeHeight = notice ? notice.offsetHeight + parseFloat(getComputedStyle(notice).marginBottom) : 0
-  const availableHeight = main.clientHeight - (heading.getBoundingClientRect().bottom - main.getBoundingClientRect().top)
+  // Size from the viewport, not the last page's content height (mobile main is auto-height).
+  const viewport = shell()
+  const availableHeight = viewport.clientHeight - (heading.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top + viewport.scrollTop)
     - parseFloat(getComputedStyle(heading).marginBottom) - parseFloat(style.paddingBottom) - footer.offsetHeight - noticeHeight
   const capacity = catalogPageCapacity({
     availableHeight, columns, cardHeight, gap,
-    headingHeight: parseFloat(style.getPropertyValue('--catalog-group-heading-height')),
+    headingHeight: 0,
     usage: selectedUsage.value,
   })
   if (capacity === pageSize.value) return
@@ -267,17 +305,23 @@ function clearFilters() {
   loadCatalog()
 }
 
-function openCard(event, id) {
-  if (event.target instanceof Element && event.target.closest('button, a')) return
-  const selection = window.getSelection()
-  if (selection?.toString() && (event.currentTarget.contains(selection.anchorNode) || event.currentTarget.contains(selection.focusNode))) return
-  openApp(id)
-}
-
 function appPath(id) { return `${props.management && props.managementEnabled ? '/api/management' : '/api'}/apps/${encodeURIComponent(id)}` }
 
-async function openApp(id) {
+async function openApp(id, { fromHistory = false } = {}) {
   if (!id) return
+  primaryRequestSequence += 1
+  if (!props.management) {
+    if (!detailVisible.value) {
+      scrollPositions[discoveryTab.value] = shell()?.scrollTop || 0
+      detailOriginFocus = document.activeElement
+    }
+    if (!fromHistory && new URLSearchParams(location.search).get('app') !== id) {
+      detailOriginUrl = location.href
+      const url = new URL(location.href)
+      url.searchParams.set('app', id)
+      history.pushState({ ...history.state, plazaDiscoveryDetail: true }, '', url)
+    }
+  }
   const requestSequence = ++detailRequestSequence
   instructionRequestSequence += 1
   detailVisible.value = true
@@ -291,6 +335,8 @@ async function openApp(id) {
   instructionLoading.value = false
   instructionEntry.value = null
   instructionError.value = ''
+  await nextTick()
+  if (!props.management) { if (shell()) shell().scrollTop = 0; detailHeading.value?.focus() }
   try {
     const result = await apiRequest(appPath(id))
     if (requestSequence !== detailRequestSequence) return
@@ -300,6 +346,41 @@ async function openApp(id) {
   } finally {
     if (requestSequence === detailRequestSequence) detailLoading.value = false
   }
+}
+
+async function restoreDiscovery() {
+  const refresh = refreshOnReturn || Boolean(detailError.value)
+  refreshOnReturn = false
+  closeDetail()
+  await nextTick()
+  if (refresh) {
+    await loadCatalog()
+    if (randomLoaded) await loadRandom()
+  }
+  if (shell()) shell().scrollTop = scrollPositions[discoveryTab.value]
+  detailOriginFocus?.focus({ preventScroll: true })
+}
+
+function returnFromDetail() {
+  if (history.state?.plazaDiscoveryDetail && detailOriginUrl) history.back()
+  else {
+    const url = new URL(location.href)
+    url.searchParams.delete('app')
+    history.replaceState(history.state, '', url)
+    void restoreDiscovery()
+  }
+}
+
+function handlePopState() {
+  if (props.management || publicationId.value) return
+  const id = new URLSearchParams(location.search).get('app')
+  if (id) void openApp(id, { fromHistory: true })
+  else if (detailVisible.value) void restoreDiscovery()
+}
+
+function handleDetailKey(event) {
+  if (event.key !== 'Escape' || props.management || !detailVisible.value || instructionDialogVisible.value || detailDocumentsVisible.value || detailSourceVisible.value || shareVisible.value || copyFallbackVisible.value) return
+  returnFromDetail()
 }
 
 function closeDetail() {
@@ -313,6 +394,7 @@ function closeDetail() {
   instructionLoading.value = false
   instructionEntry.value = null
   instructionError.value = ''
+  selectedApp.value = null
 }
 
 function closeAgentInstructions() {
@@ -342,8 +424,18 @@ async function loadAgentInstructions(entry) {
   } catch (error) {
     if (requestSequence !== instructionRequestSequence || selectedApp.value?.id !== appId || instructionEntry.value?.id !== entryId) return
     instructionError.value = errorText(error)
+    if (!props.management && error?.status === 404) refreshOnReturn = true
   } finally {
     if (requestSequence === instructionRequestSequence) instructionLoading.value = false
+  }
+}
+
+async function copyAgentInstructions() {
+  const entry = instructionEntry.value
+  if (!entry || instructionLoading.value) return
+  if (!props.management) await loadAgentInstructions(entry)
+  if (instruction.value && instruction.value.distribution?.status !== 'disabled') {
+    await copyText(instruction.value.text, '接入说明已复制')
   }
 }
 
@@ -563,6 +655,8 @@ async function returnToCatalog() {
 
 onMounted(async () => {
   window.addEventListener('hashchange', handleHashChange)
+  window.addEventListener('popstate', handlePopState)
+  window.addEventListener('keydown', handleDetailKey, true)
   window.addEventListener('resize', scheduleCatalogLayout)
   if (preparePublicationRoute()) return
   if (props.management) return
@@ -577,11 +671,14 @@ onMounted(async () => {
 
 onUnmounted(() => {
   publicationRequestSequence += 1
+  primaryRequestSequence += 1
+  randomRequestSequence += 1
+  window.removeEventListener('popstate', handlePopState)
+  window.removeEventListener('keydown', handleDetailKey, true)
   window.removeEventListener('hashchange', handleHashChange)
   window.removeEventListener('resize', scheduleCatalogLayout)
   layoutObserver?.disconnect()
   cancelAnimationFrame(layoutFrame)
-  if (brandClickTimer) window.clearTimeout(brandClickTimer)
 })
 </script>
 
@@ -695,71 +792,44 @@ onUnmounted(() => {
     </main>
   </div>
 
-  <div v-else class="directory-shell">
+  <div v-else class="directory-shell" :class="{ 'plaza-public': !props.management }">
     <slot v-if="props.management" name="management" :open-app="openApp" :open-update="openShareDialog" :open-publication="openPublication" :open-create="openShareDialog" />
-    <main v-else ref="directoryMain" class="directory-main">
-      <header class="directory-header">
-        <div class="brand-block">
-          <button class="brand-mark" type="button" aria-label="AI应用广场" @click="handleBrandClick">
-            <img :src="plazaMark" alt="" />
-          </button>
-          <div>
-            <h1>AI应用广场</h1>
-            <p>发现适合你的 AI 应用</p>
+    <header v-if="!props.management" class="plaza-header">
+      <a class="plaza-brand" href="/" aria-label="AI 应用广场首页"><span class="plaza-brand-mark" aria-hidden="true"><i/><i/><i/><i/></span><span>AI 应用广场<small>更多应用，更好用</small></span></a>
+      <nav class="plaza-modules" aria-label="主要导航"><a class="active" href="/" aria-current="page"><PlazaIcon name="catalog"/>应用广场</a><a href="/admin"><PlazaIcon name="management"/>管理中心</a></nav>
+      <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
+    </header>
+    <aside v-if="!props.management" class="discovery-sidebar">
+      <div class="sidebar-title"><PlazaIcon name="catalog"/><strong>应用广场</strong></div>
+      <nav class="discovery-tabs" aria-label="发现应用">
+        <button :aria-pressed="discoveryTab === 'catalog'" data-testid="tab-catalog" @click="selectDiscovery('catalog')"><PlazaIcon name="catalog"/>全部应用</button>
+        <button :aria-pressed="discoveryTab === 'random'" data-testid="tab-random" @click="selectDiscovery('random')"><PlazaIcon name="random"/>随便看看</button>
+      </nav>
+      <p class="sidebar-note">让好用的应用<br>被更多人发现</p>
+    </aside>
+    <main v-if="!props.management" v-show="!detailVisible" ref="directoryMain" class="directory-main">
+      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
+      <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
+        <div class="catalog-toolbar">
+          <div class="catalog-intro"><div class="catalog-heading-main"><h1 id="catalog-heading">发现好用的 AI 应用</h1><span class="catalog-total" aria-label="应用数量">{{ total }}</span></div><p>找到工作里的好帮手，分享你的新发现。</p></div>
+          <div class="catalog-controls">
+            <div class="search-row">
+              <el-input v-model="query" class="search-input" data-testid="search-input" clearable placeholder="搜索应用名称、用途或能力" aria-label="搜索应用名称、用途或能力" @keyup.enter="searchCatalog" @clear="searchCatalog"><template #prefix><PlazaIcon name="search"/></template></el-input>
+              <el-button class="search-submit" type="primary" data-testid="search-button" @click="searchCatalog">搜索</el-button>
+            </div>
+            <div class="catalog-usage-filter" role="group" aria-label="按使用方式筛选"><button v-for="option in usageOptions" :key="option.value" class="usage-filter-button" :class="{ active: selectedUsage === option.value }" :data-testid="`usage-${option.value}`" :aria-pressed="selectedUsage === option.value" @click="selectUsage(option.value)">{{ option.label }}</button></div>
+            <span class="catalog-sort" aria-label="排序：最近更新">最近更新 ↓</span>
           </div>
         </div>
-        <button class="share-button" data-testid="share-button" @click="openShareDialog()">分享我的AI应用</button>
-      </header>
-
-      <section class="search-section" aria-label="搜索 AI 应用">
-        <div class="search-row">
-          <el-input
-            v-model="query"
-            class="search-input"
-            data-testid="search-input"
-            clearable
-            placeholder="搜索应用名称、用途或能力"
-            aria-label="搜索应用名称、用途或能力"
-            @keyup.enter="searchCatalog"
-          >
-            <template #prefix><span class="search-symbol" aria-hidden="true">⌕</span></template>
-          </el-input>
-          <el-button class="search-submit" type="primary" data-testid="search-button" @click="searchCatalog">搜索</el-button>
-        </div>
-        <div v-if="authorTags.length" class="tag-filter-row" aria-label="按作者标签筛选">
-          <span class="tag-filter-label">能力标签</span>
-          <button
-            v-for="tag in authorTags"
-            :key="tag"
-            class="filter-chip"
-            :class="{ active: selectedTags.includes(tag) }"
-            data-testid="tag-chip"
-            :aria-pressed="selectedTags.includes(tag)"
-            @click="toggleTag(tag)"
-          >{{ tag }}</button>
-        </div>
-      </section>
-
-      <section class="catalog-section" aria-labelledby="catalog-heading">
-        <div ref="catalogHeading" class="catalog-heading-row">
-          <div class="catalog-heading-main">
-            <h2 id="catalog-heading">应用目录</h2>
-            <span class="catalog-total">{{ total }} 项应用</span>
-          </div>
-          <div class="catalog-usage-filter" role="group" aria-label="按使用方式筛选">
-            <button
-              v-for="option in usageOptions"
-              :key="option.value"
-              class="usage-filter-button"
-              :class="{ active: selectedUsage === option.value }"
-              :data-testid="`usage-${option.value}`"
-              :aria-pressed="selectedUsage === option.value"
-              @click="selectUsage(option.value)"
-            >{{ option.label }}</button>
-          </div>
+        <div class="tag-filter-row" aria-label="按作者标签筛选">
+          <span class="tag-filter-label">想做什么</span>
+          <button class="filter-chip" :class="{active: !selectedTags.length}" :aria-pressed="!selectedTags.length" @click="selectedTags = []; searchCatalog()">全部</button>
+          <button v-for="tag in authorTags" :key="tag" class="filter-chip" :class="{ active: selectedTags.includes(tag) }" data-testid="tag-chip" :aria-pressed="selectedTags.includes(tag)" @click="toggleTag(tag)">{{ tag }}</button>
           <button v-if="query || selectedTags.length || selectedUsage !== 'all'" class="clear-filters" @click="clearFilters">清除筛选</button>
         </div>
-
+      </section>
+      <section v-show="discoveryTab === 'catalog'" class="catalog-section" aria-labelledby="catalog-heading">
+        <div ref="catalogHeading" class="catalog-heading-row"></div>
         <div v-if="catalogError" class="catalog-state is-error" role="alert">
           <strong>目录暂时无法加载</strong>
           <p>{{ catalogError }}</p>
@@ -772,48 +842,12 @@ onUnmounted(() => {
           <p>{{ query || selectedTags.length || selectedUsage !== 'all' ? '试试其他关键词、使用方式或清除筛选条件。' : '应用收录后会显示在这里。' }}</p>
           <button v-if="query || selectedTags.length || selectedUsage !== 'all'" class="secondary-button" @click="clearFilters">清除筛选</button>
         </div>
-        <div v-else class="catalog-results" :aria-busy="catalogLoading">
+        <div v-if="apps.length" class="catalog-results" :aria-busy="catalogLoading">
+          <span v-if="catalogLoading" class="catalog-refreshing" role="status">正在更新…</span>
           <div v-if="catalogNotice" class="catalog-notice" role="status">{{ catalogNotice }}</div>
           <section v-for="group in catalogGroups" :key="group.value" class="catalog-group" :data-testid="`catalog-group-${group.value}`" :aria-label="group.label">
-            <div v-if="selectedUsage !== 'all'" class="catalog-group-heading">
-              <h3>{{ group.label }}</h3>
-              <span>{{ group.description }}</span>
-            </div>
             <div class="app-grid">
-            <article v-for="app in group.apps" :key="app.id" class="app-card" data-testid="app-card" :data-usage="catalogUsage(app)" @click="openCard($event, app.id)">
-              <div class="app-card-top">
-                <button class="app-title" :aria-label="`查看 ${appName(app)} 详情`" @click="openApp(app.id)">{{ appName(app) }}</button>
-                <span v-if="app.version" class="app-version">{{ formatVersion(app.version) }}</span>
-              </div>
-              <p class="app-summary">{{ appSummary(app) }}</p>
-              <div class="app-tags" aria-label="应用形态与能力标签">
-                <span v-for="format in appFormats(app)" :key="`format-${format}`" class="app-format" data-testid="app-format">{{ format }}</span>
-                <button
-                  v-for="tag in appTags(app).slice(0, 3)"
-                  :key="tag"
-                  class="app-tag"
-                  :class="{ active: selectedTags.includes(tag) }"
-                  :aria-label="`按标签 ${tag} 筛选`"
-                  @click="toggleTag(tag)"
-                >{{ tag }}</button>
-                <span v-if="appTags(app).length > 3" class="app-tag-more">+{{ appTags(app).length - 3 }}</span>
-              </div>
-              <div class="app-card-footer">
-                <div class="app-card-author-action">
-                  <PlatformOpenButton
-                    v-if="catalogUsage(app) === 'platform' && platformEntry(app)"
-                    data-testid="open-platform"
-                    :href="safeHttpUrl(platformEntry(app).url)"
-                  />
-                  <PlatformOpenButton v-else-if="catalogUsage(app) === 'platform'" disabled />
-                  <span class="app-author">{{ appMaintainers(app) }}</span>
-                </div>
-                <div class="app-dates">
-                  <time :datetime="app.createdAt || undefined">创建 {{ formatDate(app.createdAt) }}</time>
-                  <time :datetime="app.updatedAt || undefined">更新 {{ formatDate(app.updatedAt) }}</time>
-                </div>
-              </div>
-            </article>
+            <CatalogCard v-for="app in group.apps" :key="app.id" :app="app" :selected-tags="selectedTags" @detail="openApp" @primary="usePrimary" @tag="toggleTag" />
             </div>
           </section>
         </div>
@@ -829,15 +863,18 @@ onUnmounted(() => {
       </section>
     </main>
 
-    <el-dialog
-      v-model="detailVisible"
-      class="app-detail-dialog"
-      width="min(1180px, 94vw)"
-      align-center
-      destroy-on-close
+    <component
+      :is="props.management ? ElDialog : 'section'"
+      v-if="props.management || detailVisible"
+      v-bind="props.management ? { modelValue: detailVisible, width: 'min(1180px, 94vw)', alignCenter: true, destroyOnClose: true } : {}"
+      :class="props.management ? 'app-detail-dialog' : 'public-detail'"
       @close="closeDetail"
     >
-      <template #header>
+      <header v-if="!props.management" class="public-detail-heading">
+        <button class="secondary-button" data-testid="return-discovery" @click="returnFromDetail">{{ detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : '返回应用目录' }}</button>
+        <h1 tabindex="-1" ref="detailHeading">应用详情</h1>
+      </header>
+      <template v-if="props.management" #header>
         <div class="detail-dialog-heading">
           <span>应用详情</span>
           <button v-if="props.management && selectedApp && !detailLoading && selectedApp.lifecycle?.status !== 'deleted'" type="button" class="detail-update-link" data-testid="publish-update" :disabled="!props.managementEnabled" @click="openShareDialog(selectedApp.id)">发布新版本</button>
@@ -846,7 +883,7 @@ onUnmounted(() => {
       <div v-if="detailLoading" class="dialog-state" role="status">正在读取应用详情…</div>
       <div v-else-if="detailError" class="dialog-state is-error" role="alert">
         <strong>应用详情暂时无法加载</strong>
-        <p>{{ detailError }}</p>
+        <p>{{ detailError }} 请返回刷新，查看当前可用的应用。</p>
       </div>
       <div v-else-if="selectedApp" class="detail-layout" data-testid="app-detail">
         <div class="detail-content-scroll">
@@ -893,7 +930,7 @@ onUnmounted(() => {
           />
         </aside>
       </div>
-    </el-dialog>
+    </component>
 
     <el-dialog
       v-model="instructionDialogVisible"
@@ -920,7 +957,7 @@ onUnmounted(() => {
             v-if="instruction.distribution?.status !== 'disabled'"
             class="copy-instruction-button"
             data-testid="copy-agent-prompt"
-            @click="copyText(instruction.text, '接入说明已复制')"
+            @click="copyAgentInstructions"
           >复制安装／升级提示词</el-button>
         </template>
       </div>
@@ -1021,79 +1058,23 @@ onUnmounted(() => {
 :global(*) { box-sizing: border-box; }
 :global(html), :global(body), :global(#app) { width: 100%; height: 100%; margin: 0; }
 :global(body) { background: #f4f6f9; color: #273449; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
-.directory-shell { width: 100%; height: 100%; overflow-y: auto; background: #f4f6f9; }
-.directory-main { --catalog-columns: 3; --catalog-card-height: 190px; --catalog-gap: 12px; --catalog-group-heading-height: 30px; --catalog-group-gap: 12px; display: flex; flex-direction: column; width: min(1480px, calc(100% - 64px)); height: 100%; margin: 0 auto; padding: 18px 0; }
-.directory-header, .search-section, .catalog-heading-row { flex-shrink: 0; }
-.catalog-section { display: flex; flex: 1; flex-direction: column; min-height: 0; }
-.catalog-results { flex: 1 0 auto; }
-.directory-header { display: flex; align-items: center; justify-content: space-between; gap: 22px; }
-.brand-block { display: flex; align-items: center; gap: 12px; }
-.brand-mark { display: grid; width: 42px; height: 42px; padding: 0; place-items: center; border: 1px solid #d9e2ef; border-radius: 10px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
-.brand-mark:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
-.brand-mark img { display: block; width: 100%; height: 100%; }
-.brand-block h1 { margin: 0; color: #1e2b3c; font-size: 21px; font-weight: 650; line-height: 1.35; }
-.brand-block p { margin: 3px 0 0; color: #8993a2; font-size: 12px; }
-.share-button, .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: var(--plaza-control-height); padding: 0 14px; border: 1px solid var(--plaza-primary-button); border-radius: 6px; background: var(--plaza-primary-button); color: #fff; font: inherit; font-size: 13px; font-weight: 550; text-decoration: none; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
-.share-button:hover, .primary-button:hover { border-color: #4080ff; background: #4080ff; }
-.share-button:focus-visible, .primary-button:focus-visible, .secondary-button:focus-visible, .app-title:focus-visible, .filter-chip:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
-.primary-button:disabled, .secondary-button:disabled, .share-button:disabled { opacity: .55; cursor: not-allowed; }
-.secondary-button { border-color: #d6dde7; background: #fff; color: #46566d; }
-.secondary-button:hover { border-color: #bac8db; background: #f8fafc; }
-.search-section { margin: 18px 0 18px; padding: 10px 14px; border: 1px solid #e8ebf0; border-radius: 9px; background: #fff; }
-.search-row { display: flex; gap: 10px; max-width: 820px; }
-.search-input { --el-input-height: var(--plaza-control-height); max-width: 690px; }
-.search-input :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px #dfe4ec inset; }
-.search-input :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px #7ea1df inset; }
-.search-symbol { color: #8a95a5; font-size: 22px; line-height: 1; }
-.search-submit { min-width: 84px; }
-.tag-filter-row { display: flex; max-height: 56px; flex-wrap: wrap; align-content: flex-start; align-items: center; gap: 6px; margin-top: 10px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
-.tag-filter-label { margin-right: 3px; color: #8590a0; font-size: 12px; }
-.filter-chip { flex: none; min-height: 26px; padding: 3px 9px; border: 1px solid #e2e7ed; border-radius: 5px; background: #fafbfc; color: #677487; font: inherit; font-size: 12px; cursor: pointer; }
-.filter-chip:hover { border-color: #c4d0e0; color: #425a7b; }
-.filter-chip.active { border-color: #9cb4dc; background: #edf3fc; color: #315fbd; }
-.catalog-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-bottom: 10px; }
-.catalog-heading-main { display: flex; align-items: baseline; gap: 10px; }
-.catalog-usage-filter { display: flex; flex-wrap: wrap; gap: 4px; margin-right: auto; }
-.usage-filter-button { min-height: 32px; padding: 5px 12px; border: 0; border-radius: 5px; background: transparent; color: #68778c; font: inherit; font-size: 13px; cursor: pointer; }
-.usage-filter-button:hover { background: #e9eef7; color: #315fbd; }
-.usage-filter-button.active { background: #e6eeff; color: #165dff; font-weight: 600; }
-.usage-filter-button:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
-.catalog-heading-row h2 { margin: 0; color: #253347; font-size: 17px; font-weight: 650; }
-.catalog-total { color: #8a94a3; font-size: 12px; }
-.catalog-group + .catalog-group { margin-top: var(--catalog-group-gap); }
-.catalog-group-heading { display: flex; height: var(--catalog-group-heading-height); align-items: center; gap: 10px; }
-.catalog-group-heading h3 { flex: none; margin: 0; color: #46566d; font-size: 13px; font-weight: 600; }
-.catalog-group-heading > span { overflow: hidden; color: #8993a2; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.clear-filters { border: 0; background: transparent; color: #5273a6; font: inherit; font-size: 12px; cursor: pointer; }
-.clear-filters:hover { text-decoration: underline; }
-.app-grid { display: grid; grid-template-columns: repeat(var(--catalog-columns), minmax(0, 1fr)); gap: var(--catalog-gap); }
-.app-card { display: flex; height: var(--catalog-card-height); min-width: 0; flex-direction: column; padding: 12px 16px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(25 43 67 / 2%); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
-.app-card { cursor: pointer; }
-.app-card:hover { transform: translateY(-1px); border-color: #ccd6e4; box-shadow: 0 5px 15px rgb(25 43 67 / 5%); }
-.app-card-top { display: flex; min-height: 24px; flex-shrink: 0; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.app-title { display: -webkit-box; min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: #25364e; font: inherit; font-size: 15px; font-weight: 650; line-height: 1.45; text-align: left; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; cursor: pointer; }
-.app-title:hover { color: #315fbd; }
-.app-version, .public-app-version { flex: none; padding: 3px 7px; border: 1px solid #dce3ed; border-radius: 5px; background: #f7f9fc; color: #61748f; font-size: 11px; line-height: 1.3; white-space: nowrap; }
-.app-summary { display: -webkit-box; height: 40px; min-height: 40px; margin: 6px 0 8px; overflow: hidden; color: #657184; font-size: 13px; line-height: 20px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.app-tags { display: flex; height: 22px; min-height: 22px; flex-wrap: nowrap; align-items: flex-start; gap: 6px; overflow: hidden; }
-.app-format { flex: none; padding: 3px 7px; border: 1px solid #d5e2ff; border-radius: 4px; background: #edf3ff; color: #315fbd; font-size: 11px; line-height: 1.25; white-space: nowrap; }
-.app-tag, .app-tag-more { max-width: calc(50% - 3px); overflow: hidden; padding: 3px 7px; border: 1px solid #e5e9ef; border-radius: 4px; background: #fafbfc; color: #778395; font: inherit; font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.app-tag { cursor: pointer; }
-.app-tag:hover, .app-tag.active { border-color: #c2d1e7; background: #f1f5fb; color: #4a6792; }
-.app-tag-more { border-color: transparent; background: transparent; color: #8993a2; }
-.app-tag { max-width: calc((100% - 10px) / 3); min-width: 0; flex-shrink: 1; }
-.app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-top: auto; padding-top: 6px; border-top: 1px solid #edf0f3; }
-.app-card-author-action { display: flex; min-width: 0; align-items: center; gap: 10px; }
-.app-author { max-width: 150px; overflow: hidden; color: #53647a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.app-dates { display: grid; gap: 2px; color: #8993a2; font-size: 11px; line-height: 1.4; text-align: right; white-space: nowrap; }
-.catalog-state { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 28px; border: 1px solid #e5e9ef; border-radius: 8px; background: #fff; color: #748094; font-size: 13px; text-align: center; }
-.catalog-state strong { color: #34445b; font-size: 15px; }
-.catalog-state p { margin: 0 0 4px; }
-.catalog-state.is-error { color: #7f4d4d; }
-.catalog-state.is-error strong { color: #9c4545; }
-.empty-mark { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 50%; background: #f2f5f8; color: #8a96a6; font-size: 27px; }
-.catalog-notice { margin-bottom: 12px; padding: 9px 12px; border: 1px solid #dce8dc; border-radius: 6px; background: #f8fcf7; color: #4d7250; font-size: 12px; }
-.pagination-row { display: flex; flex: 0 0 44px; align-items: center; justify-content: center; margin-top: auto; }
+ .directory-shell { width:100%;height:100%;overflow-y:auto;background:var(--plaza-canvas,#f4f6f9); }
+.directory-main { --catalog-columns:3;--catalog-card-height:270px;--catalog-gap:20px;display:flex;flex-direction:column;width:calc(100% - 196px);height:calc(100% - 64px);margin-left:196px;padding:28px 28px 12px; }
+.plaza-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:24px;height:64px;padding:0 24px;background:#fff;border-bottom:1px solid var(--plaza-line)}
+.plaza-brand{display:flex;align-items:center;gap:12px;flex:none;width:184px;color:var(--plaza-ink);font-size:19px;font-weight:700;text-decoration:none;white-space:nowrap}.plaza-brand small{display:block;margin-top:4px;font-size:10px;font-weight:400;color:var(--plaza-muted)}
+.plaza-brand-mark{display:grid;grid-template-columns:12px 12px;gap:4px;padding:4px}.plaza-brand-mark i{height:12px;border-radius:4px;background:var(--plaza-brand)}.plaza-brand-mark i:nth-child(2){background:#ffb478;transform:rotate(14deg)}.plaza-brand-mark i:nth-child(3){background:#a8b8ef}
+.plaza-modules{display:flex;gap:8px}.plaza-modules a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 16px;border-radius:9px;text-decoration:none;color:var(--plaza-text);font-size:14px;white-space:nowrap}.plaza-modules a.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.plaza-modules a:hover{background:var(--plaza-brand-soft)}
+.share-button,.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;padding:7px 14px;border:1px solid var(--plaza-brand,#165dff);border-radius:9px;background:var(--plaza-brand,#165dff);color:#fff;font:inherit;font-size:13px;text-decoration:none;cursor:pointer}
+.share-button{margin-left:auto;background:var(--plaza-share);border-color:var(--plaza-share);color:var(--plaza-share-ink);font-weight:650;white-space:nowrap}.share-button:hover{background:#ffb97e;border-color:#ffb97e}.primary-button:hover{filter:brightness(1.06)}.secondary-button{background:#fff;border-color:var(--plaza-line,#d6dde7);color:var(--plaza-text,#46566d)}.secondary-button:hover{background:#f8fafc}.primary-button:disabled,.secondary-button:disabled,.share-button:disabled{opacity:.55;cursor:not-allowed}
+.plaza-public button:focus-visible,.plaza-public a:focus-visible{outline:2px solid var(--plaza-brand);outline-offset:3px}
+.discovery-sidebar{position:fixed;top:64px;bottom:0;left:0;display:flex;flex-direction:column;width:196px;padding:18px 10px;background:#faf9f6;border-right:1px solid var(--plaza-line)}.sidebar-title{display:flex;align-items:center;gap:12px;min-height:40px;margin:0 12px 12px;font-size:14px}.sidebar-note{margin:auto 14px 12px;color:var(--plaza-muted);font-size:12px;line-height:1.8}
+.discovery-tabs{display:flex;flex-direction:column;gap:4px}.discovery-tabs button{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 14px;border:0;border-radius:10px;background:transparent;color:var(--plaza-text);font:inherit;font-size:13px;text-align:left;cursor:pointer}.discovery-tabs button:hover{background:#efeee9}.discovery-tabs button[aria-pressed=true]{color:var(--plaza-brand);background:#e9edff;font-weight:650}
+.search-section{flex:none;margin:0 0 22px}.catalog-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:18px;margin-bottom:24px}.catalog-intro h1{font-size:24px;line-height:32px;font-weight:650;letter-spacing:-.35px;margin:0}.catalog-intro p{color:var(--plaza-muted);font-size:12px;margin:8px 0 0}.catalog-heading-main{display:flex;align-items:center;gap:14px}.catalog-total{display:grid;place-items:center;min-width:38px;min-height:34px;padding:4px 10px;border:1px solid var(--plaza-line);border-radius:6px;background:#fff;color:var(--plaza-muted);font-size:12px}
+.catalog-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.search-row{display:flex;gap:8px}.search-input{width:260px;--el-input-height:36px}.search-submit{min-height:36px}.catalog-usage-filter{display:flex;gap:2px;padding:3px;border:1px solid var(--plaza-line);border-radius:9px;background:#fff}.usage-filter-button{min-height:28px;padding:3px 9px;border:0;border-radius:6px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.usage-filter-button.active{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.catalog-sort{font-size:12px;color:var(--plaza-muted);white-space:nowrap}
+.tag-filter-row{display:flex;align-items:center;flex-wrap:wrap;gap:7px;max-height:72px;overflow-y:auto;scrollbar-width:thin}.tag-filter-label{margin-right:8px;font-size:12px;color:var(--plaza-muted)}.filter-chip{flex:none;min-height:32px;padding:5px 12px;border:1px solid transparent;border-radius:20px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;cursor:pointer}.filter-chip:hover{background:#eae9e5}.filter-chip.active{background:var(--plaza-ink);color:#fff}.clear-filters{border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;cursor:pointer}
+.catalog-section{display:flex;flex:1;flex-direction:column;min-height:0}.catalog-heading-row{height:0;margin:0;flex:none}.catalog-results{flex:1 0 auto;position:relative}.catalog-refreshing{position:absolute;right:0;top:-20px;color:var(--plaza-muted);font-size:11px}.app-grid{display:grid;grid-template-columns:repeat(var(--catalog-columns),minmax(0,1fr));gap:var(--catalog-gap)}.pagination-row{display:flex;flex:0 0 48px;align-items:center;justify-content:center;margin-top:auto}
+.catalog-state{display:flex;min-height:200px;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:28px;border:1px solid var(--plaza-line);border-radius:16px;background:#fff;color:var(--plaza-muted);font-size:13px;text-align:center}.catalog-state strong{color:var(--plaza-ink);font-size:15px}.catalog-state p{margin:0 0 4px}.catalog-state.is-error{color:var(--plaza-danger);margin-bottom:16px}.empty-mark{font-size:27px}.catalog-notice{margin-bottom:12px;padding:9px 12px;border:1px solid #dce8dc;border-radius:9px;background:#f8fcf7;color:var(--plaza-success);font-size:12px}
+.public-detail{width:calc(100% - 252px);margin:28px 28px 28px 224px;padding:24px;border:1px solid var(--plaza-line);border-radius:16px;background:#fff}.public-detail-heading{display:flex;align-items:center;gap:20px;margin-bottom:24px}.public-detail-heading h1{margin:0;font-size:20px}.public-detail .detail-layout{height:calc(100vh - 240px)}.public-app-version{padding:3px 7px;color:#61748f;font-size:11px}
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
 .detail-update-link { border: 0; background: none; color: #5d6d8a; font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }
 .detail-update-link:hover { color: #3d5bbb; text-decoration: underline; }
@@ -1169,39 +1150,11 @@ onUnmounted(() => {
 .preview-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid #e8ebf0; }
 .publication-source-commit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 13px 0; color: #8a94a3; font-size: 11px; }
 .publication-source-commit code { color: #55667d; font-family: Consolas, monospace; overflow-wrap: anywhere; }
-@media (max-width: 1180px) {
-  .directory-main { --catalog-columns: 3; }
-}
-@media (max-width: 900px) {
-  .directory-main { --catalog-columns: 2; width: min(100% - 36px, 760px); padding-top: 20px; }
-  .detail-layout { grid-template-columns: minmax(0, 1fr); height: 75vh; max-height: 75vh; }
-  .detail-content-scroll { max-height: 47vh; padding-right: 3px; }
-  .detail-actions { max-height: 25vh; }
-}
-@media (max-width: 620px) {
-  .directory-main { --catalog-columns: 1; --catalog-card-height: 198px; --catalog-gap: 12px; width: calc(100% - 28px); padding-top: 16px; }
-  .directory-header { align-items: flex-start; }
-  .brand-mark { width: 36px; height: 36px; }
-  .brand-block h1 { font-size: 18px; }
-  .brand-block p { font-size: 11px; }
-  .share-button { padding: 0 9px; font-size: 11px; }
-  .search-section { margin: 20px 0 23px; padding: 14px; }
-  .search-row { gap: 7px; }
-  .search-submit { min-width: 62px; padding: 0 10px; }
-  .app-card { min-height: var(--catalog-card-height); padding: 12px 14px; }
-  .publication-main { width: calc(100% - 24px); margin-top: 12px; }
-  .publication-status-card, .publication-preview { padding: 17px 15px; }
-  .publication-status-heading h1, .preview-section-heading h2 { font-size: 17px; }
-}
-@media (min-width: 901px) and (max-height: 760px) {
-  .directory-main { --catalog-card-height: 188px; --catalog-gap: 12px; padding-top: 12px; padding-bottom: 12px; }
-  .search-section { margin: 14px 0 15px; padding: 10px 12px 8px; }
-  .tag-filter-row { max-height: 48px; gap: 5px; margin-top: 8px; }
-  .filter-chip { min-height: 24px; padding: 2px 8px; }
-  .catalog-heading-row { margin-bottom: 8px; }
-  .app-title { line-height: 21px; }
-  .app-dates { font-size: 10px; }
-}
+@media(min-width:1780px){.directory-main{--catalog-columns:4}}
+@media(max-width:1120px){.directory-main{--catalog-columns:2}}
+@media(max-width:900px){.detail-layout{grid-template-columns:minmax(0,1fr);height:75vh;max-height:75vh}.detail-content-scroll{max-height:47vh;padding-right:3px}.detail-actions{max-height:25vh}.public-detail .detail-layout{height:auto;max-height:none}.public-detail .detail-content-scroll,.public-detail .detail-actions{max-height:none;overflow:visible}}
+@media(max-width:760px){.plaza-header{height:auto;min-height:64px;gap:12px;flex-wrap:wrap;padding:12px 16px}.plaza-brand{width:auto;font-size:17px}.plaza-modules{order:3;width:100%;gap:4px}.plaza-modules a{min-height:34px;padding:0 12px;font-size:12px}.share-button{padding:7px 9px;font-size:12px}.share-button .plaza-icon{display:none}.discovery-sidebar{position:static;width:100%;padding:8px 16px;border-right:0;border-bottom:1px solid var(--plaza-line)}.sidebar-title,.sidebar-note{display:none}.discovery-tabs{flex-direction:row}.discovery-tabs button{min-height:40px}.directory-main{width:100%;height:auto;min-height:calc(100% - 170px);margin:0;padding:20px 16px 12px}.catalog-intro h1{font-size:22px}.catalog-controls{width:100%;gap:8px}.search-row{width:100%}.search-input{width:auto;flex:1;min-width:0}.catalog-toolbar{gap:18px;margin-bottom:18px}.tag-filter-row{max-height:78px}.public-detail{width:calc(100% - 32px);margin:16px;padding:18px}.public-detail-heading{gap:12px;flex-wrap:wrap}}
+@media(max-width:650px){.directory-main{--catalog-columns:1;--catalog-gap:16px}.publication-main{width:calc(100% - 24px);margin-top:12px}.publication-status-card,.publication-preview{padding:17px 15px}.publication-status-heading h1,.preview-section-heading h2{font-size:17px}}
 </style>
 
 <style scoped>

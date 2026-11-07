@@ -111,7 +111,7 @@ async function verifyResponseIsolation(page: any, harness: any) {
   await open(first);
   await detailStarted;
   await page.keyboard.press('Escape');
-  await page.locator('.app-detail-dialog').waitFor({ state: 'hidden' });
+  await page.locator('.public-detail').waitFor({ state: 'hidden' });
   await open(second);
   await page.getByTestId('app-detail').waitFor();
   const staleDetailResponse = page.waitForResponse(detailUrl);
@@ -143,14 +143,18 @@ async function verifyResponseIsolation(page: any, harness: any) {
   await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
   await open(second);
   await page.getByTestId('use-agent').click();
+  await page.evaluate(() => { (window as any).copiedText = undefined; });
   await page.getByTestId('copy-agent-prompt').click();
+  await page.waitForFunction(() => typeof (window as any).copiedText === 'string');
   const secondPrompt = await page.evaluate(() => (window as any).copiedText);
   assert.ok(secondPrompt.includes(second.manifest.name));
   const staleInstructionResponse = page.waitForResponse(instructionUrl);
   releaseInstructions();
   await staleInstructionResponse;
   await waitForPaint();
+  await page.evaluate(() => { (window as any).copiedText = undefined; });
   await page.getByTestId('copy-agent-prompt').click();
+  await page.waitForFunction(() => typeof (window as any).copiedText === 'string');
   assert.equal(await page.evaluate(() => (window as any).copiedText), secondPrompt, 'late instructions cannot replace another app prompt');
   await page.unroute(instructionUrl);
 }
@@ -212,9 +216,10 @@ try {
         assert.equal((await harness.service.confirm(draft.id, draft.ticket, { revision: draft.revision, digest: draft.digest! })).status, 'registered');
       }
     }
+    await harness.db.query("UPDATE published_snapshots SET created_at = '2026-01-01T00:00:00Z'");
     await page.goto(harness.origin);
     await page.getByTestId('app-card').first().waitFor();
-    const expectedCards = viewport.width === 1440 ? 9 : 6;
+    const expectedCards = viewport.width >= 1440 ? 6 : 3; // Reviewed 270px cards: two rows on tall desktop, one on compact desktop.
     await page.waitForFunction(count => document.querySelectorAll('[data-testid="app-card"]').length === count, expectedCards);
     const firstCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 1' });
     const legacyCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 2' });
@@ -222,7 +227,7 @@ try {
     assert.ok(!(await firstCard.locator('.app-author').innerText()).includes('Ming Zhang'), 'English maintainer name is data only');
     assert.equal(await legacyCard.locator('.app-author').innerText(), 'Dylan5237', 'legacy string snapshot author remains readable');
     assert.equal(await legacyCard.locator('.app-version').innerText(), '快照 1234abcd', 'historical snapshot version remains unchanged');
-    await legacyCard.getByRole('button', { name: /查看.*详情/ }).click();
+    await legacyCard.locator('.app-title').click();
     await page.getByTestId('app-detail').waitFor();
     assert.equal(await page.getByTestId('detail-author').innerText(), '作者：Dylan5237');
     assert.equal(await page.locator('.overview-version').innerText(), '快照 1234abcd');
@@ -231,7 +236,7 @@ try {
     await page.keyboard.press('Escape');
     await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
 
-    await firstCard.getByRole('button', { name: /查看.*详情/ }).click();
+    await firstCard.locator('.app-title').click();
     await page.getByTestId('app-detail').waitFor();
     assert.equal(await page.getByTestId('detail-author').innerText(), '作者：张明');
     assert.equal(await page.locator('.overview-version').innerText(), 'v1.0.0');
@@ -272,19 +277,23 @@ try {
     const footer = await page.getByTestId('pagination').boundingBox();
     assert.ok(footer && footer.y + footer.height >= viewport.height - 18, 'pagination stays at the bottom');
     if (viewport.height === 720) {
-      await page.getByTestId('pagination').getByText('2', { exact: true }).click();
-      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3);
+      await page.getByTestId('pagination').getByText('3', { exact: true }).click();
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3
+        && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '3'
+        && document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false');
       assert.deepEqual(await page.getByTestId('pagination').boundingBox(), footer, 'last page must keep the same footer position');
       await page.getByTestId('pagination').getByText('1', { exact: true }).click();
-      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6);
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3
+        && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1'
+        && document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false');
     }
     await page.screenshot({ path: `artifacts/mainflow-catalog-${viewport.width}.png` });
     await page.getByRole('textbox', { name: '搜索应用名称、用途或能力' }).fill('Word');
     await page.getByTestId('search-button').click();
     await page.getByTestId('app-card').first().waitFor();
     await page.getByTestId('tag-chip').filter({ hasText: '知识整理' }).first().click();
-    await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 5);
-    await page.getByTestId('app-card').first().getByRole('button', { name: /查看.*详情/ }).click();
+    await page.waitForFunction(count => document.querySelectorAll('[data-testid="app-card"]').length === count, Math.min(5, expectedCards));
+    await page.getByTestId('app-card').first().locator('.app-title').click();
     await page.getByTestId('app-detail').waitFor();
     assert.equal(await page.locator('.detail-overview .markdown-body').count(), 0, 'default overview has no README block');
     assert.equal(await page.locator('.detail-overview .public-app-source').count(), 0, 'default overview has no source block');
@@ -320,7 +329,9 @@ try {
     await page.getByTestId('use-agent').first().click();
     await page.getByTestId('agent-instruction-content').waitFor();
     assert.equal(await page.locator('.detail-actions .instruction-markdown').count(), 0, 'Agent instructions use a separate reading dialog');
+    await page.evaluate(() => { (window as any).copiedText = undefined; });
     await page.getByTestId('copy-agent-prompt').click();
+    await page.waitForFunction(() => typeof (window as any).copiedText === 'string');
     const copied = await page.evaluate(() => (window as any).copiedText);
     assert.ok(copied.includes('最小验证') && copied.includes(SHA), 'copied prompt must retain fixed source and verification');
     await page.keyboard.press('Escape');
@@ -335,7 +346,7 @@ try {
     if (viewport.width === 1440) await verifyResponseIsolation(page, harness);
     await context.close();
   }
-  const hashContext = await browser.newContext({ viewport: { width: 1440, height: 1080 } });
+  const hashContext = await browser.newContext({ viewport: { width: 1440, height: 1280 } });
   const hashPage = await hashContext.newPage();
   hashPage.on('pageerror', error => report.errors.push(error.message));
   await hashPage.goto(publication.previewUrl);
@@ -343,7 +354,7 @@ try {
   await hashPage.evaluate(() => { window.location.hash = ''; });
   await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 9);
   await hashPage.setViewportSize({ width: 1280, height: 720 });
-  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6);
+  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3);
   report.previewHashReturn = true;
   await hashContext.close();
   for (let i = 10; i <= 25; i++) await seedTagCatalog(harness.db, harness.config.audience, ['文档处理'], i);
@@ -353,7 +364,7 @@ try {
   for (const view of [
     { width: 1440, height: 900, columns: 3 },
     { width: 1440, height: 1080, columns: 3 },
-    { width: 1100, height: 900, columns: 3 },
+    { width: 1100, height: 900, columns: 2 },
     { width: 800, height: 900, columns: 2 },
     { width: 390, height: 844, columns: 1 },
     { width: 390, height: 400, columns: 1 },
@@ -393,7 +404,7 @@ try {
     report.views.push({ viewport: { width: view.width, height: view.height }, cards: cards.length, columns: view.columns, footer, responsive: true });
   }
   await layoutPage.setViewportSize({ width: 1280, height: 720 });
-  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
+  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3
     && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1');
   let releaseResize: () => void = () => {};
   let markResizeStarted: () => void = () => {};
@@ -406,15 +417,15 @@ try {
     }
     await route.continue();
   });
-  await layoutPage.setViewportSize({ width: 1440, height: 900 });
+  await layoutPage.setViewportSize({ width: 1440, height: 1280 });
   await resizeHeld;
   await layoutPage.setViewportSize({ width: 1280, height: 720 });
-  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6);
+  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3);
   const staleResizeResponse = layoutPage.waitForResponse(response => new URL(response.url()).searchParams.get('pageSize') === '9');
   releaseResize();
   await staleResizeResponse;
   await layoutPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  assert.equal(await layoutPage.getByTestId('app-card').count(), 6, 'late resize response cannot replace the current capacity');
+  assert.equal(await layoutPage.getByTestId('app-card').count(), 3, 'late resize response cannot replace the current capacity');
   report.resizeResponseIsolation = true;
   await layoutContext.close();
   assert.deepEqual(report.errors, []);
