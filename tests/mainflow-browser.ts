@@ -219,8 +219,10 @@ try {
     await harness.db.query("UPDATE published_snapshots SET created_at = '2026-01-01T00:00:00Z'");
     await page.goto(harness.origin);
     await page.getByTestId('app-card').first().waitFor();
-    const expectedCards = viewport.width >= 1440 ? 6 : 3; // Reviewed 270px cards: two rows on tall desktop, one on compact desktop.
+    const expectedCards = 6; // Both default desktop viewports show two rows.
     await page.waitForFunction(count => document.querySelectorAll('[data-testid="app-card"]').length === count, expectedCards);
+    const tagPositions = await page.locator('.tag-filter-row .filter-chip').evaluateAll(items => items.map(item => Math.round(item.getBoundingClientRect().top)));
+    assert.equal(new Set(tagPositions).size, 1, 'tag filters stay on one line');
     const firstCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 1' });
     const legacyCard = page.getByTestId('app-card').filter({ hasText: 'DocPilot 文档助手 2' });
     assert.equal(await firstCard.locator('.app-author').innerText(), '张明');
@@ -277,13 +279,13 @@ try {
     const footer = await page.getByTestId('pagination').boundingBox();
     assert.ok(footer && footer.y + footer.height >= viewport.height - 18, 'pagination stays at the bottom');
     if (viewport.height === 720) {
-      await page.getByTestId('pagination').getByText('3', { exact: true }).click();
+      await page.getByTestId('pagination').getByText('2', { exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3
-        && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '3'
+        && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '2'
         && document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false');
       assert.deepEqual(await page.getByTestId('pagination').boundingBox(), footer, 'last page must keep the same footer position');
       await page.getByTestId('pagination').getByText('1', { exact: true }).click();
-      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
         && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1'
         && document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false');
     }
@@ -354,7 +356,7 @@ try {
   await hashPage.evaluate(() => { window.location.hash = ''; });
   await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 9);
   await hashPage.setViewportSize({ width: 1280, height: 720 });
-  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3);
+  await hashPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6);
   report.previewHashReturn = true;
   await hashContext.close();
   for (let i = 10; i <= 25; i++) await seedTagCatalog(harness.db, harness.config.audience, ['文档处理'], i);
@@ -404,7 +406,7 @@ try {
     report.views.push({ viewport: { width: view.width, height: view.height }, cards: cards.length, columns: view.columns, footer, responsive: true });
   }
   await layoutPage.setViewportSize({ width: 1280, height: 720 });
-  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3
+  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
     && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1');
   let releaseResize: () => void = () => {};
   let markResizeStarted: () => void = () => {};
@@ -420,12 +422,12 @@ try {
   await layoutPage.setViewportSize({ width: 1440, height: 1280 });
   await resizeHeld;
   await layoutPage.setViewportSize({ width: 1280, height: 720 });
-  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 3);
+  await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6);
   const staleResizeResponse = layoutPage.waitForResponse(response => new URL(response.url()).searchParams.get('pageSize') === '9');
   releaseResize();
   await staleResizeResponse;
   await layoutPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  assert.equal(await layoutPage.getByTestId('app-card').count(), 3, 'late resize response cannot replace the current capacity');
+  assert.equal(await layoutPage.getByTestId('app-card').count(), 6, 'late resize response cannot replace the current capacity');
   report.resizeResponseIsolation = true;
   await layoutContext.close();
   assert.deepEqual(report.errors, []);
