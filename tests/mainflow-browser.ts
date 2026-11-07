@@ -357,11 +357,13 @@ try {
   await tagPage.route('**/api/apps?**', async route => {
     const response = await route.fetch();
     const data = await response.json();
+    if (data.items?.length) data.items[0].manifest.name = '一个足够长以换成两行的应用名称用于验证卡片底部不会被挤出显示范围';
     data.tags = [...data.tags, ...Array.from({ length: 25 }, (_, i) => `额外标签${i + 1}`)];
     await route.fulfill({ response, json: data });
   });
   await tagPage.goto(harness.origin);
   await tagPage.getByTestId('tag-more').waitFor();
+  assert.ok(await tagPage.getByTestId('app-card').first().evaluate(card => card.querySelector('.app-card-footer')!.getBoundingClientRect().bottom <= card.getBoundingClientRect().bottom - 4), 'long title keeps the footer inside the card');
   assert.ok(await tagPage.locator('.tag-filter-row').evaluate(el => el.scrollWidth <= el.clientWidth), 'tag row has no horizontal scrollbar');
   await tagPage.getByTestId('tag-more').focus();
   await tagPage.keyboard.press('Enter');
