@@ -90,6 +90,11 @@ function detail(event) {
 .app-card-author-action { display: flex; min-width: 0; align-items: center; gap: 10px; }
 .app-author { max-width: 150px; overflow: hidden; color: #53647a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .app-dates { display: grid; gap: 2px; color: #657085; font-size: 11px; line-height: 1.4; text-align: right; white-space: nowrap; }
+@media (min-width: 761px) and (max-height: 800px) {
+  .app-card { padding: 12px 20px; }
+  .app-summary { margin: 6px 0; }
+  .app-card-footer { padding-top: 6px; margin-top: 6px; }
+}
 
 .app-card { position: relative; }
 

@@ -269,6 +269,10 @@ try {
     await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
 
     const boxes = await page.getByTestId('app-card').evaluateAll(cards => cards.map(card => { const r = card.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), width: r.width, height: r.height }; }));
+    assert.ok(await page.getByTestId('app-card').evaluateAll(cards => cards.every(card => {
+      const footer = card.querySelector('.app-card-footer')!.getBoundingClientRect();
+      return footer.bottom <= card.getBoundingClientRect().bottom - 4;
+    })), 'card footer remains inside the card');
     assert.equal(new Set(boxes.map(box => box.y)).size, Math.ceil(expectedCards / 3), 'show every full row that fits');
     assert.equal(new Set(boxes.map(box => box.x)).size, 3, 'three readable cards per desktop row');
     const overflow = await page.evaluate(() => ({ horizontal: document.documentElement.scrollWidth > innerWidth, vertical: document.documentElement.scrollHeight > innerHeight }));
@@ -348,6 +352,24 @@ try {
     if (viewport.width === 1440) await verifyResponseIsolation(page, harness);
     await context.close();
   }
+  const tagContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const tagPage = await tagContext.newPage();
+  await tagPage.route('**/api/apps?**', async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.tags = [...data.tags, ...Array.from({ length: 25 }, (_, i) => `额外标签${i + 1}`)];
+    await route.fulfill({ response, json: data });
+  });
+  await tagPage.goto(harness.origin);
+  await tagPage.getByTestId('tag-more').waitFor();
+  assert.ok(await tagPage.locator('.tag-filter-row').evaluate(el => el.scrollWidth <= el.clientWidth), 'tag row has no horizontal scrollbar');
+  await tagPage.getByTestId('tag-more').focus();
+  await tagPage.keyboard.press('Enter');
+  const hiddenTag = tagPage.getByTestId('tag-chip').filter({ hasText: '额外标签25' });
+  await hiddenTag.waitFor();
+  await hiddenTag.click();
+  assert.equal(await hiddenTag.getAttribute('aria-pressed'), 'true', 'overflow tags remain selectable');
+  await tagContext.close();
   const hashContext = await browser.newContext({ viewport: { width: 1440, height: 1280 } });
   const hashPage = await hashContext.newPage();
   hashPage.on('pageerror', error => report.errors.push(error.message));
