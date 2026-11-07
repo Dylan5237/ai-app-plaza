@@ -159,10 +159,14 @@ export async function createApp(config: Config, db: Database) {
     return reply.type('text/x-python; charset=utf-8').header('X-Content-SHA256', script.sha256).send(script.text);
   });
   app.get('/api/apps', async (request) => {
-    const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(8), usage: z.enum(['all', 'platform', 'agent']).optional() }).parse(request.query);
+    const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(8), usage: z.enum(['all', 'platform', 'agent']).optional(), sort: z.literal('updated').optional() }).parse(request.query);
     const tags = typeof search.tags === 'string' ? [search.tags] : search.tags || [];
     if (tags.length > 12 || tags.some(t => [...t].length > 32)) throw new DomainError(400, 'INVALID_REQUEST', '标签筛选超出限制');
-    return service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage });
+    return service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage, sort: search.sort });
+  });
+  app.get('/api/apps/random', async (request) => {
+    const search = z.object({ exclude: z.union([z.string().uuid(), z.array(z.string().uuid()).max(6)]).optional() }).parse(request.query);
+    return service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude);
   });
   app.get('/api/tags', async () => ({ tags: await service.tags(), maxTagsPerApp: 3 }));
   app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));

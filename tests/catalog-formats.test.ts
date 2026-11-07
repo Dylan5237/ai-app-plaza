@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, safeHttpUrl } from '../src/lib/catalog.js';
+import { appFormats, catalogPageCapacity, catalogUsage, platformEntry, primaryAction, safeHttpUrl } from '../src/lib/catalog.js';
 
 test('card formats describe the delivered entry rather than its output or compatibility tools', () => {
   const skill = { manifest: { summary: '创建浏览器插件，使用 CLI 和 MCP 完成操作。', entries: [
@@ -39,4 +39,25 @@ test('mixed apps appear once as a platform and open a safe registered web entry'
   assert.equal(platformEntry(app)?.id, 'other');
   for (const value of ['javascript:alert(1)', 'data:text/html,unsafe', '//example.invalid/', 'https://user:secret@example.invalid/']) assert.equal(safeHttpUrl(value), '');
   assert.equal(platformEntry({ manifest: { entries: [{ kind: 'web', url: 'javascript:alert(1)' }] } }), undefined);
+});
+
+test('card primary action honors the author, including missing, disabled and unsafe entries', () => {
+  const app = { manifest: { primaryEntry: 'agent', entries: [
+    { id: 'web', kind: 'web', url: 'https://example.invalid' },
+    { id: 'agent', kind: 'agent', instructionsPath: 'docs/agent.md' },
+  ] } };
+  assert.equal(catalogUsage(app), 'platform');
+  assert.equal(primaryAction(app).entry?.id, 'agent');
+  assert.equal(primaryAction(app).label, '接入我的Agent');
+  assert.equal(primaryAction(app).reason, '');
+  assert.equal(primaryAction({ ...app, entryAvailability: { agent: { status: 'disabled', reason: '缺少分发源' } } }).reason, '缺少分发源');
+  app.manifest.primaryEntry = 'web';
+  assert.equal(primaryAction(app).label, '打开平台');
+  app.manifest.entries[0]!.url = 'javascript:alert(1)';
+  assert.match(primaryAction(app).reason, /不安全/);
+  app.manifest.primaryEntry = 'missing';
+  assert.equal(primaryAction(app).entry, undefined);
+  assert.match(primaryAction(app).reason, /缺失/);
+  assert.match(primaryAction({ manifest: { entries: [{ kind: 'web', url: 'https://example.invalid' }] } }).reason, /缺失/);
+  assert.match(primaryAction({ ...app, lifecycle: { status: 'offline' } }).reason, /下架/);
 });

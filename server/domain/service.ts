@@ -4,6 +4,7 @@ import {
   createHash,
   createHmac,
   randomBytes,
+  randomInt,
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
@@ -110,7 +111,8 @@ export interface PlazaService {
   managementConfirm(id: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
   managementRetry(id: string): Promise<PublicationView>;
   changeLifecycle(id: string, action: AppLifecycleAction, expectedAppRevision: number, expectedLifecycleRevision: number): Promise<AppLifecycleChange>;
-  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all'; usage?: CatalogUsage }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[]; usageCounts: { platform: number; agent: number } }>;
+  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all'; usage?: CatalogUsage; sort?: 'updated' }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[]; usageCounts: { platform: number; agent: number } }>;
+  random(exclude?: string[]): Promise<{ items: AppView[]; allShown: boolean }>;
   app(id: string, options?: { includeHidden?: boolean }): Promise<AppView>;
   instructions(id: string, entryId: string, options?: { includeHidden?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string; distribution: Record<string, unknown> }>;
   distributionPackage(id: string, assetId: string): Promise<{ id: string; sha256: string; bytes: Buffer }>;
@@ -151,6 +153,7 @@ interface AppRecord {
   created_at: Date | string;
   updated_at: Date | string;
   snap_id: string | null;
+  snapshot_created_at: Date | string;
   commit_sha: string | null;
   manifest_path: string | null;
   tag: string | null;
@@ -197,7 +200,7 @@ const HAS_WEB_ENTRY = `EXISTS (
 )`;
 const APP_SELECT = `
   SELECT a.id, a.instance_id, a.project_id, a.app_key, a.current_snapshot_id, a.revision,
-         a.created_at, a.updated_at, s.id AS snap_id, s.commit_sha, s.manifest_path, s.tag,
+         a.created_at, a.updated_at, s.id AS snap_id, s.created_at AS snapshot_created_at, s.commit_sha, s.manifest_path, s.tag,
          s.digest, s.audience, s.version, s.manifest, s.documents, s.project_url, s.source_created_at,
          ${EFFECTIVE_TAGS} AS effective_tags,
          l.status AS lifecycle_status, l.revision AS lifecycle_revision, l.updated_at AS lifecycle_updated_at
@@ -205,6 +208,20 @@ const APP_SELECT = `
     LEFT JOIN published_snapshots s ON s.id = a.current_snapshot_id
     LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
     ${TAG_OVERRIDE_JOIN}`;
+
+/** Partial Fisher–Yates: every remaining candidate has the same chance at each draw. */
+export function sampleCatalog<T extends { id: string }>(items: T[], exclude: string[] = [], draw: (max: number) => number = randomInt): T[] {
+  const previous = new Set(exclude);
+  const selected: T[] = [];
+  for (const pool of [items.filter(item => !previous.has(item.id)), items.filter(item => previous.has(item.id))]) {
+    for (let remaining = pool.length; remaining > 0 && selected.length < 6; remaining--) {
+      const index = draw(remaining);
+      selected.push(pool[index]!);
+      pool[index] = pool[remaining - 1]!;
+    }
+  }
+  return selected;
+}
 
 export function createService(config: ServiceConfig): PlazaService {
   const reader = new GitLabSourceReader(config.gitlabUrl);
@@ -369,6 +386,24 @@ export function createService(config: ServiceConfig): PlazaService {
         ...(record.lifecycle_updated_at ? { updatedAt: asIso(record.lifecycle_updated_at) } : {}),
       },
     };
+  }
+
+  function entryAvailability(record: AppRecord, manifest: StoredAppManifest): Record<string, DisabledLegacyEntry> {
+    const disabled: Record<string, DisabledLegacyEntry> = {};
+    for (const entry of manifest.entries) {
+      if (entry.kind !== 'agent') continue;
+      const status = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: entry.id, commitSha: record.commit_sha });
+      if (status) disabled[entry.id] = status;
+    }
+    return disabled;
+  }
+
+  function publicCard(record: AppRecord): AppView {
+    const view = appView(record, false);
+    view.updatedAt = asIso(record.snapshot_created_at);
+    const disabled = entryAvailability(record, view.manifest);
+    if (Object.keys(disabled).length) view.entryAvailability = disabled;
+    return view;
   }
 
   function distributionViews(source: LoadedSource): NonNullable<AppView['distributions']> {
@@ -870,6 +905,9 @@ export function createService(config: ServiceConfig): PlazaService {
 
     async list(options = {}) {
       const usage = options.usage;
+      if (options.sort !== undefined && options.sort !== 'updated') {
+        throw new DomainError(400, 'VALIDATION_FAILED', 'sort 必须是 updated。');
+      }
       if (usage !== undefined && !['all', 'platform', 'agent'].includes(usage)) {
         throw new DomainError(400, 'VALIDATION_FAILED', 'usage 必须是 all、platform 或 agent。');
       }
@@ -939,12 +977,13 @@ export function createService(config: ServiceConfig): PlazaService {
       const limitParam = `$${itemParams.length - 1}`;
       const offsetParam = `$${itemParams.length}`;
       const usageOrder = usage === undefined ? '' : `CASE WHEN ${HAS_WEB_ENTRY} THEN 0 ELSE 1 END, `;
+      const order = options.sort === 'updated' ? 's.created_at DESC, ' : usageOrder;
       const itemResult = await config.db.query<AppRecord>(
-        `${APP_SELECT} WHERE ${where} ORDER BY ${usageOrder}lower(s.manifest->>'name'), a.id LIMIT ${limitParam} OFFSET ${offsetParam}`,
+        `${APP_SELECT} WHERE ${where} ORDER BY ${order}lower(s.manifest->>'name'), a.id LIMIT ${limitParam} OFFSET ${offsetParam}`,
         itemParams,
       );
       return {
-        items: itemResult.rows.map((row) => appView(row, false)),
+        items: itemResult.rows.map((row) => options.sort === 'updated' ? publicCard(row) : appView(row, false)),
         total,
         page,
         pageSize,
@@ -955,18 +994,24 @@ export function createService(config: ServiceConfig): PlazaService {
 
     tags: () => catalogTags(config.db, config.audience),
 
+    async random(exclude = []) {
+      if (exclude.length > 6 || exclude.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
+        throw new DomainError(400, 'VALIDATION_FAILED', 'exclude 最多包含 6 个应用 UUID。');
+      }
+      const result = await config.db.query<AppRecord>(
+        `${APP_SELECT} WHERE s.audience = $1 AND COALESCE(l.status, 'published') = 'published'`,
+        [config.audience],
+      );
+      return { items: sampleCatalog(result.rows, exclude).map(publicCard), allShown: result.rows.length <= 6 };
+    },
+
     async app(id, options = {}) {
       await cleanupExpiredTokens();
       const record = await findAppById(id, config.db, options.includeHidden === true);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
       const assets = (await config.db.query<DistributionAssetRecord>('SELECT * FROM distribution_assets WHERE snapshot_id = $1 ORDER BY entry_id', [record.snap_id])).rows;
-      const disabled: Record<string, DisabledLegacyEntry> = {};
-      for (const entry of view.manifest.entries) {
-        if (entry.kind !== 'agent') continue;
-        const status = disabledLegacyEntry({ instanceId: record.instance_id, projectId: record.project_id, appKey: record.app_key, entryId: entry.id, commitSha: record.commit_sha });
-        if (status) disabled[entry.id] = status;
-      }
+      const disabled = entryAvailability(record, view.manifest);
       if ((record.lifecycle_status ?? 'published') === 'published' && view.manifest.entries.some(entry => entry.kind === 'agent')) {
         const normalized = normalizeLegacyRequirements(view.manifest.requirements);
         if (!isDeepStrictEqual(normalized, view.manifest.requirements) || assets.some(asset => asset.guide_text)) {
