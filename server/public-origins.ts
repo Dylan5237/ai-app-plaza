@@ -2,8 +2,31 @@ import { isIP } from 'node:net';
 import type { IncomingHttpHeaders } from 'node:http';
 import { Address6 } from 'ip-address';
 
-type PublicOrigins = { publicOrigin: string; httpsOrigin?: string };
-type IngressRequest = { headers: IncomingHttpHeaders; socket: { remoteAddress?: string }; ip: string };
+type PublicOrigins = { publicOrigin: string; httpsOrigin?: string; trustedProxyIp?: string };
+type IngressRequest = { headers: IncomingHttpHeaders; socket: { remoteAddress?: string }; ip: string;
+  raw?: { socket: { remoteAddress?: string }; rawHeaders: string[] } };
+
+export function parseTrustedProxyIp(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return;
+  if (!isIP(value) || value.includes('%')) throw new Error('PLAZA_TRUSTED_PROXY_IP 必须是单一可信代理 IP，不接受域名、CIDR 或地址列表');
+  return value;
+}
+
+function normalizedIp(value: string): string {
+  if (isIP(value) !== 6) return value.toLowerCase();
+  const address = new Address6(value);
+  return address.isMapped4() ? address.to4().correctForm() : address.correctForm();
+}
+
+/** Trust only the configured socket peer; never interpret a forwarded chain. */
+function proxyClientIp(config: PublicOrigins, request: IngressRequest): string | undefined {
+  const remote = request.raw?.socket.remoteAddress;
+  if (!config.trustedProxyIp || !remote || !isIP(remote) || remote.includes('%') ||
+    normalizedIp(remote) !== normalizedIp(config.trustedProxyIp)) return;
+  const client = request.headers['x-real-ip'];
+  const count = request.raw!.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'x-real-ip').length;
+  return count === 1 && typeof client === 'string' && !client.includes('%') && isIP(client) !== 0 ? client : undefined;
+}
 
 /** One optional HTTPS ingress, on the same literal host as the existing HTTP origin. */
 export function parseHttpsOrigin(value: string | undefined, context: { local: boolean; publicOrigin: string }): string | undefined {
@@ -38,7 +61,7 @@ export function publicOriginForRequest(config: PublicOrigins, request: IngressRe
 
 /** Keep rate-limit's existing IPv4 / IPv4-mapped and IPv6 /64 bucket semantics. */
 export function publicClientRateKey(config: PublicOrigins, request: IngressRequest): string {
-  const ip = httpsClientIp(config, request) || request.ip;
+  const ip = proxyClientIp(config, request) || httpsClientIp(config, request) || request.ip;
   if (isIP(ip) !== 6) return ip.toLowerCase();
   const address = new Address6(ip);
   return address.isMapped4() ? address.to4().correctForm() : new Address6(`${ip}/64`).startAddress().correctForm();

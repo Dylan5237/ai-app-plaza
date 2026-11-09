@@ -19,6 +19,8 @@
 
 依据优先级：目标服务当前返回的契约与错误诊断 → 对应版本的服务端实现和官方工具 → 本文。仓库内唯一完整可执行 Schema 为 [server/contracts/app-manifest.schema.json](../../server/contracts/app-manifest.schema.json)。[旧 Schema 路径](../architecture/app-manifest.schema.json)仅作引用入口。
 
+可选的[天宫同源身份入口](tiangong-identity.md)支持 `PLAZA_PUBLIC_BASE_PATH` 单层挂载，如 `/plaza`；使用目标契约返回的完整地址，Python 客户端 `--origin` 与 MCP `PLAZA_URL` 均保留此前缀。现有上传、回执和使用说明协议不因此取得网页用户身份，也不接收天宫 Token；不要把浏览器会话或天宫凭据复制到发布提示词、CLI 参数或 MCP 配置。
+
 ## 2. 应用作者交付什么
 
 最小资料是 `ai-app.json`、它明确引用的共享 Markdown，以及至少一个使用入口。托管发布还要包含本次应用需要的源码；直连发布的这些文件须已经存在于固定 GitLab commit 中。

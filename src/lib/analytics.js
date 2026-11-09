@@ -1,4 +1,5 @@
 // First-party anonymous measurement. Never sends URLs, search text, clipboard text or credentials.
+import { publicPath } from './public-path.js'
 let enabled = false
 let visitor = null
 let session = null
@@ -53,7 +54,7 @@ export function track(eventName, attributes, context = {}) {
   if (!identity.sessionId || !eventId) return
   const payload = JSON.stringify({ eventId, eventName, occurredAt: new Date().toISOString(), ...identity, viewId: view, ...context, attributes })
   const attempt = (remaining) => {
-    void fetch('/api/analytics/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true, credentials: 'same-origin', cache: 'no-store' })
+    void fetch(publicPath('/api/analytics/events'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true, credentials: 'same-origin', cache: 'no-store' })
       .then(response => { if (!response.ok && response.status >= 500 && remaining) setTimeout(() => attempt(remaining - 1), 2000) })
       .catch(() => { if (remaining) setTimeout(() => attempt(remaining - 1), 2000) })
   }

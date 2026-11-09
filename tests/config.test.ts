@@ -8,6 +8,19 @@ const nonLocalRequirements = {
   PLAZA_SECRET: 'test-only-production-config-with-long-secret',
 };
 
+test('trusted proxy rate-limit configuration is explicit and accepts only a single literal address', async () => {
+  const base = { ...nonLocalRequirements, PUBLIC_ORIGIN: 'https://portal.example.invalid', TIANGONG_AUTH_ENABLED: 'true',
+    TIANGONG_USERINFO_URL: 'https://portal.example.invalid/findByToken', TIANGONG_SUCCESS_CODE: '00000000', TIANGONG_TOKEN_STORAGE_KEY: 'sky-token' };
+  assert.equal((await loadConfig(base)).trustedProxyIp, undefined);
+  assert.equal((await loadConfig({ ...base, PLAZA_TRUSTED_PROXY_IP: '' })).trustedProxyIp, undefined);
+  for (const address of ['127.0.0.1', '192.168.1.10', '::1', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1']) {
+    assert.equal((await loadConfig({ ...base, PLAZA_TRUSTED_PROXY_IP: address })).trustedProxyIp, address);
+  }
+  for (const address of ['localhost', '127.0.0.1/32', '[::1]', 'fe80::1%eth0', '127.0.0.1, ::1', ' 127.0.0.1', '256.0.0.1']) {
+    await assert.rejects(loadConfig({ ...base, PLAZA_TRUSTED_PROXY_IP: address }), /PLAZA_TRUSTED_PROXY_IP/);
+  }
+});
+
 test('disabling collection preserves the configured retention namespace', async () => {
   const base = { ...nonLocalRequirements, PUBLIC_ORIGIN:'https://plaza.example.invalid', PLAZA_ANALYTICS_SITE_ID:'main', PLAZA_ANALYTICS_ENVIRONMENT:'production' };
   const enabled = await loadConfig({ ...base, PLAZA_ANALYTICS_ENABLED:'1' });

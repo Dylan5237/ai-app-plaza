@@ -9,12 +9,16 @@ import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
 import CatalogCard from '../components/CatalogCard.vue'
 import CatalogWheel from '../components/CatalogWheel.vue'
+import FavoriteButton from '../components/FavoriteButton.vue'
 import { apiRequest } from '../lib/api.js'
+import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
-const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false } })
+const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false } })
+const emit = defineEmits(['return'])
+defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel })
 
 const discoveryTab = ref('catalog')
 const randomItems = ref([])
@@ -497,6 +501,7 @@ async function restoreDiscovery() {
   if (shell()) shell().scrollTop = scrollPositions[discoveryTab.value]
   detailOriginFocus?.focus({ preventScroll: true })
   void observeCards()
+  emit('return')
 }
 
 function returnFromDetail() {
@@ -800,7 +805,7 @@ async function mutatePublication(action) {
 }
 
 function applicationUrl(appId) {
-  const url = new URL(props.management ? '/' : window.location.pathname, window.location.origin)
+  const url = new URL(props.management ? publicPath('/') : window.location.pathname, window.location.origin)
   url.searchParams.set('app', appId)
   return url.href
 }
@@ -862,7 +867,7 @@ onUnmounted(() => {
 <template>
   <div v-if="publicationId" class="publication-shell">
     <header v-if="!props.management" class="publication-topbar">
-      <a class="publication-brand" href="/">AI应用广场</a>
+      <a class="publication-brand" :href="publicPath('/')">AI应用广场</a>
       <span class="publication-private-label">私有预览</span>
     </header>
     <main class="publication-main">
@@ -972,8 +977,8 @@ onUnmounted(() => {
   <div v-else class="directory-shell" :class="{ 'plaza-public': !props.management }">
     <slot v-if="props.management" name="management" :open-app="openApp" :open-update="openShareDialog" :open-publication="openPublication" :open-create="openShareDialog" />
     <header v-if="!props.management" class="plaza-header">
-      <a class="plaza-brand" href="/" aria-label="AI 应用广场首页"><span class="plaza-brand-mark" aria-hidden="true"><i/><i/><i/><i/></span><span>AI 应用广场<small>更多应用，更好用</small></span></a>
-      <nav class="plaza-modules" aria-label="主要导航"><a class="active" href="/" aria-current="page"><PlazaIcon name="catalog"/>应用广场</a><a href="/admin"><PlazaIcon name="management"/>管理中心</a></nav>
+      <a class="plaza-brand" :href="publicPath('/')" aria-label="AI 应用广场首页"><span class="plaza-brand-mark" aria-hidden="true"><i/><i/><i/><i/></span><span>AI 应用广场<small>更多应用，更好用</small></span></a>
+      <nav class="plaza-modules" aria-label="主要导航"><a class="active" :href="publicPath('/')" aria-current="page"><PlazaIcon name="catalog"/>应用广场</a><a :href="publicPath('/admin')"><PlazaIcon name="management"/>管理中心</a></nav>
       <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
     </header>
     <aside v-if="!props.management" class="discovery-sidebar">
@@ -1053,7 +1058,7 @@ onUnmounted(() => {
       @close="closeDetail"
     >
       <header v-if="!props.management" class="public-detail-heading">
-        <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : '返回应用目录' }}</button>
+        <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ props.personalReturn ? '返回我的收藏' : detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : '返回应用目录' }}</button>
         <h1 tabindex="-1" ref="detailHeading">应用详情</h1>
       </header>
       <template v-if="props.management" #header>
@@ -1078,6 +1083,7 @@ onUnmounted(() => {
         <aside class="detail-actions" aria-label="应用使用入口" data-testid="detail-actions">
           <div class="detail-action-heading">
             <h2>使用入口</h2>
+            <FavoriteButton v-if="!props.management" :app-id="selectedApp.id" />
           </div>
           <div v-if="!selectedAppEntries.length" class="entry-empty">作者尚未登记使用入口。</div>
           <div v-for="entry in selectedAppEntries" :key="entry.id" class="entry-action">
