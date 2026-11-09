@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import AppExamples from './AppExamples.vue'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
+import { downloadPackage } from '../lib/api.js'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps({
   app: { type: Object, required: true },
@@ -13,6 +15,19 @@ const props = defineProps({
   showSource: { type: Boolean, default: true },
   showEntries: { type: Boolean, default: true },
 })
+const emit = defineEmits(['access-lost'])
+async function savePackage(url) {
+  try { await downloadPackage(url) }
+  catch (error) { ElMessage.error(error.message); if ([401,403,404].includes(error.status)) emit('access-lost') }
+}
+function contentClick(event) {
+  const anchor = event.target.closest?.('a[href]')
+  if (!anchor) return
+  const url = new URL(anchor.href, location.href)
+  if (url.origin === location.origin && /\/api\/apps\/[a-f0-9-]+\/packages\/[a-f0-9-]+$/i.test(url.pathname)) {
+    event.preventDefault(); savePackage(url.href)
+  }
+}
 
 const manifest = computed(() => props.app?.manifest || {})
 const capabilities = computed(() => manifest.value.capabilities || {})
@@ -140,7 +155,7 @@ function formatVersion(value) {
 </script>
 
 <template>
-  <article class="public-app-content">
+  <article class="public-app-content" @click="contentClick">
     <header v-if="props.showHeader" class="public-app-header">
       <div class="public-app-title-row">
         <h2>{{ manifest.name || '未命名应用' }}</h2>
@@ -241,6 +256,7 @@ function formatVersion(value) {
               <p v-if="distributionFor(entry).delivery === 'remote'">远程连接入口：无需在本机安装服务端，远程版本另行核验。</p>
               <p v-if="distributionFor(entry).delivery !== 'remote'">广场分发包：{{ distributionFor(entry).type === 'artifact' ? '发布物' : '源码与脚本' }}，{{ distributionFor(entry).size }} 字节</p>
               <p v-if="distributionFor(entry).delivery !== 'remote'">SHA-256：<code>{{ distributionFor(entry).sha256 }}</code></p>
+              <el-button v-if="!authorPreview && distributionFor(entry).delivery !== 'remote' && distributionFor(entry).url" type="primary" @click="savePackage(distributionFor(entry).url)">下载安装包</el-button>
               <details v-if="authorPreview && distributionFor(entry).delivery !== 'remote'"><summary>查看确认的分享文件（{{ distributionFor(entry).files.length }} 项）</summary>
                 <ul><li v-for="file in distributionFor(entry).files" :key="file.path"><code>{{ file.path }}</code> · {{ file.size }} 字节</li></ul>
               </details>

@@ -25,8 +25,8 @@ export function registerManagementEditor(
 
   app.get('/api/management/apps/:id/editor', async request => {
     const id = appId.parse((request.params as { id?: unknown }).id);
-    if (!managed) return { app: await service.app(id, { includeHidden: true }), editable: false, reason: '当前服务未启用统一托管发布，请使用原发布新版本流程。' };
-    return managed.editorContext(id);
+    if (!managed) return { app: await service.app(id, { includeHidden: true, viewerId: request.plazaUserId, management: !!config.tiangong }), editable: false, reason: '当前服务未启用统一托管发布，请使用原发布新版本流程。' };
+    return managed.editorContext(id, request.plazaUserId);
   });
 
   app.post('/api/management/apps/:id/editor', { bodyLimit: 1024 * 1024 }, async request => {
@@ -36,8 +36,8 @@ export function registerManagementEditor(
     try {
       const idempotencyKey = z.string().uuid().parse(request.headers['idempotency-key']);
       const input = editRequest.parse(request.body);
-      const result = await managed.editMetadata(id, input, idempotencyKey);
-      const managementPublication = await service.managementPublication(result.id);
+      const result = await managed.editMetadata(id, input, idempotencyKey, request.plazaUserId);
+      const managementPublication = await service.managementPublication(result.id, request.plazaUserId);
       if (managementPublication.id !== result.id) {
         throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '托管修订预览与原始提交记录不一致。');
       }

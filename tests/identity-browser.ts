@@ -1,3 +1,4 @@
+import { createAppAccessService } from '../server/domain/app-access.js';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
@@ -8,7 +9,8 @@ const h = await startIdentityHarness('/plaza', { analytics: true });
 const member = await h.login('fixture-member');
 await mkdir('artifacts', { recursive: true });
 const candidate = await h.service.submit({ projectId: 1, appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG }, TOKEN, 'identity-preview-synthetic-app');
-  await h.service.confirm(candidate.id, candidate.ticket, { revision: candidate.revision, digest: candidate.digest! });
+const registered = await h.service.confirm(candidate.id, candidate.ticket, { revision: candidate.revision, digest: candidate.digest! }, member.user.id);
+await createAppAccessService(h.db, h.config.audience).update(member.user.id, registered.appId!, { revision: 1, requestId: crypto.randomUUID(), scope: 'all', memberIds: [], groupIds: [] });
 if (process.argv.includes('--serve')) {
   console.log(`Identity preview: ${h.origin}/plaza/fixture/portal`);
   await new Promise(() => {});

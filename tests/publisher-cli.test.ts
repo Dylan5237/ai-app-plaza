@@ -2198,6 +2198,39 @@ test('updates require the receipt target and use its current revision', async (t
   assert.ok(Buffer.from(updatedSource!.content, 'base64').toString('utf8') === 'print("UPDATED_SOURCE_SENTINEL")\n', 'updated source was sent');
 });
 
+test('a maintenance-page revision supports restricted updates without anonymous reads and cannot change an unknown request', async t => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-private-revision-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary), stateDir = path.join(temporary, 'private-state');
+  const requests: CapturedRequest[] = [];
+  let loseUpdateResponse = true, portal: Awaited<ReturnType<typeof createPortal>>;
+  portal = await createPortal((request, response) => {
+    requests.push(request);
+    if (request.method === 'GET') { respondJson(response, { error: { code: 'APP_NOT_FOUND' } }, 404); return; }
+    const posts = requests.filter(item => item.method === 'POST').length;
+    if (posts === 2 && loseUpdateResponse) { loseUpdateResponse = false; response.destroy(); return; }
+    respondJson(response, publicationResponse(portal.origin, { revision: posts + 1 }));
+  });
+  t.after(portal.close);
+  const base = ['--origin', portal.origin, '--project', root, '--state-dir', stateDir];
+  assert.equal((await runCli(base)).code, 0);
+  await writeFile(path.join(root, 'src', 'main.py'), 'print("private-update")\n');
+  const args = [...base, '--managed-app-id', MANAGED_ID, '--expected-revision'];
+  const unknown = await runCli([...args, '7']);
+  assert.equal(unknown.code, 2, unknown.stderr);
+  const original = requests[1]!;
+  assert.equal(decodedBody(original).expectedAppRevision, 7);
+  assert.equal(requests.some(item => item.method === 'GET'), false);
+  const changed = await runCli([...args, '8']);
+  assert.equal(changed.code, 2); assert.match(changed.stderr, /原请求/);
+  assert.equal(requests.length, 2, 'a new hint cannot mutate an unresolved original request');
+  const replay = await runCli([...args, '7']);
+  assert.equal(replay.code, 0, replay.stderr);
+  assert.ok(requests[2]!.body.equals(original.body));
+  assert.equal(requests[2]!.headers['idempotency-key'], original.headers['idempotency-key']);
+  assert.equal(requests[2]!.headers['x-plaza-publish-key'], original.headers['x-plaza-publish-key']);
+});
+
 test('a POST response for a different managed application cannot overwrite the receipt identity', async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-post-identity-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));

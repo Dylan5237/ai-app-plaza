@@ -6,7 +6,7 @@ import { openDatabase } from '../../server/domain/database.js';
 import { tiangongConfig } from '../../server/domain/tiangong-identity.js';
 import { startGitLabFixture } from './gitlab-fixture.js';
 
-export async function startIdentityHarness(basePath = '', options: { analytics?: boolean; rateLimit?: boolean; trustedProxyIp?: string } = {}) {
+export async function startIdentityHarness(basePath = '', options: { analytics?: boolean; rateLimit?: boolean; trustedProxyIp?: string; superAdminAccount?: string } = {}) {
   const users: Record<string, any> = {
     'fixture-admin': { userId: '9223372036854775807', tenantId: null, userName: '测试名册管理员', account: 'fixture.admin', enabled: true, isAnonymous: false, userTypeCode: '03' },
     'fixture-member': { userId: '9223372036854775806', tenantId: '12', userName: '测试普通成员', account: 'fixture.member', enabled: true, isAnonymous: false, userTypeCode: '04' },
@@ -28,7 +28,8 @@ export async function startIdentityHarness(basePath = '', options: { analytics?:
   const tiangong = tiangongConfig({ TIANGONG_AUTH_ENABLED: 'true',
     TIANGONG_USERINFO_URL: `http://127.0.0.1:${(portal.address() as AddressInfo).port}/findByToken`,
     TIANGONG_SUCCESS_CODE: '00000000', TIANGONG_TOKEN_STORAGE_KEY: 'fixture-sky-token',
-    PLAZA_IDENTITY_ADMIN_SUBJECTS: users['fixture-admin'].userId })!;
+    PLAZA_IDENTITY_ADMIN_SUBJECTS: users['fixture-admin'].userId,
+    ...(options.superAdminAccount ? { PLAZA_SUPER_ADMIN_ACCOUNT: options.superAdminAccount } : {}) })!;
   const probe = createServer();
   await new Promise<void>(done => probe.listen(0, '127.0.0.1', done));
   const port = (probe.address() as AddressInfo).port;

@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { apiRequest, advanceIdentityRequests, configurePortalIdentity, readPortalToken } from './api.js'
+import { apiRequest, advanceIdentityRequests, configurePortalIdentity, configureWebIdentity, readPortalToken } from './api.js'
 import { publicBasePath } from './public-path.js'
 
 export const identity = reactive({ enabled: false, user: null, busy: false, error: '', switchRequired: false, epoch: 0 })
@@ -12,7 +12,7 @@ function suppress(value) {
   suppressed = value
   try { value ? sessionStorage.setItem(suppressionKey, '1') : sessionStorage.removeItem(suppressionKey) } catch { /* Optional storage. */ }
 }
-function clearUser() { generation++; advanceIdentityRequests(); identity.user = null; identity.busy = false; identity.epoch++ }
+function clearUser() { generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.epoch++ }
 function failed(error) {
   clearUser()
   identity.error = error.message
@@ -29,7 +29,7 @@ export async function signIn(switchAccount = false) {
     const { requestId } = await apiRequest('/api/auth/tiangong/requests', { method: 'POST', body: {} })
     const result = await apiRequest('/api/auth/tiangong/exchange', { method: 'POST', body: { requestId, token, switchAccount } })
     if (current !== generation || token !== readPortalToken()) return
-    advanceIdentityRequests(); identity.user = result.user; identity.epoch++; identity.switchRequired = false; suppress(false)
+    advanceIdentityRequests(); configureWebIdentity(true); identity.user = result.user; identity.epoch++; identity.switchRequired = false; suppress(false)
   } catch (error) { if (current === generation) failed(error) }
   finally { if (current === generation) identity.busy = false }
 }
@@ -58,7 +58,7 @@ export async function initializeIdentity() {
     try {
       const result = await apiRequest('/api/auth/me')
       if (current !== generation || token !== readPortalToken()) return
-      advanceIdentityRequests(); identity.user = result.user; identity.epoch++
+      advanceIdentityRequests(); configureWebIdentity(true); identity.user = result.user; identity.epoch++
     }
     catch (error) {
       if (current !== generation) return
@@ -75,11 +75,16 @@ window.addEventListener('storage', event => {
     initializeIdentity()
   }
 })
-window.addEventListener('focus', async () => {
+async function refreshIdentity() {
   if (!identity.user || identity.busy) return
   const current = generation, token = readPortalToken()
   try {
     const result = await apiRequest('/api/auth/me')
-    if (current === generation && token === readPortalToken()) identity.user = result.user
+    if (current === generation && token === readPortalToken()) {
+      if (['administrator','superAdministrator','identityAdmin'].some(key => identity.user[key] !== result.user[key])) { advanceIdentityRequests(); identity.epoch++ }
+      identity.user = result.user
+    }
   } catch (error) { if (current === generation) failed(error) }
-})
+}
+window.addEventListener('focus', refreshIdentity)
+window.addEventListener('plaza-capabilities-changed', refreshIdentity)

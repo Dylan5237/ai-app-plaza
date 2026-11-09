@@ -1,3 +1,5 @@
+import { IDENTITY_SCHEMA } from './identity-schema.js';
+import { APP_ACCESS_SCHEMA } from './app-access-schema.js';
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Pool, type PoolClient, type QueryResult as PgQueryResult, type QueryResultRow } from "pg";
@@ -231,6 +233,8 @@ const MIGRATIONS = [
     detected_at timestamptz NOT NULL,
     PRIMARY KEY(environment,site_instance_id,publication_id)
   )`,
+  ...IDENTITY_SCHEMA,
+  ...APP_ACCESS_SCHEMA,
 ];
 
 function result<Row extends QueryResultRow>(value: PgQueryResult<Row>): QueryResult<Row> {

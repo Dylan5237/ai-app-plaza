@@ -1,3 +1,10 @@
+import { registerOperationsDashboard } from './operations-dashboard.js';
+import { requireAdministrator } from './domain/platform-access.js';
+import { publicCatalogAppIds } from './domain/app-access.js';
+import { installManagementIdentity } from './management-auth.js';
+import { registerApplicationAccess } from './application-access.js';
+import { requireAppAction } from './domain/app-access.js';
+import type { IdentityHttp } from './identity.js';
 import Fastify, { type FastifyRequest } from 'fastify';
 import staticPlugin from '@fastify/static';
 import rateLimit from '@fastify/rate-limit';
@@ -67,7 +74,7 @@ export async function createApp(config: Config, db: Database) {
   parseHttpsOrigin(config.httpsOrigin, config);
   parseTrustedProxyIp(config.trustedProxyIp);
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, publicBasePath: basePath, secret: config.secret, audience: config.audience,
-    distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir, analytics: config.analytics });
+    distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir, analytics: config.analytics, applicationIdentity: !!config.tiangong });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret, analytics: config.analytics }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false,
@@ -76,6 +83,26 @@ export async function createApp(config: Config, db: Database) {
       if (basePath && (url === basePath || url.startsWith(`${basePath}?`))) return `/__plaza_mount${url.slice(basePath.length)}`;
       return basePath && url.startsWith(`${basePath}/`) ? url.slice(basePath.length) : url;
     } });
+  let identity: IdentityHttp | undefined;
+  installManagementIdentity(app, db, () => identity, !!config.tiangong, new URL(config.gitlabUrl).toString().replace(/\/+$/, ''));
+  const viewerId = async (request: FastifyRequest) => {
+    if (!identity || typeof request.headers['x-plaza-portal-token'] !== 'string') return undefined;
+    return (await identity.authenticate(request)).id;
+  };
+  const publicationActor = async (request: FastifyRequest) => {
+    if (!identity) return undefined;
+    identity.sameOrigin(request);
+    return (await identity.authenticate(request)).id;
+  };
+  const protectReceipt = async (result: any, request: FastifyRequest) => {
+    if (!result?.id || !result?.ticket) return result;
+    const visible = await service.receiptView(result.id, result.ticket, await viewerId(request));
+    if (!visible.requiresIdentity) return result;
+    return { ...visible, ticket: result.ticket, previewUrl: result.previewUrl,
+      ...(result.managedAppId ? { managedAppId: result.managedAppId } : {}),
+      ...(result.operationId ? { operationId: result.operationId } : {}),
+      ...(result.sourceUploaded !== undefined ? { sourceUploaded: result.sourceUploaded } : {}) };
+  };
   let managedActive = 0;
   let downloadActive = 0;
   const releaseManagedSlot = (request: any) => {
@@ -186,19 +213,21 @@ export async function createApp(config: Config, db: Database) {
     const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(8), usage: z.enum(['all', 'platform', 'agent']).optional(), sort: z.literal('updated').optional() }).parse(request.query);
     const tags = typeof search.tags === 'string' ? [search.tags] : search.tags || [];
     if (tags.length > 12 || tags.some(t => [...t].length > 32)) throw new DomainError(400, 'INVALID_REQUEST', '标签筛选超出限制');
-    const result = await service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage, sort: search.sort });
+    const result = await service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage, sort: search.sort, viewerId: await viewerId(request) });
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
   app.post('/api/analytics/events', { config: { rateLimit: { groupId: ':analytics', max: 240, timeWindow: '1 minute' } } }, async request => recordBrowserEvent(db, config, request.body));
   app.get('/api/apps/random', async (request) => {
     const search = z.object({ exclude: z.union([z.string().uuid(), z.array(z.string().uuid()).max(6)]).optional() }).parse(request.query);
-    return service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude);
+    return service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude, await viewerId(request));
   });
-  app.get('/api/tags', async () => ({ tags: await service.tags(), maxTagsPerApp: 3 }));
-  app.get('/api/apps/:id', (request) => service.app(publicationId(request.params)));
+  app.get('/api/tags', async request => ({ tags: await service.tags(await viewerId(request)), maxTagsPerApp: 3 }));
+  app.get('/api/apps/:id', async request => service.app(publicationId(request.params), { viewerId: await viewerId(request) }));
   app.get('/api/apps/:id/publish-contract', async (request) => {
     const id = publicationId(request.params);
-    const current = await service.app(id);
+    const actorId = await viewerId(request);
+    if (config.tiangong) await requireAppAction(db, id, actorId);
+    const current = await service.app(id, { viewerId: actorId, management: !!config.tiangong });
     return publishContract(config, current, await managed?.findByAppId(id), false, await service.tags());
   });
   app.get('/api/managed-apps/:id/status', (request) => {
@@ -206,13 +235,13 @@ export async function createApp(config: Config, db: Database) {
     const publishKey = z.string().min(43).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['x-plaza-publish-key']);
     return managed.current(publicationId(request.params), publishKey);
   });
-  app.get('/api/apps/:id/instructions/:entryId', (request) => {
+  app.get('/api/apps/:id/instructions/:entryId', async request => {
     const params = request.params as any;
-    return service.instructions(idValue.parse(params.id), z.string().min(1).max(64).parse(params.entryId));
+    return service.instructions(idValue.parse(params.id), z.string().min(1).max(64).parse(params.entryId), { viewerId: await viewerId(request) });
   });
   app.get('/api/apps/:id/packages/:assetId', async (request, reply) => {
     const params = request.params as any;
-    const asset = await service.distributionPackage(idValue.parse(params.id), idValue.parse(params.assetId));
+    const asset = await service.distributionPackage(idValue.parse(params.id), idValue.parse(params.assetId), await viewerId(request));
     return reply.type('application/zip').header('Content-Disposition', `attachment; filename="plaza-${asset.id}.zip"`)
       .header('Content-Length', asset.bytes.length).header('X-Content-SHA256', asset.sha256).send(asset.bytes);
   });
@@ -223,7 +252,7 @@ export async function createApp(config: Config, db: Database) {
     }
     const key = z.string().min(16).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['idempotency-key']);
     const result = await service.submit(candidate.parse(request.body), token, key);
-    return reply.code(201).send(result);
+    return reply.code(201).send(await protectReceipt(result, request));
   });
   app.post('/api/managed-publications', { bodyLimit: 32 * 1024 * 1024 }, async (request, reply) => {
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');
@@ -232,7 +261,7 @@ export async function createApp(config: Config, db: Database) {
       const publishKey = z.string().min(43).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['x-plaza-publish-key']);
       const key = z.string().uuid().parse(request.headers['idempotency-key']);
       const result = await managed.submit(parseManagedCandidate(request.body), publishKey, key);
-      return reply.code(201).send(result);
+      return reply.code(201).send(await protectReceipt(result, request));
     } finally { releaseManagedSlot(request); }
   });
   app.post('/api/managed-publications/validate', { bodyLimit: 32 * 1024 * 1024 }, async (request, reply) => {
@@ -247,17 +276,27 @@ export async function createApp(config: Config, db: Database) {
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');
     const publishKey = z.string().min(43).max(128).regex(/^[a-zA-Z0-9_-]+$/).parse(request.headers['x-plaza-publish-key']);
     const key = idValue.parse(request.headers['idempotency-key']);
-    return managed.receipt(publishKey, key);
+    return protectReceipt(await managed.receipt(publishKey, key), request);
   });
   app.get('/api/publications/:id', async request => {
-    const result = await service.publication(publicationId(request.params), ticket(request.headers.authorization));
+    const result = await service.publication(publicationId(request.params), ticket(request.headers.authorization), await viewerId(request));
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
-  app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
-  app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
+  app.post('/api/publications/:id/confirm', async request => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body), await publicationActor(request)));
+  app.post('/api/publications/:id/retry', async request => service.retry(publicationId(request.params), ticket(request.headers.authorization), await publicationActor(request)));
   registerManagement(app, config, db, service, managed);
   if (!config.tiangong) registerPreviewAdmin(app, config, db);
-  const identity = await registerIdentity(app, config, db, service);
+  identity = await registerIdentity(app, config, db, service);
+  if (identity) {
+    registerApplicationAccess(app, db, config.audience, identity);
+    registerOperationsDashboard(app, db, { analytics: config.analytics,
+      authenticateAdministrator: async request => {
+        const actor = await identity!.authenticate(request);
+        await requireAdministrator(db, actor.id);
+        return actor;
+      },
+      visibleAppIds: () => publicCatalogAppIds(db, config.audience) });
+  }
   try {
     await access(config.staticDir);
     const index = async (_request: FastifyRequest, reply: any) => reply.type('text/html').header('Cache-Control', 'no-store')

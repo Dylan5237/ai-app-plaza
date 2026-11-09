@@ -2,6 +2,8 @@ import { DomainError } from './errors.js';
 import type { Database, Queryable } from './database.js';
 import type { Config } from '../config.js';
 import { appendBusinessFact } from './analytics-journal.js';
+import { accessRecord, requireAppAction } from './app-access.js';
+import { randomUUID } from 'node:crypto';
 
 export type AppLifecycleStatus = 'published' | 'offline' | 'deleted';
 export type AppLifecycleAction = 'offline' | 'online' | 'delete' | 'restore';
@@ -34,6 +36,8 @@ interface LifecycleInput {
   expectedAppRevision: number;
   expectedLifecycleRevision: number;
   analytics?: Config['analytics'];
+  viewerId?: string;
+  requireIdentity?: boolean;
 }
 
 const badRequest = (message: string) => new DomainError(400, 'VALIDATION_FAILED', message);
@@ -64,6 +68,7 @@ export async function changeAppLifecycle(db: Database, input: LifecycleInput): P
     );
     const app = result.rows[0];
     if (!app) throw new DomainError(404, 'APP_NOT_FOUND', '应用不存在。');
+    if (input.requireIdentity || await accessRecord(tx, input.appId)) await requireAppAction(tx, input.appId, input.viewerId);
     if (app.app_revision !== input.expectedAppRevision) {
       throw conflict('APP_REVISION_CONFLICT', '应用来源修订已变化，请重新读取后台详情后操作。');
     }
@@ -101,6 +106,10 @@ export async function changeAppLifecycle(db: Database, input: LifecycleInput): P
       appId: input.appId, action: input.action, fromStatus: app.lifecycle_status, toStatus: nextStatus,
       lifecycleRevision: nextRevision, appRevision: app.app_revision,
     });
+    if (input.viewerId) await tx.query(`INSERT INTO plaza_access_operations(id,actor_id,resource_id,action,request_value,before_value,after_value)
+      VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb)`, [randomUUID(), input.viewerId, input.appId, `lifecycle_${input.action}`,
+      JSON.stringify({ expectedAppRevision: input.expectedAppRevision, expectedLifecycleRevision: input.expectedLifecycleRevision }),
+      JSON.stringify({ status: app.lifecycle_status }), JSON.stringify({ status: nextStatus, revision: nextRevision })]);
     return {
       appId: input.appId,
       appRevision: app.app_revision,

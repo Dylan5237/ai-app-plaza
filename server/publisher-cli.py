@@ -2038,6 +2038,13 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
 def _run(args: argparse.Namespace) -> int:
     validation_mode = bool(args.validate or args.dry_run)
     try:
+        expected_hint = getattr(args, "expected_revision", None)
+        if expected_hint is not None and (
+            not args.managed_app_id or validation_mode or args.status or args.recover
+            or isinstance(expected_hint, bool) or not isinstance(expected_hint, int)
+            or expected_hint < 0 or expected_hint > 2147483647
+        ):
+            raise CliError("--expected-revision 仅用于带 --managed-app-id 的正式更新，须使用维护页面核对的有效修订。")
         if args.managed_app_id and (args.validate or args.dry_run or args.status or args.recover):
             raise CliError("--managed-app-id 仅用于正式发布模式。")
         origin, scheme, host, port = _normalize_origin(args.origin)
@@ -2176,9 +2183,13 @@ def _run(args: argparse.Namespace) -> int:
         expected_revision: int | None = None
         request_revision = receipt.get("requestExpectedAppRevision")
         if request_managed_id and isinstance(request_revision, int) and not isinstance(request_revision, bool) and request_revision >= 0:
+            if expected_hint is not None and expected_hint != request_revision:
+                raise CliError("原请求结果尚未核清，不能用新的修订改写原幂等请求；请沿原记录恢复。")
             expected_revision = request_revision
         elif request_managed_id:
-            expected_revision = _get_revision(origin_parts, receipt, app_key, request_managed_id)
+            # A logged-in maintenance page may supply a fixed revision without giving
+            # the anonymous Host access to restricted catalog metadata or web credentials.
+            expected_revision = expected_hint if expected_hint is not None else _get_revision(origin_parts, receipt, app_key, request_managed_id)
             receipt["requestExpectedAppRevision"] = expected_revision
             store.save(receipt)
 
@@ -2273,6 +2284,7 @@ def main() -> int:
     parser.add_argument("--origin", required=True, help="门户根地址，例如 https://plaza.example")
     parser.add_argument("--project", required=True, help="AI 应用项目的绝对路径")
     parser.add_argument("--managed-app-id", help="只允许更新与本机 receipt 匹配的应用 UUID")
+    parser.add_argument("--expected-revision", type=int, help="维护页面已核对的固定修订；不授予读取或确认权限")
     parser.add_argument("--state-dir", help=argparse.SUPPRESS)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--dry-run", action="store_true", help="只检查资料并输出数量摘要，不访问门户")

@@ -1,7 +1,10 @@
+import { appAccessPredicate } from './app-access.js';
+import { IDENTITY_SCHEMA } from './identity-schema.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Database, Queryable } from './database.js';
 import { DomainError } from './errors.js';
 import { verifyPortalIdentity, type TiangongConfig } from './tiangong-identity.js';
+import { bindSuperAdministrator, platformCapabilities } from './platform-access.js';
 
 export interface IdentityUser {
   id: string;
@@ -9,6 +12,8 @@ export interface IdentityUser {
   name: string;
   account: string | null;
   identityAdmin: boolean;
+  administrator: boolean;
+  superAdministrator: boolean;
 }
 interface GroupRecord {
   id: string;
@@ -25,31 +30,12 @@ const missing = () => new DomainError(401, 'LOGIN_REQUIRED', '请使用天宫身
 
 /** Only application identity and opaque credential hashes are persisted, never portal tokens. */
 export async function createIdentityService(db: Database, config: TiangongConfig) {
-  for (const statement of [
-    `CREATE TABLE IF NOT EXISTS plaza_identities (
-      id uuid PRIMARY KEY, source text NOT NULL, subject text NOT NULL, name text NOT NULL,
-      account text, tenant_id text, verified_at timestamptz NOT NULL, UNIQUE(source, subject))`,
-    `CREATE TABLE IF NOT EXISTS plaza_login_requests (
-      id_hash text PRIMARY KEY, browser_hash text NOT NULL, expires_at timestamptz NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS plaza_sessions (
-      token_hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES plaza_identities(id), expires_at timestamptz NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS plaza_groups (
-      id uuid PRIMARY KEY, name text NOT NULL, revision integer NOT NULL DEFAULT 1,
-      enabled boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now())`,
-    `CREATE TABLE IF NOT EXISTS plaza_group_members (
-      group_id uuid NOT NULL REFERENCES plaza_groups(id), user_id uuid NOT NULL REFERENCES plaza_identities(id),
-      PRIMARY KEY(group_id, user_id))`,
-    `CREATE TABLE IF NOT EXISTS plaza_identity_operations (
-      id uuid PRIMARY KEY, actor_id uuid NOT NULL REFERENCES plaza_identities(id), group_id uuid NOT NULL,
-      action text NOT NULL, before_value jsonb, after_value jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
-    `CREATE TABLE IF NOT EXISTS plaza_favorites (
-      user_id uuid NOT NULL REFERENCES plaza_identities(id), app_id uuid NOT NULL REFERENCES catalog_apps(id),
-      created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,app_id))`,
-  ]) await db.query(statement);
+  for (const statement of IDENTITY_SCHEMA) await db.query(statement);
 
-  function user(row: any): IdentityUser {
+  async function user(row: any, queryable: Queryable = db): Promise<IdentityUser> {
+    const capabilities = await platformCapabilities(queryable, row.id);
     return { id: row.id, subject: row.subject, name: row.name, account: row.account,
-      identityAdmin: config.identityAdmins.includes(row.subject) };
+      identityAdmin: config.identityAdmins.includes(row.subject) || capabilities.superAdministrator, ...capabilities };
   }
   async function cleanup() {
     await db.query('DELETE FROM plaza_login_requests WHERE expires_at <= now()');
@@ -87,7 +73,8 @@ export async function createIdentityService(db: Database, config: TiangongConfig
       if (input.session) await tx.query('DELETE FROM plaza_sessions WHERE token_hash=$1', [hash(input.session)]);
       await tx.query('INSERT INTO plaza_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+$3*interval \'1 hour\')',
         [hash(credential), row.id, config.sessionHours]);
-      return user(row);
+      await bindSuperAdministrator(tx, row as { id: string; subject: string }, portal.account, config.superAdminAccount);
+      return user(row, tx);
     });
     return { user: account, credential };
   }
@@ -99,9 +86,12 @@ export async function createIdentityService(db: Database, config: TiangongConfig
     const portal = await verifyPortalIdentity(portalToken, config);
     if (!await sessionUser(session)) throw missing();
     if (portal.subject !== row.subject) throw new DomainError(409, 'ACCOUNT_SWITCH_REQUIRED', '天宫当前账号已变化，请确认切换广场账号。');
-    const updated = (await db.query('UPDATE plaza_identities SET name=$2,account=$3,tenant_id=$4,verified_at=now() WHERE id=$1 RETURNING *',
-      [row.id, portal.name, portal.account ?? null, portal.tenantId])).rows[0];
-    return user(updated);
+    return db.transaction(async tx => {
+      const updated = (await tx.query('UPDATE plaza_identities SET name=$2,account=$3,tenant_id=$4,verified_at=now() WHERE id=$1 RETURNING *',
+        [row.id, portal.name, portal.account ?? null, portal.tenantId])).rows[0];
+      await bindSuperAdministrator(tx, updated as { id: string; subject: string }, portal.account, config.superAdminAccount);
+      return user(updated, tx);
+    });
   }
   async function logout(session?: string) {
     if (session) await db.query('DELETE FROM plaza_sessions WHERE token_hash=$1', [hash(session)]);
@@ -135,7 +125,7 @@ export async function createIdentityService(db: Database, config: TiangongConfig
     const result = await db.query(`INSERT INTO plaza_favorites(user_id,app_id)
       SELECT $1,a.id FROM catalog_apps a JOIN published_snapshots s ON s.id=a.current_snapshot_id
       LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id
-      WHERE a.id=$2 AND s.audience=$3 AND COALESCE(l.status,'published')='published'
+      WHERE a.id=$2 AND s.audience=$3 AND COALESCE(l.status,'published')='published' AND ${appAccessPredicate('$1::uuid')}
       ON CONFLICT(user_id,app_id) DO UPDATE SET created_at=plaza_favorites.created_at RETURNING app_id`, [actor.id, appId, audience]);
     if (!result.rowCount) throw new DomainError(404, 'APP_NOT_FOUND', '此应用当前不可访问，未保存收藏。');
   }
