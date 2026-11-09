@@ -28,6 +28,7 @@
 ```dotenv
 PUBLIC_ORIGIN=https://portal.example.invalid
 PLAZA_PUBLIC_BASE_PATH=/plaza
+PLAZA_TRUSTED_PROXY_IP=127.0.0.1
 TIANGONG_AUTH_ENABLED=true
 TIANGONG_USERINFO_URL=https://portal.example.invalid/pedestal-service/inner/skyUser/findByToken
 TIANGONG_SUCCESS_CODE=00000000
@@ -41,6 +42,10 @@ PLAZA_IDENTITY_ADMIN_SUBJECTS=
 
 默认关闭身份；关闭后不注册个人与小组接口、不展示这些入口。身份模式不与 `PLAZA_LOCAL_MANAGEMENT`、`PLAZA_INTRANET_MANAGEMENT`、`PLAZA_PREVIEW_ADMIN_PROXY_IP` 或双 origin 的 `PLAZA_HTTPS_ORIGIN` 同时启用。应将门户同源地址设置为唯一 `PUBLIC_ORIGIN`，由受控反向代理传入对应 Host；网络与证书准备不由应用启动自动完成。
 
+同源反向代理部署须将 `PLAZA_TRUSTED_PROXY_IP` 配为该代理连接广场后端时的实际来源 IP；示例中的回环地址仅适用于代理与后端同机。只接受单个 IPv4/IPv6 字面地址，不接受域名、CIDR 或地址列表。代理必须覆盖 `X-Real-IP`，传入一个真实客户端地址，不能保留或追加浏览器自带值；后端网络入口应限制到受控代理。
+
+`trustProxy` 保持关闭。仅当实际 socket 对端匹配配置且 `X-Real-IP` 是唯一、有效、无 zone 的地址时，使用该客户端地址区分限流额度；其他情况保留 socket 地址的额度，伪造 `X-Forwarded-For` 无法切换额度。IPv4-mapped 地址归一，IPv6 客户端仍按 /64 分组。Host/Origin 核对与身份授权保持独立。不配置可信代理时不会自动信任任何转发头，同一代理连接后的请求会共用连接地址的限流额度。
+
 `PLAZA_PUBLIC_BASE_PATH` 仅接受一个固定路径段。前端资源、API、私有预览回执、发布契约、包链接及现有 MCP / Python 客户端均保留此前缀；客户端仍不读取或取得网页身份。无前缀部署保留原行为。
 
 启用时在当前配置的数据库创建 `plaza_identities`、`plaza_login_requests`、`plaza_sessions`、`plaza_groups`、`plaza_group_members`、`plaza_identity_operations`、`plaza_favorites`，不更改既有应用或发布记录。会话和请求到期后在启动及每分钟清理。小组变更在同一事务保存成员、修订与真实操作者；未知结果重试保留创建请求 ID，已有修订冲突须回读。
@@ -49,7 +54,7 @@ PLAZA_IDENTITY_ADMIN_SUBJECTS=
 
 ```powershell
 npm run typecheck
-node --import tsx --test tests/identity.test.ts tests/personal-space.test.ts
+node --import tsx --test --test-concurrency=1 tests/identity.test.ts tests/personal-space.test.ts tests/identity-proxy.test.ts
 npm run build
 $env:PLAYWRIGHT_CHANNEL='msedge'
 npm run test:identity:browser

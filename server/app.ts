@@ -15,7 +15,7 @@ import { createManagedPublisher } from './domain/managed-publisher.js';
 import { registerPreviewAdmin } from './preview-admin.js';
 import { registerManagement } from './management.js';
 import { registerIdentity } from './identity.js';
-import { parseHttpsOrigin, publicClientRateKey, publicOriginForRequest } from './public-origins.js';
+import { parseHttpsOrigin, parseTrustedProxyIp, publicClientRateKey, publicOriginForRequest } from './public-origins.js';
 import { recordBrowserEvent, recordCatalogBaseline, recordPublicationExpirations } from './domain/analytics.js';
 import { maintainAnalyticsRetention } from './domain/analytics-retention.js';
 
@@ -65,6 +65,7 @@ export async function createApp(config: Config, db: Database) {
   const basePath = config.publicBasePath || '';
   if (basePath && !/^\/[a-zA-Z0-9_-]+$/.test(basePath)) throw new Error('PLAZA_PUBLIC_BASE_PATH 必须是单层固定路径');
   parseHttpsOrigin(config.httpsOrigin, config);
+  parseTrustedProxyIp(config.trustedProxyIp);
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, publicBasePath: basePath, secret: config.secret, audience: config.audience,
     distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir, analytics: config.analytics });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret, analytics: config.analytics }) : undefined;
@@ -114,7 +115,7 @@ export async function createApp(config: Config, db: Database) {
   });
   app.addHook('onClose', async () => { clearInterval(cleanupTimer); await cleanupInFlight; });
   if (config.rateLimit) await app.register(rateLimit, { max: 120, timeWindow: '1 minute',
-    ...(config.httpsOrigin ? { keyGenerator: (request: FastifyRequest) => publicClientRateKey(config, request) } : {}) });
+    ...(config.httpsOrigin || config.trustedProxyIp ? { keyGenerator: (request: FastifyRequest) => publicClientRateKey(config, request) } : {}) });
   app.addHook('onRequest', async (request, reply) => {
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer');
     if (request.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');

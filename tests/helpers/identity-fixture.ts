@@ -6,7 +6,7 @@ import { openDatabase } from '../../server/domain/database.js';
 import { tiangongConfig } from '../../server/domain/tiangong-identity.js';
 import { startGitLabFixture } from './gitlab-fixture.js';
 
-export async function startIdentityHarness(basePath = '', options: { analytics?: boolean } = {}) {
+export async function startIdentityHarness(basePath = '', options: { analytics?: boolean; rateLimit?: boolean; trustedProxyIp?: string } = {}) {
   const users: Record<string, any> = {
     'fixture-admin': { userId: '9223372036854775807', tenantId: null, userName: '测试名册管理员', account: 'fixture.admin', enabled: true, isAnonymous: false, userTypeCode: '03' },
     'fixture-member': { userId: '9223372036854775806', tenantId: '12', userName: '测试普通成员', account: 'fixture.member', enabled: true, isAnonymous: false, userTypeCode: '04' },
@@ -38,7 +38,8 @@ export async function startIdentityHarness(basePath = '', options: { analytics?:
   const origin = `http://127.0.0.1:${port}`;
   const config = { host: '127.0.0.1', port, publicOrigin: origin, gitlabUrl: gitlab.url,
     secret: 'fixture-only-identity-test-secret-0000', dataDir: '', local: true,
-    audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: false, tiangong, publicBasePath: basePath,
+    audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: options.rateLimit ?? false, tiangong, publicBasePath: basePath,
+    ...(options.trustedProxyIp ? { trustedProxyIp: options.trustedProxyIp } : {}),
     ...(options.analytics ? { analytics: { environment: 'local' as const, siteInstanceId: 'identity-fixture' } } : {}) };
   const { app, service, identity } = await createApp(config, db);
   // Explicit test-only portal page, not a production route or authentication fallback.

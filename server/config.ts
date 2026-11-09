@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { resolve } from 'node:path';
-import { parseHttpsOrigin } from './public-origins.js';
+import { parseHttpsOrigin, parseTrustedProxyIp } from './public-origins.js';
 import { tiangongConfig, type TiangongConfig } from './domain/tiangong-identity.js';
 
 export interface Config {
@@ -16,6 +16,7 @@ export interface Config {
   httpsOrigin?: string;
   tiangong?: TiangongConfig;
   publicBasePath?: string;
+  trustedProxyIp?: string;
   analytics?: { environment: 'production' | 'test' | 'local'; siteInstanceId: string };
   analyticsRetention?: { environment: 'production' | 'test' | 'local'; siteInstanceId: string };
 }
@@ -100,6 +101,7 @@ export async function loadConfig(env = process.env): Promise<Config> {
     throw new Error('非本地运行需要 HTTPS PUBLIC_ORIGIN；仅可通过 ALLOW_INSECURE_PORTAL=1 为 RFC1918 私网 IPv4 开启 HTTP 内网试用');
   }
   const httpsOrigin = parseHttpsOrigin(env.PLAZA_HTTPS_ORIGIN, { local, publicOrigin });
+  const clientProxyIp = parseTrustedProxyIp(env.PLAZA_TRUSTED_PROXY_IP);
   if (env.PLAZA_LOCAL_MANAGEMENT === '1') {
     assertLocalManagementConfig({ local, host, port, publicOrigin, localManagement: true });
   }
@@ -155,6 +157,7 @@ export async function loadConfig(env = process.env): Promise<Config> {
     dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true,
     ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}),
     ...(httpsOrigin ? { httpsOrigin } : {}),
+    ...(clientProxyIp ? { trustedProxyIp: clientProxyIp } : {}),
     ...(tiangong ? { tiangong } : {}), ...(publicBasePath ? { publicBasePath } : {}),
     analyticsRetention: { environment: analyticsEnvironment as 'production' | 'test' | 'local', siteInstanceId: analyticsSite },
     ...(analyticsEnabled ? { analytics: { environment: analyticsEnvironment as 'production' | 'test' | 'local', siteInstanceId: analyticsSite } } : {}),
