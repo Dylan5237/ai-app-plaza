@@ -8,6 +8,8 @@ import { compareProjectVersions, decodeUtf8, manifestJson, normalizeProjectVersi
 import { validateTagReuse } from './tags.js';
 import { parseTree, type ParseError } from "jsonc-parser";
 import { hasConflictingInstallSource, isDependencyManifestPath, isInstallRelevantPath, validateDistributionBytes, validateDistributionPath } from './distribution.js';
+import { appendBusinessFact } from './analytics-journal.js';
+import type { Config } from '../config.js';
 
 const MAX_FILES = 1_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -49,6 +51,7 @@ interface OperationRecord {
   tag: string;
   operation_kind: "full_source" | "metadata_patch";
   status: "prepared" | "project_ready" | "commit_ready" | "tag_ready" | "release_ready" | "submitted";
+  created_at: Date | string;
 }
 
 function operationHasUploadedSource(operation: OperationRecord): boolean {
@@ -118,6 +121,7 @@ interface ManagedPublisherConfig {
   groupId: string;
   secret: string;
   service: PlazaService;
+  analytics?: Config['analytics'];
 }
 
 export interface ManagedSubmitInput {
@@ -296,11 +300,19 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     if (!entries.length) return operation;
     const assignments = entries.map(([column], index) => `${column} = $${index + 2}`).join(", ");
     const params = [operation.id, ...entries.map(([, value]) => value), new Date()];
-    const result = await config.db.query<OperationRecord>(
-      `UPDATE managed_publish_operations SET ${assignments}, updated_at = $${params.length} WHERE id = $1 RETURNING *`,
-      params,
-    );
-    return result.rows[0] ?? operation;
+    if (!config.analytics || !fields.status) {
+      const result = await config.db.query<OperationRecord>(`UPDATE managed_publish_operations SET ${assignments}, updated_at = $${params.length} WHERE id = $1 RETURNING *`, params);
+      return result.rows[0] ?? operation;
+    }
+    return config.db.transaction(async tx => {
+      const previous = (await tx.query<OperationRecord>('SELECT * FROM managed_publish_operations WHERE id=$1 FOR UPDATE', [operation.id])).rows[0];
+      const result = await tx.query<OperationRecord>(`UPDATE managed_publish_operations SET ${assignments}, updated_at = $${params.length} WHERE id = $1 RETURNING *`, params);
+      const current = result.rows[0] ?? operation;
+      if (previous && previous.status !== current.status) await appendBusinessFact(tx, 'managed_publish_operations', operation.id, config.analytics, 'managed_publish_stage_changed', {
+        publishOperationId: operation.id, fromStage: previous.status, toStage: current.status,
+      });
+      return current;
+    });
   }
 
   async function updateBindingProject(binding: BindingRecord, projectId: string): Promise<BindingRecord> {
@@ -425,12 +437,13 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     idemDigest: string,
     baseCommitSha: string | null,
     operationKind: OperationRecord["operation_kind"],
-  ): Promise<OperationRecord> {
+  ): Promise<{ operation: OperationRecord; isNew: boolean }> {
     const id = randomUUID();
     const tag = `v${normalizeProjectVersion(bundle.manifest.projectVersion)!}`;
     const branch = `plaza-upload-${id}`;
     const now = new Date();
-    const inserted = await config.db.query<OperationRecord>(
+    const insertOperation = async (tx: Database | import('./database.js').Queryable) => {
+    const inserted = await tx.query<OperationRecord>(
       `INSERT INTO managed_publish_operations (
          id, binding_id, idempotency_digest, request_digest, manifest_path,
          expected_app_revision, base_commit_sha, branch, tag, operation_kind, status, created_at, updated_at
@@ -438,11 +451,25 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
        ON CONFLICT (binding_id, idempotency_digest) DO NOTHING RETURNING *`,
       [id, binding.id, idemDigest, bundle.requestDigest, bundle.manifestPath, input.expectedAppRevision ?? null, baseCommitSha, branch, tag, operationKind, now],
     );
-    if (inserted.rows[0]) return inserted.rows[0];
+    if (inserted.rows[0]) {
+      const registered = config.analytics && binding.public_app_id ? (await tx.query<{ id: string }>('SELECT id FROM catalog_apps WHERE id=$1', [binding.public_app_id])).rows[0] : undefined;
+      await appendBusinessFact(tx, 'managed_publish_operations', id, config.analytics, 'publish_operation_received', {
+        publishOperationId: id, attemptId: id, attemptStartedAt: now.toISOString(), publishMode: 'managed',
+        publishKind: operationKind === 'metadata_patch' ? 'metadata_edit' : registered ? 'update' : 'new',
+      });
+      await appendBusinessFact(tx, 'managed_publish_operations', id, config.analytics, 'managed_publish_stage_changed', {
+        publishOperationId: id, fromStage: 'none', toStage: 'prepared',
+      });
+      return inserted.rows[0];
+    }
+    return undefined;
+    };
+    const created = config.analytics ? await config.db.transaction(insertOperation) : await insertOperation(config.db);
+    if (created) return { operation: created, isNew: true };
     const raced = await findOperation(binding.id, idemDigest);
     if (!raced) throw stateConflict();
     if (raced.request_digest !== bundle.requestDigest || raced.operation_kind !== operationKind) throw idempotencyConflict();
-    return raced;
+    return { operation: raced, isNew: false };
   }
 
   async function submitWithBinding(
@@ -462,15 +489,41 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       throw ownerError();
     }
 
+    let isNewOperation = false;
     if (!operation) {
       if (!isNewBinding) assertTagReuse(bundle.manifest.tags, await config.service.tags(), bundle.manifestPath);
       const baseCommitSha = await ensureUpdateOwnership(binding, input, bundle);
       if (isNewBinding && (input.managedAppId !== undefined || input.expectedAppRevision !== undefined)) throw ownerError();
       await ensureVersionIsNewForBinding(binding, bundle);
-      operation = await createOperation(binding, input, bundle, idemDigest, baseCommitSha, operationKind);
+      const created = await createOperation(binding, input, bundle, idemDigest, baseCommitSha, operationKind);
+      operation = created.operation;
+      isNewOperation = created.isNew;
     }
-    const result = await processOperation(binding, operation, bundle);
-    return { result, operationId: operation.id };
+    if (!config.analytics || operation.status === 'submitted') {
+      const result = await processOperation(binding, operation, bundle);
+      return { result, operationId: operation.id };
+    }
+    const attemptId = isNewOperation ? operation.id : randomUUID();
+    const startedAt = isNewOperation ? new Date(operation.created_at).toISOString() : new Date().toISOString();
+    if (!isNewOperation) {
+      try { await config.db.transaction(tx => appendBusinessFact(tx, 'managed_publish_operations', operation!.id, config.analytics, 'publication_retry_requested', {
+        publishOperationId: operation.id, publicationId: operation.publication_id, attemptId, attemptStartedAt: startedAt, retryKind: 'recover',
+      })); } catch { console.error('统计重试起点未记录，原业务操作继续'); }
+    }
+    const finish = async (result: 'success' | 'failure' | 'unknown', code?: string) => {
+      try { await config.db.transaction(tx => appendBusinessFact(tx, 'managed_publish_operations', operation!.id, config.analytics, 'publish_attempt_finished', {
+        publishOperationId: operation!.id, attemptId, attemptStartedAt: startedAt, attemptKind: isNewOperation ? 'submit' : 'recover',
+        result, resultRevision: 1, durationMs: Math.max(0, Date.now() - new Date(startedAt).getTime()), safeErrorCode: code || null,
+      })); } catch { console.error('统计结果暂未记录，原业务结果不受影响'); }
+    };
+    try {
+      const result = await processOperation(binding, operation, bundle);
+      await finish(result.status === 'failed' ? 'failure' : 'success');
+      return { result, operationId: operation.id };
+    } catch (error) {
+      await finish(error instanceof DomainError && error.statusCode < 500 ? 'failure' : 'unknown', error instanceof DomainError ? error.code : undefined);
+      throw error;
+    }
   }
 
   async function ensureVersionIsNewForBinding(binding: BindingRecord, bundle: ValidatedBundle): Promise<void> {
@@ -582,7 +635,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         commitSha,
         tag: operation.tag,
         ...(operation.expected_app_revision === null ? {} : { expectedAppRevision: operation.expected_app_revision }),
-      }, config.gitlabToken, `managed:${operation.id}`);
+      }, config.gitlabToken, `managed:${operation.id}`, { mode: 'managed', operationId: operation.id });
     } catch (error) {
       if (error instanceof DomainError) throw error;
       throw new DomainError(503, "PUBLICATION_FAILED", "源码已上传至 GitLab，但广场预览暂时不可用。请使用相同幂等键重试。");

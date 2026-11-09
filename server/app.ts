@@ -15,6 +15,8 @@ import { createManagedPublisher } from './domain/managed-publisher.js';
 import { registerPreviewAdmin } from './preview-admin.js';
 import { registerManagement } from './management.js';
 import { parseHttpsOrigin, publicClientRateKey, publicOriginForRequest } from './public-origins.js';
+import { recordBrowserEvent, recordCatalogBaseline, recordPublicationExpirations } from './domain/analytics.js';
+import { maintainAnalyticsRetention } from './domain/analytics-retention.js';
 
 const candidate = z.object({
   projectId: z.union([z.string().regex(/^[1-9][0-9]{0,19}$/), z.number().int().positive()]),
@@ -61,8 +63,8 @@ export async function createApp(config: Config, db: Database) {
   assertManagementConfig(config);
   parseHttpsOrigin(config.httpsOrigin, config);
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience,
-    distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir });
-  const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret }) : undefined;
+    distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir, analytics: config.analytics });
+  const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret, analytics: config.analytics }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false });
   let managedActive = 0;
@@ -79,11 +81,22 @@ export async function createApp(config: Config, db: Database) {
   };
   let cleanupTimer: NodeJS.Timeout | undefined;
   let cleanupInFlight: Promise<void> | undefined;
+  let nextAnalyticsRetentionAt = 0;
   app.addHook('onReady', async () => {
     await service.cleanupExpiredTokens();
+    if (config.analytics) await recordCatalogBaseline(db, config).then(() => recordPublicationExpirations(db, config)).catch(() => { console.error('统计基线或到期检查未完成，后续将重试'); });
     cleanupTimer = setInterval(() => {
       if (cleanupInFlight) return;
       cleanupInFlight = service.cleanupExpiredTokens()
+        .then(async () => {
+          if (config.analytics) await recordCatalogBaseline(db, config).then(() => recordPublicationExpirations(db, config))
+            .catch(() => { console.error('统计基线或到期检查未完成，后续将重试'); });
+          if (!(config.analyticsRetention || config.analytics) || Date.now() < nextAnalyticsRetentionAt) return;
+          try {
+            await maintainAnalyticsRetention(db, config);
+            nextAnalyticsRetentionAt = Date.now() + 60 * 60_000;
+          } catch { console.error('统计保留策略未完成，后续将重试'); }
+        })
         .catch(() => { console.error('过期发布授权清理未完成，将在下一周期重试'); })
         .finally(() => { cleanupInFlight = undefined; });
     }, 60_000);
@@ -162,8 +175,10 @@ export async function createApp(config: Config, db: Database) {
     const search = z.object({ query: z.string().max(200).default(''), tags: z.union([z.string(), z.array(z.string())]).optional(), page: z.coerce.number().int().min(1).max(100000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(8), usage: z.enum(['all', 'platform', 'agent']).optional(), sort: z.literal('updated').optional() }).parse(request.query);
     const tags = typeof search.tags === 'string' ? [search.tags] : search.tags || [];
     if (tags.length > 12 || tags.some(t => [...t].length > 32)) throw new DomainError(400, 'INVALID_REQUEST', '标签筛选超出限制');
-    return service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage, sort: search.sort });
+    const result = await service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage, sort: search.sort });
+    return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
+  app.post('/api/analytics/events', { config: { rateLimit: { groupId: ':analytics', max: 240, timeWindow: '1 minute' } } }, async request => recordBrowserEvent(db, config, request.body));
   app.get('/api/apps/random', async (request) => {
     const search = z.object({ exclude: z.union([z.string().uuid(), z.array(z.string().uuid()).max(6)]).optional() }).parse(request.query);
     return service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude);
@@ -223,7 +238,10 @@ export async function createApp(config: Config, db: Database) {
     const key = idValue.parse(request.headers['idempotency-key']);
     return managed.receipt(publishKey, key);
   });
-  app.get('/api/publications/:id', (request) => service.publication(publicationId(request.params), ticket(request.headers.authorization)));
+  app.get('/api/publications/:id', async request => {
+    const result = await service.publication(publicationId(request.params), ticket(request.headers.authorization));
+    return config.analytics ? { ...result, analyticsEnabled: true } : result;
+  });
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
   app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
   registerManagement(app, config, db, service, managed);

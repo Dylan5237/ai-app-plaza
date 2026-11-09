@@ -42,7 +42,8 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
 
   app.get('/api/management/publications/:id', async request => {
     const id = z.object({ id: z.string().uuid() }).strict().parse(request.params).id;
-    return service.managementPublication(id);
+    const result = await service.managementPublication(id);
+    return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
 
   const confirmation = z.object({

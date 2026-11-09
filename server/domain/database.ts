@@ -148,6 +148,89 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS published_snapshots_audience_idx ON published_snapshots (audience, app_id)`,
   `CREATE INDEX IF NOT EXISTS publications_expiry_idx ON publications (expires_at)`,
   `CREATE INDEX IF NOT EXISTS managed_publish_operations_binding_idx ON managed_publish_operations (binding_id, created_at DESC)`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE managed_publish_operations ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE catalog_app_lifecycle ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `CREATE TABLE IF NOT EXISTS analytics_events (
+    event_id uuid PRIMARY KEY,
+    event_name text NOT NULL,
+    occurred_at timestamptz NOT NULL,
+    received_at timestamptz NOT NULL,
+    effective_at timestamptz NOT NULL,
+    clock_adjusted boolean NOT NULL,
+    environment text NOT NULL,
+    site_instance_id text NOT NULL,
+    identity_scope text NOT NULL,
+    visitor_id uuid,
+    session_id uuid NOT NULL,
+    view_id uuid NOT NULL,
+    interaction_id uuid,
+    result_set_id uuid,
+    flow_id uuid,
+    publication_id uuid,
+    app_id uuid,
+    snapshot_id uuid,
+    heat_counted boolean NOT NULL DEFAULT false,
+    attributes jsonb NOT NULL DEFAULT '{}'::jsonb
+  )`,
+  `CREATE INDEX IF NOT EXISTS analytics_events_effective_idx ON analytics_events (effective_at, event_name)`,
+  `CREATE TABLE IF NOT EXISTS analytics_rollup_periods (
+    environment text NOT NULL, site_instance_id text NOT NULL, period text NOT NULL,
+    period_start timestamptz NOT NULL, period_end timestamptz NOT NULL,
+    PRIMARY KEY (environment,site_instance_id,period,period_start)
+  )`,
+  `CREATE TABLE IF NOT EXISTS analytics_rollups (
+    environment text NOT NULL, site_instance_id text NOT NULL, period text NOT NULL,
+    period_start timestamptz NOT NULL, event_name text NOT NULL, dimension jsonb NOT NULL,
+    event_count bigint NOT NULL, visitor_count bigint NOT NULL, session_count bigint NOT NULL,
+    heat_count bigint NOT NULL,
+    PRIMARY KEY (environment,site_instance_id,period,period_start,event_name,dimension)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS analytics_card_exposure_once ON analytics_events (environment, site_instance_id, result_set_id, app_id) WHERE event_name = 'app_card_exposed'`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS analytics_preview_once ON analytics_events (environment, site_instance_id, view_id, publication_id, (attributes->>'previewRevision')) WHERE event_name = 'publication_preview_viewed'`,
+  `CREATE TABLE IF NOT EXISTS analytics_usage_windows (
+    environment text NOT NULL,
+    site_instance_id text NOT NULL,
+    client_id uuid NOT NULL,
+    app_id uuid NOT NULL,
+    action text NOT NULL CHECK (action IN ('web','agent')),
+    last_counted_at timestamptz NOT NULL,
+    PRIMARY KEY (environment,site_instance_id,client_id,app_id,action)
+  )`,
+  `CREATE TABLE IF NOT EXISTS analytics_usage_counts (
+    environment text NOT NULL,
+    site_instance_id text NOT NULL,
+    app_id uuid NOT NULL,
+    action text NOT NULL CHECK (action IN ('web','agent')),
+    total bigint NOT NULL CHECK (total >= 0),
+    first_counted_at timestamptz NOT NULL,
+    PRIMARY KEY (environment,site_instance_id,app_id,action)
+  )`,
+  `CREATE TABLE IF NOT EXISTS analytics_baselines (
+    environment text NOT NULL,
+    site_instance_id text NOT NULL,
+    baseline_id uuid NOT NULL,
+    effective_at timestamptz NOT NULL,
+    PRIMARY KEY (environment,site_instance_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS analytics_baseline_items (
+    baseline_id uuid NOT NULL,
+    app_id uuid NOT NULL,
+    snapshot_id uuid NOT NULL,
+    status text NOT NULL,
+    lifecycle_revision integer NOT NULL,
+    app_type text NOT NULL,
+    tag_names jsonb NOT NULL,
+    PRIMARY KEY (baseline_id,app_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS analytics_publication_expirations (
+    environment text NOT NULL,
+    site_instance_id text NOT NULL,
+    publication_id uuid NOT NULL,
+    expires_at timestamptz NOT NULL,
+    detected_at timestamptz NOT NULL,
+    PRIMARY KEY(environment,site_instance_id,publication_id)
+  )`,
 ];
 
 function result<Row extends QueryResultRow>(value: PgQueryResult<Row>): QueryResult<Row> {

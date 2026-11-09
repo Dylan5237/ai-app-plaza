@@ -90,7 +90,7 @@ async function allocatePort(): Promise<number> {
   throw new Error("could not allocate a loopback port allowed by Node fetch");
 }
 
-async function startPortal(): Promise<Portal> {
+async function startPortal(analytics?: Config['analytics']): Promise<Portal> {
   const port = await allocatePort();
   const origin = `http://127.0.0.1:${port}`;
   const db = await openDatabase({ path: "memory://" });
@@ -110,6 +110,7 @@ async function startPortal(): Promise<Portal> {
     staticDir: resolve("dist"),
     rateLimit: false,
     managedPublishing: { groupId: "63", groupPath: "sky-efficiency-skills/ai-apps", token: MANAGED_GITLAB_TOKEN },
+    analytics,
   };
   const { app } = await createApp(config, observedDb);
   await app.listen({ port, host: "127.0.0.1" });
@@ -124,6 +125,24 @@ async function startPortal(): Promise<Portal> {
     close: async () => { await app.close(); await db.close(); await gitlab.close(); },
   };
 }
+
+test('managed event journal records accepted operation and real stage transitions once', async t => {
+  const portal = await startPortal({ environment:'test', siteInstanceId:'fixture' });
+  t.after(() => portal.close());
+  const headers = { 'x-plaza-publish-key':randomBytes(32).toString('base64url'), 'idempotency-key':randomUUID() };
+  const result = await request(portal, 'POST', '/api/managed-publications', makeCandidate(), headers);
+  assert.equal(result.status, 201, result.text);
+  const repeat = await request(portal, 'POST', '/api/managed-publications', makeCandidate(), headers);
+  assert.equal(repeat.status, 201, repeat.text);
+  const row = (await portal.db.query<any>('SELECT analytics_journal FROM managed_publish_operations')).rows[0];
+  const journal = row.analytics_journal;
+  assert.equal(journal.filter((event:any) => event.eventName === 'publish_operation_received').length, 1);
+  const start = journal.find((event:any) => event.eventName === 'publish_operation_received');
+  assert.equal(journal.filter((event:any) => event.eventName === 'publish_attempt_finished' && event.attemptId === start.attemptId && event.result === 'success').length, 1);
+  assert.deepEqual(journal.filter((event:any) => event.eventName === 'managed_publish_stage_changed').map((event:any) => event.toStage), ['prepared','project_ready','commit_ready','tag_ready','release_ready','submitted']);
+  assert.ok(!JSON.stringify(journal).includes(MANAGED_GITLAB_TOKEN));
+  assert.ok(!JSON.stringify(journal).includes(headers['x-plaza-publish-key']));
+});
 
 function makeCandidate(appKey = "sample-1"): Record<string, unknown> {
   const appManifest = {
