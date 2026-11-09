@@ -1059,14 +1059,14 @@ def _normalize_origin(value: str) -> tuple[str, str, str, int | None]:
         raise CliError("--origin 必须是有效的门户 URL。") from None
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
         raise CliError("--origin 只接受不含凭据的 HTTP(S) 门户地址。")
-    if parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment:
-        raise CliError("--origin 只能填写门户根地址，不含路径、查询参数或片段。")
+    if not re.fullmatch(r"/?(?:[a-zA-Z0-9_-]+/?)?", parsed.path) or parsed.params or parsed.query or parsed.fragment:
+        raise CliError("--origin 只接受门户根地址或单层固定挂载路径，不含查询参数或片段。")
     host = parsed.hostname.casefold()
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     default_port = 443 if parsed.scheme == "https" else 80
     netloc = host if port in (None, default_port) else f"{host}:{port}"
-    normalized = f"{parsed.scheme}://{netloc}"
+    normalized = f"{parsed.scheme}://{netloc}{parsed.path.rstrip('/')}"
     return normalized, parsed.scheme, parsed.hostname, port
 
 
@@ -1234,7 +1234,7 @@ class ReceiptStore:
 
 def _request(origin_parts: tuple[str, str, str, int | None], method: str, path: str,
              headers: dict[str, str], body: bytes | None = None) -> tuple[int, bytes]:
-    _, scheme, host, port = origin_parts
+    normalized, scheme, host, port = origin_parts
     connection: http.client.HTTPConnection
     try:
         if scheme == "https":
@@ -1242,7 +1242,7 @@ def _request(origin_parts: tuple[str, str, str, int | None], method: str, path: 
         else:
             connection = http.client.HTTPConnection(host, port=port, timeout=REQUEST_TIMEOUT_SECONDS)
         try:
-            connection.request(method, path, body=body, headers=headers)
+            connection.request(method, urlparse(normalized).path + path, body=body, headers=headers)
             response = connection.getresponse()
             response_body = response.read(MAX_RESPONSE_BYTES + 1)
             if len(response_body) > MAX_RESPONSE_BYTES:
@@ -1441,10 +1441,10 @@ def _author_preview_details(value: str, origin: str) -> tuple[str, str] | None:
         parsed = urlparse(value)
         if (
             parsed.username or parsed.password or not parsed.scheme or not parsed.netloc
-            or parsed.path not in ("", "/") or parsed.params or parsed.query or not parsed.fragment
+            or parsed.params or parsed.query or not parsed.fragment
         ):
             return None
-        preview_origin, _, _, _ = _normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
+        preview_origin, _, _, _ = _normalize_origin(f"{parsed.scheme}://{parsed.netloc}{parsed.path}")
         if preview_origin != origin:
             return None
         fragment = parse_qs(parsed.fragment, strict_parsing=True, keep_blank_values=True, max_num_fields=2)

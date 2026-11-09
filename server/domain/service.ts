@@ -95,6 +95,7 @@ export interface ServiceConfig {
   db: Database;
   gitlabUrl: string;
   publicOrigin: string;
+  publicBasePath?: string;
   secret: string;
   audience: string;
   distributionDir?: string;
@@ -233,6 +234,7 @@ export function createService(config: ServiceConfig): PlazaService {
   const reader = new GitLabSourceReader(config.gitlabUrl);
   const distributionDir = resolve(config.distributionDir || 'artifacts/plaza-local/distribution');
   const publicOrigin = normalizePublicOrigin(config.publicOrigin);
+  const publicUrl = `${publicOrigin.origin}${config.publicBasePath || ''}`;
   if (Buffer.byteLength(config.secret, "utf8") < 32) throw new Error("Publication secret must be at least 32 bytes.");
   if (!config.audience.trim()) throw new Error("A fixed catalog audience must be configured.");
   const secret = Buffer.from(config.secret, "utf8");
@@ -348,7 +350,7 @@ export function createService(config: ServiceConfig): PlazaService {
   function submitView(record: PublicationRecord): SubmitResult {
     const ticket = ticketFor(record.id);
     const view = recordView(record);
-    const url = new URL("/", publicOrigin);
+    const url = new URL(`${publicUrl}/`);
     url.hash = `publish=${record.id}&key=${ticket}`;
     return { ...view, ticket, previewUrl: url.toString() };
   }
@@ -1189,7 +1191,7 @@ export function createService(config: ServiceConfig): PlazaService {
       const safeGuide = !hasConflictingInstallSource(effectiveGuide, config.gitlabUrl);
       const distribution = asset ? {
         status: 'ready', assetId: asset.id, type: asset.package_type, delivery: asset.delivery_mode, sha256: asset.sha256, size: asset.byte_size,
-        url: `${publicOrigin.origin}/api/apps/${view.id}/packages/${asset.id}`,
+        url: `${publicUrl}/api/apps/${view.id}/packages/${asset.id}`,
         files: parseJsonValue<DistributionFile[]>(asset.files),
       } : { status: 'unavailable' };
       if (asset) {
@@ -1199,7 +1201,7 @@ export function createService(config: ServiceConfig): PlazaService {
       if (asset?.delivery_mode === 'remote') {
         const remoteContext = [
           `# ${view.manifest.name} · 远程 MCP 接入`,
-          `广场应用：${publicOrigin.origin}/?app=${view.id}`,
+          `广场应用：${publicUrl}/?app=${view.id}`,
           `来源项目（仅供溯源）：${view.source.projectUrl}；目录固定 commit：\`${view.source.commitSha}\`。`,
           '此入口连接已部署的远程服务，无需在本机安装服务端或配置 GitLab 权限。按下方说明在本机完成业务系统的个人授权，保留已有配置与凭据，不把凭据放入对话或 URL。',
           '先确认宿主支持相应协议，再完成 MCP 初始化和工具清单检查；远程服务实际运行版本需要单独核对，不能由目录源码版本推断。',
@@ -1210,7 +1212,7 @@ export function createService(config: ServiceConfig): PlazaService {
       const context = [
         `# ${view.manifest.name} · ${view.version}`,
         "请将这个 AI 应用安装或升级到我的本地 Agent 环境。按以下流程执行，并报告实际验证结果。",
-        `广场应用：${publicOrigin.origin}/?app=${view.id}`,
+        `广场应用：${publicUrl}/?app=${view.id}`,
         `来源项目（仅供溯源）：${view.source.projectUrl}`,
         `固定 commit：\`${view.source.commitSha}\``,
         `接入说明路径：\`${entry.instructionsPath}\``,
@@ -1218,7 +1220,7 @@ export function createService(config: ServiceConfig): PlazaService {
           ? `## 广场固定分发包\n下载：${distribution.url}\nSHA-256：\`${asset.sha256}\`\n大小：${asset.byte_size} 字节；类型：${asset.package_type}。下载后先校验 SHA-256，再解压并依据下方安装说明执行。应用代码使用此广场分发包，不从仓库或其他地址替换；作者列明的独立运行环境和依赖按可信渠道准备，不能将其他应用版本冒充目标版本。`
           : '## 安装暂不可用\n当前版本尚未提供可下载的广场确认分发包。请联系广场维护者刷新分发资料；停止安装和升级，不要求用户配置 GitLab 权限，也不从仓库或其他地址自行获取文件。分发恢复后须先核对 SHA-256。',
         "## 安装与升级流程",
-        `1. 执行前读取 GET ${publicOrigin.origin}/api/apps/${view.id}，以广场当前已确认收录的版本为目标；若与本提示词的 commit 不同，重新读取 GET ${publicOrigin.origin}/api/apps/${view.id}/instructions/${encodeURIComponent(entry.id)} 的指引，再固定本次版本与 commit。不要使用仓库 HEAD 或尚未收录的 Release。无法读取或入口已移除时停止，不猜测最新版。`,
+        `1. 执行前读取 GET ${publicUrl}/api/apps/${view.id}，以广场当前已确认收录的版本为目标；若与本提示词的 commit 不同，重新读取 GET ${publicUrl}/api/apps/${view.id}/instructions/${encodeURIComponent(entry.id)} 的指引，再固定本次版本与 commit。不要使用仓库 HEAD 或尚未收录的 Release。无法读取或入口已移除时停止，不猜测最新版。`,
         `2. 依据来源项目、appKey=${JSON.stringify(view.manifest.appKey)} 和入口 ${JSON.stringify(entry.id)}，在当前 Host 已知的应用配置/安装位置识别本地版本、commit 和改动。仅凭同名目录不能认定已安装；位置、版本或归属未知时先问我，不扫描无关目录，不覆盖不明文件。`,
         asset ? "3. 未安装：下载并校验广场分发包，按下方作者说明安装。已安装旧版：先展示本地版本 → 目标版本及变更范围，核对升级步骤、兼容性和权限。已是目标版本且 commit 一致：执行可用性检查后告知，无需重复安装。若本地版本更高，不自动降级。安装时在新目录保存 .plaza-installation.json，记录广场应用 ID、入口 ID、版本、固定 commit 和分发包 SHA-256；若同名文件归属不明先询问，不覆盖。该记录不修改应用源码；如果应用本身报告的 commit 为 unknown，须如实报告，不得伪造。"
           : "3. 未安装：无可用分发包时停止安装。已安装旧版：保留现有版本和配置，等待广场维护者刷新分发资料；已是目标版本时只检查现有安装，不重新下载；不自动降级。",

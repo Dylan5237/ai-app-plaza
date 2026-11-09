@@ -1,7 +1,7 @@
 import Fastify, { type FastifyRequest } from 'fastify';
 import staticPlugin from '@fastify/static';
 import rateLimit from '@fastify/rate-limit';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { createService } from './domain/service.js';
@@ -14,6 +14,7 @@ import { publisherScript } from './managed-publish-contract.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
 import { registerPreviewAdmin } from './preview-admin.js';
 import { registerManagement } from './management.js';
+import { registerIdentity } from './identity.js';
 import { parseHttpsOrigin, publicClientRateKey, publicOriginForRequest } from './public-origins.js';
 import { recordBrowserEvent, recordCatalogBaseline, recordPublicationExpirations } from './domain/analytics.js';
 import { maintainAnalyticsRetention } from './domain/analytics-retention.js';
@@ -61,12 +62,19 @@ function parseManagedCandidate(value: unknown) {
 
 export async function createApp(config: Config, db: Database) {
   assertManagementConfig(config);
+  const basePath = config.publicBasePath || '';
+  if (basePath && !/^\/[a-zA-Z0-9_-]+$/.test(basePath)) throw new Error('PLAZA_PUBLIC_BASE_PATH 必须是单层固定路径');
   parseHttpsOrigin(config.httpsOrigin, config);
-  const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, secret: config.secret, audience: config.audience,
+  const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, publicBasePath: basePath, secret: config.secret, audience: config.audience,
     distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir, analytics: config.analytics });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret, analytics: config.analytics }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
-  const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false });
+  const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false,
+    rewriteUrl: request => {
+      const url = request.url || '/';
+      if (basePath && (url === basePath || url.startsWith(`${basePath}?`))) return `/__plaza_mount${url.slice(basePath.length)}`;
+      return basePath && url.startsWith(`${basePath}/`) ? url.slice(basePath.length) : url;
+    } });
   let managedActive = 0;
   let downloadActive = 0;
   const releaseManagedSlot = (request: any) => {
@@ -84,10 +92,12 @@ export async function createApp(config: Config, db: Database) {
   let nextAnalyticsRetentionAt = 0;
   app.addHook('onReady', async () => {
     await service.cleanupExpiredTokens();
+    await identity?.service.cleanup();
     if (config.analytics) await recordCatalogBaseline(db, config).then(() => recordPublicationExpirations(db, config)).catch(() => { console.error('统计基线或到期检查未完成，后续将重试'); });
     cleanupTimer = setInterval(() => {
       if (cleanupInFlight) return;
       cleanupInFlight = service.cleanupExpiredTokens()
+        .then(() => identity?.service.cleanup())
         .then(async () => {
           if (config.analytics) await recordCatalogBaseline(db, config).then(() => recordPublicationExpirations(db, config))
             .catch(() => { console.error('统计基线或到期检查未完成，后续将重试'); });
@@ -245,14 +255,20 @@ export async function createApp(config: Config, db: Database) {
   app.post('/api/publications/:id/confirm', (request) => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body)));
   app.post('/api/publications/:id/retry', (request) => service.retry(publicationId(request.params), ticket(request.headers.authorization)));
   registerManagement(app, config, db, service, managed);
-  registerPreviewAdmin(app, config, db);
+  if (!config.tiangong) registerPreviewAdmin(app, config, db);
+  const identity = await registerIdentity(app, config, db, service);
   try {
     await access(config.staticDir);
-    await app.register(staticPlugin, { root: config.staticDir, index: ['index.html'], dotfiles: 'deny' });
-    app.get('/admin', (_request, reply) => reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow').sendFile('index.html'));
-    app.get('/admin/', (_request, reply) => reply.redirect('/admin'));
-    app.get('/private-previews', (_request, reply) => reply.redirect('/admin'));
-    app.get('/private-previews/', (_request, reply) => reply.redirect('/admin'));
+    const index = async (_request: FastifyRequest, reply: any) => reply.type('text/html').header('Cache-Control', 'no-store')
+      .send((await readFile(resolve(config.staticDir, 'index.html'), 'utf8')).replace('<head>', `<head><meta name="plaza-base-path" content="${basePath}">`));
+    app.get('/', index);
+    app.get('/index.html', index);
+    if (basePath) app.get('/__plaza_mount', (request, reply) => reply.redirect(`${basePath}/${request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''}`));
+    await app.register(staticPlugin, { root: config.staticDir, index: false, dotfiles: 'deny' });
+    app.get('/admin', (request, reply) => { reply.header('X-Robots-Tag', 'noindex, nofollow'); return index(request, reply); });
+    app.get('/admin/', (_request, reply) => reply.redirect(`${basePath}/admin`));
+    app.get('/private-previews', (_request, reply) => reply.redirect(`${basePath}/admin`));
+    app.get('/private-previews/', (_request, reply) => reply.redirect(`${basePath}/admin`));
   } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
-  return { app, service, managed };
+  return { app, service, managed, identity };
 }

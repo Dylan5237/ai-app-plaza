@@ -6,12 +6,13 @@ import { normalizeProjectVersion } from './domain/manifest.js';
 
 export function createMcpBridge(env = process.env) {
   const url = new URL(env.PLAZA_URL || 'http://127.0.0.1:4173');
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('PLAZA_URL 必须为门户根地址');
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || !/^\/(?:[a-zA-Z0-9_-]+\/?)?$/.test(url.pathname)) throw new Error('PLAZA_URL 必须为门户根地址或单层固定挂载路径');
+  const basePath = url.pathname.replace(/\/$/, '');
   if (url.protocol === 'http:' && url.hostname !== '127.0.0.1' && env.PLAZA_ALLOW_HTTP !== '1') throw new Error('远程门户需要 HTTPS；可信内网 HTTP 需显式授权');
   const server = new McpServer({ name: 'ai-app-plaza', version: '0.1.0' });
   const call = async (path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) => {
     try {
-      const response = await fetch(new URL(path, url), { method, redirect: 'error', signal: AbortSignal.timeout(30_000),
+      const response = await fetch(new URL(`${basePath}${path}`, url.origin), { method, redirect: 'error', signal: AbortSignal.timeout(30_000),
         headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
         body: body === undefined ? undefined : JSON.stringify(body) });
       const result = await response.json();

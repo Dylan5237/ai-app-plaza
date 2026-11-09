@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import { access, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
@@ -16,6 +17,31 @@ const WRONG_MANAGED_ID = '08fe067e-0b3a-41d1-9b88-c4d27a5d7bb1';
 const PUBLIC_ID = '8c6dd160-f247-4ff9-8653-b62b7f2866e0';
 const PUBLICATION_ID = '43d40f2f-41bd-49c7-9466-26b8b2e744c4';
 const PREVIEW_TICKET = 'A'.repeat(43);
+
+test('publisher HTTP requests and private receipts preserve a fixed portal mount prefix', async t => {
+  const paths: string[] = [];
+  const portal = await createPortal((request, response) => { paths.push(request.url); response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{}'); });
+  t.after(portal.close);
+  const code = `import importlib.util,sys
+spec=importlib.util.spec_from_file_location('publisher',sys.argv[1])
+m=importlib.util.module_from_spec(spec); sys.modules['publisher']=m; spec.loader.exec_module(m)
+base=sys.argv[2]+'/plaza'
+parts=m._normalize_origin(base+'/')
+assert parts[0]==base
+assert m._request(parts,'GET','/api/managed-apps/example/status',{})[0]==200
+link=base+'/#publish=${PUBLICATION_ID}&key=${PREVIEW_TICKET}'
+assert m._author_preview_details(link,base)==('${PUBLICATION_ID}','${PREVIEW_TICKET}')
+assert m._author_preview_details(link,sys.argv[2]) is None
+assert m._author_preview_details(link.replace('/plaza/','/other/'),base) is None
+for suffix in ['/plaza/../admin','/plaza?x=1','/plaza#x','//plaza','/plaza/nested']:
+ try: m._normalize_origin(sys.argv[2]+suffix)
+ except m.CliError: pass
+ else: raise AssertionError(suffix)
+print('PASS')`;
+  const result = await promisify(execFile)(python, ['-c', code, cliPath, portal.origin], { windowsHide: true });
+  assert.equal(result.stdout.trim(), 'PASS');
+  assert.deepEqual(paths, ['/plaza/api/managed-apps/example/status']);
+});
 
 type CapturedRequest = {
   method: string;

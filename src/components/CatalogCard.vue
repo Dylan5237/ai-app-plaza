@@ -1,6 +1,7 @@
 <script setup>
 import { computed,ref,onUnmounted } from 'vue'
 import AppEmblem from './AppEmblem.vue'
+import FavoriteButton from './FavoriteButton.vue'
 import PlatformOpenButton from './PlatformOpenButton.vue'
 import { appFormats, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 const props = defineProps({ app: { type: Object, required: true }, selectedTags: { type: Array, default: () => [] } })
@@ -13,11 +14,11 @@ let hoverTimer,selecting=false,dismissed=false
 function dismissHover(){clearTimeout(hoverTimer);hoverTimer=undefined;hoverOpen.value=false}
 function hover(event){
   if(dismissed||event.pointerType==='touch'||!matchMedia('(hover: hover) and (pointer: fine)').matches)return
-  if(event.target.closest('.app-tag')||selecting){dismissHover();return}
+  if(event.target.closest('.app-tag,.favorite-button')||selecting){dismissHover();return}
   if(!hoverOpen.value&&!hoverTimer)hoverTimer=setTimeout(()=>{hoverOpen.value=true;hoverTimer=undefined},120)
 }
 function leave(){dismissHover();selecting=false;dismissed=false}
-function focus(event){keyboardOpen.value=!event.target.closest('.app-tag')}
+function focus(event){keyboardOpen.value=!event.target.closest('.app-tag,.favorite-button')}
 function blur(event){if(!event.currentTarget.contains(event.relatedTarget))keyboardOpen.value=false}
 function beginSelection(event){if(!event.target.closest('button,a')){selecting=true;dismissHover()}}
 function closeActions(event){dismissed=true;dismissHover();event.currentTarget.querySelector('.app-title')?.focus({preventScroll:true});keyboardOpen.value=false}
@@ -43,6 +44,7 @@ function detail(event) {
     <div class="app-card-top">
       <AppEmblem :app="app"/>
       <div class="app-card-identity"><button class="app-title" :aria-label="`查看 ${name} 详情`">{{ name }}</button><span v-if="app.version" class="app-version">{{ /^\d/.test(app.version) ? `v${app.version}` : app.version }}</span></div>
+      <FavoriteButton v-if="!app.isAuthorPreview" :app-id="app.id" @pointerenter="dismissHover" />
     </div>
     <p class="app-summary">{{ app.manifest?.summary || '暂无应用简介。' }}</p>
     <div class="app-tags" aria-label="应用形态与能力标签">
@@ -74,6 +76,7 @@ function detail(event) {
 .app-card { cursor: pointer; }
 .app-card:hover { border-color: #ccd6e4; box-shadow: 0 5px 15px rgb(25 43 67 / 5%); }
 .app-card-top { display: flex; min-height: 44px; flex-shrink: 0; align-items: center; gap: 12px; padding-right:0 }
+.app-card-top :deep(.favorite-button) { position: relative; z-index: 2; }
 .app-card-identity{min-width:0;flex:1}.app-card-identity .app-version{display:inline-block;margin:4px 0 0;padding:0;background:transparent;color:var(--plaza-muted);font-size:11px}
 .app-title { display: -webkit-box; min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: #253044; font: inherit; font-size: 16px; font-weight: 650; line-height: 1.45; text-align: left; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; cursor: pointer; }
 .app-title:hover { color: #315fbd; }

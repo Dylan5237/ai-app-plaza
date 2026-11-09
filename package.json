@@ -13,6 +13,7 @@
     "test": "node --import tsx --test --test-concurrency=4 tests/*.test.ts",
     "dev:management-local": "node --import tsx scripts/preview-management-local.ts",
     "test:management:browser": "node --import tsx tests/management-browser.ts",
+    "test:identity:browser": "node --import tsx tests/identity-browser.ts",
     "dev:prototype": "npm run generate && vite --host 127.0.0.1",
     "dev:api": "node --env-file-if-exists=.env --import tsx --watch server/index.ts",
     "start": "node --env-file-if-exists=.env --import tsx server/index.ts",

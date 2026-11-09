@@ -1,6 +1,6 @@
 # 从广场进入伏羲
 
-2026-11-04 起，伏羲入口恢复为 Manifest 普通 Web 外链：卡片和详情直接打开作者登记的 URL（新标签页，`noopener noreferrer`）。广场不读取、转发或持有天宫凭据，也不提供入口策略端点。
+2026-11-04 起，伏羲入口恢复为 Manifest 普通 Web 外链：卡片和详情直接打开作者登记的 URL（新标签页，`noopener noreferrer`）。此入口不读取、转发或持有天宫凭据，也不提供入口策略端点。广场自身的可选天宫登录按[广场身份接入](tiangong-identity.md)独立实现，不向伏羲链接附加凭据。
 
 天宫免登录由伏羲与门户负责：门户 origin 下的 `/fuxi/`（测试）和 `/fuxi-prod/`（生产）同源挂载伏羲，伏羲前端读取同源 `sky-token`，经后端一次性兑换建立伏羲会话。合同见伏羲仓 [`docs/TIANGONG_LOGIN_INTEGRATION.md`](https://github.com/Dylan5237/prototype-manager/blob/main/docs/TIANGONG_LOGIN_INTEGRATION.md)。
 

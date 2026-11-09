@@ -10,8 +10,8 @@ export async function publisherScript() {
   return { text, sha256: createHash('sha256').update(text).digest('hex') };
 }
 
-export async function managedPublishContract(config: Pick<Config, 'publicOrigin' | 'gitlabUrl' | 'audience' | 'managedPublishing'>, schema: object, current?: AppView, target?: ManagedTarget) {
-  const origin = new URL(config.publicOrigin).origin;
+export async function managedPublishContract(config: Pick<Config, 'publicOrigin' | 'publicBasePath' | 'gitlabUrl' | 'audience' | 'managedPublishing'>, schema: object, current?: AppView, target?: ManagedTarget) {
+  const origin = `${new URL(config.publicOrigin).origin}${config.publicBasePath || ''}`;
   const submitUrl = `${origin}/api/managed-publications`;
   const validationUrl = `${submitUrl}/validate`;
   const receiptUrl = `${submitUrl}/receipt`;

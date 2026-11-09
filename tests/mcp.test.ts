@@ -7,6 +7,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { startHarness } from './helpers/harness.js';
 import { DEFAULT_TAG, SHA, TOKEN } from './helpers/gitlab-fixture.js';
+import { startIdentityHarness } from './helpers/identity-fixture.js';
+
+test('existing MCP tools use the configured portal prefix without acquiring browser identity', async t => {
+  const h = await startIdentityHarness('/plaza');
+  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve('node_modules/tsx/dist/cli.mjs'), resolve('server/mcp.ts')],
+    cwd: tmpdir(), env: { ...Object.fromEntries(Object.entries(process.env).filter((pair): pair is [string, string] => pair[1] !== undefined)), PLAZA_URL: `${h.origin}/plaza` }, stderr: 'pipe' });
+  const client = new Client({ name: 'plaza-prefix-test', version: '1.0.0' });
+  t.after(async () => { await client.close(); await h.close(); });
+  await client.connect(transport);
+  const response = await client.callTool({ name: 'get_publish_contract', arguments: {} });
+  assert.equal(response.isError, false);
+  assert.ok(JSON.stringify(response.content).includes(`${h.origin}/plaza/api/publications`));
+  assert.equal((await h.db.query('SELECT count(*) AS n FROM plaza_sessions')).rows[0].n, 0);
+});
 
 test('real MCP stdio process can submit/query, but has no confirmation tool', async t => {
   const harness = await startHarness();

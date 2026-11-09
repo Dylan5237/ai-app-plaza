@@ -5,6 +5,7 @@ import ToolDirectory from './ToolDirectory.vue'
 import ApplicationMetadataEditor from '../components/ApplicationMetadataEditor.vue'
 import ManagementList from '../components/ManagementList.vue'
 import plazaMark from '../assets/plaza-mark.svg'
+import { publicPath } from '../lib/public-path.js'
 const listState = reactive({ view: 'apps', query: '', status: 'all', page: 1, pageSize: 5 })
 const managementEnabled = ref(false)
 const managementMode = ref('disabled')
@@ -23,9 +24,9 @@ onMounted(async () => {
 <template>
   <div class="management-shell">
     <header class="management-topbar">
-      <a href="/" class="management-brand"><img :src="plazaMark" alt="" />AI应用广场</a>
+      <a :href="publicPath('/')" class="management-brand"><img :src="plazaMark" alt="" />AI应用广场</a>
       <span class="management-context">管理后台</span>
-      <a href="/" class="management-plaza-link">返回应用广场</a>
+      <a :href="publicPath('/')" class="management-plaza-link">返回应用广场</a>
     </header>
     <ToolDirectory management :management-enabled="managementEnabled">
       <template #management="{ openApp, openUpdate, openPublication, openCreate }">
