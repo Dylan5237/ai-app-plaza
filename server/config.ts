@@ -56,13 +56,14 @@ export function assertLocalManagementConfig(config: Pick<Config, 'local' | 'host
 
 type ManagementConfig = Pick<Config, 'local' | 'host' | 'port' | 'publicOrigin' | 'localManagement' | 'intranetManagement'>;
 
-export function managementEnabled(config: Pick<Config, 'localManagement' | 'intranetManagement'>): boolean {
-  return config.localManagement === true || config.intranetManagement === true;
+export function managementEnabled(config: Pick<Config, 'localManagement' | 'intranetManagement' | 'tiangong'>): boolean {
+  return config.localManagement === true || config.intranetManagement === true || !!config.tiangong;
 }
 
-export function managementMode(config: Pick<Config, 'localManagement' | 'intranetManagement'>): 'local' | 'intranet' | 'disabled' {
+export function managementMode(config: Pick<Config, 'localManagement' | 'intranetManagement' | 'tiangong'>): 'local' | 'intranet' | 'identity' | 'disabled' {
   if (config.localManagement === true) return 'local';
   if (config.intranetManagement === true) return 'intranet';
+  if (config.tiangong) return 'identity';
   return 'disabled';
 }
 

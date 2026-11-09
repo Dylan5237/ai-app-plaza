@@ -26,7 +26,7 @@ export function registerPreviewAdmin(app: FastifyInstance, config: Config, db: D
     }
     return normalizeIp(forwarded);
   };
-  const reader = createPreviewAdministration(db);
+  const reader = createPreviewAdministration(db, { sourceInstance: new URL(config.gitlabUrl).toString().replace(/\/+$/, '') });
   app.addHook('onRequest', async (request, reply) => {
     if (request.url.split('?')[0].startsWith('/api/preview-admin')) {
       reply.header('Cache-Control', 'no-store').header('Cross-Origin-Resource-Policy', 'same-origin').header('X-Robots-Tag', 'noindex, nofollow');

@@ -10,6 +10,7 @@ export interface TiangongConfig {
   allowedUserTypes: string[];
   sessionHours: number;
   identityAdmins: string[];
+  superAdminAccount?: string;
 }
 
 export interface PortalIdentity {
@@ -39,11 +40,13 @@ export function tiangongConfig(env: NodeJS.ProcessEnv): TiangongConfig | undefin
   const allowedUserTypes = (env.TIANGONG_ALLOWED_USER_TYPES || '03,04').split(',').map(value => value.trim());
   const sessionHours = Number(env.TIANGONG_WEB_SESSION_HOURS || 8);
   const identityAdmins = (env.PLAZA_IDENTITY_ADMIN_SUBJECTS || '').split(',').filter(Boolean);
+  const superAdminAccount = env.PLAZA_SUPER_ADMIN_ACCOUNT || undefined;
   if (!transport || url.username || url.password || url.search || url.hash ||
     !successCode || successCode.length > 32 || !tokenStorageKey || !/^[A-Za-z0-9_.:-]{1,128}$/.test(tokenStorageKey) ||
     allowedUserTypes.some(type => !/^[A-Za-z0-9_-]{1,16}$/.test(type)) ||
-    !Number.isInteger(sessionHours) || sessionHours < 1 || sessionHours > 24 || identityAdmins.some(id => !validId(id))) throw invalid();
-  return { userinfoUrl: url.href, successCode, tokenStorageKey, allowedUserTypes, sessionHours, identityAdmins: [...new Set(identityAdmins)] };
+    !Number.isInteger(sessionHours) || sessionHours < 1 || sessionHours > 24 || identityAdmins.some(id => !validId(id)) ||
+    superAdminAccount !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(superAdminAccount)) throw invalid();
+  return { userinfoUrl: url.href, successCode, tokenStorageKey, allowedUserTypes, sessionHours, identityAdmins: [...new Set(identityAdmins)], ...(superAdminAccount ? { superAdminAccount } : {}) };
 }
 
 /** Match Fuxi's verified portal contract; preserve the original long integer IDs. */

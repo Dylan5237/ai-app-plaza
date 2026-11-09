@@ -1,3 +1,4 @@
+import { appAccessPredicate, requireAppAction, initializePrivateApplication, accessRecord } from './app-access.js';
 import {
   createCipheriv,
   createDecipheriv,
@@ -47,7 +48,7 @@ export interface AppView {
   updatedAt: string;
   source: AppSource;
   documents: Record<string, string>;
-  distributions?: Array<{ entryId: string; type: 'source' | 'artifact'; delivery?: 'package' | 'remote'; sha256: string; size: number; files: DistributionFile[]; guide?: string }>;
+  distributions?: Array<{ entryId: string; type: 'source' | 'artifact'; delivery?: 'package' | 'remote'; sha256: string; size: number; files: DistributionFile[]; guide?: string; assetId?: string; url?: string }>;
   displayRequirements?: string[];
   entryAvailability?: Record<string, DisabledLegacyEntry>;
   derivedDocumentPaths?: string[];
@@ -80,6 +81,7 @@ export interface PublicationView {
   error?: { code: string; message: string };
   nextAction: string;
   expiresAt: string;
+  requiresIdentity?: boolean;
 }
 
 export interface SubmitInput extends SourceInput {
@@ -101,29 +103,32 @@ export interface ServiceConfig {
   distributionDir?: string;
   staticDir?: string;
   analytics?: Config['analytics'];
+  applicationIdentity?: boolean;
 }
 
 export interface PlazaService {
   cleanupExpiredTokens(): Promise<void>;
-  tags(): Promise<string[]>;
+  tags(viewerId?: string, management?: boolean): Promise<string[]>;
   submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string, origin?: { mode: 'managed'; operationId: string }): Promise<SubmitResult>;
   lookupManagedReceipt(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult | undefined>;
-  publication(id: string, ticket: string): Promise<PublicationView>;
+  publication(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
+  receiptView(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
   managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
-  confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
-  retry(id: string, ticket: string): Promise<PublicationView>;
-  managementPublication(id: string): Promise<PublicationView>;
-  managementConfirm(id: string, confirmation: { revision: number; digest: string }): Promise<PublicationView>;
-  managementRetry(id: string): Promise<PublicationView>;
-  changeLifecycle(id: string, action: AppLifecycleAction, expectedAppRevision: number, expectedLifecycleRevision: number): Promise<AppLifecycleChange>;
-  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all'; usage?: CatalogUsage; sort?: 'updated' }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[]; usageCounts: { platform: number; agent: number } }>;
-  random(exclude?: string[]): Promise<{ items: AppView[]; allShown: boolean }>;
-  app(id: string, options?: { includeHidden?: boolean }): Promise<AppView>;
-  instructions(id: string, entryId: string, options?: { includeHidden?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string; distribution: Record<string, unknown> }>;
-  distributionPackage(id: string, assetId: string): Promise<{ id: string; sha256: string; bytes: Buffer }>;
+  confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }, viewerId?: string): Promise<PublicationView>;
+  retry(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
+  managementPublication(id: string, viewerId?: string): Promise<PublicationView>;
+  managementConfirm(id: string, confirmation: { revision: number; digest: string }, viewerId?: string): Promise<PublicationView>;
+  managementRetry(id: string, viewerId?: string): Promise<PublicationView>;
+  changeLifecycle(id: string, action: AppLifecycleAction, expectedAppRevision: number, expectedLifecycleRevision: number, viewerId?: string): Promise<AppLifecycleChange>;
+  list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all'; usage?: CatalogUsage; sort?: 'updated'; viewerId?: string; management?: boolean }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[]; usageCounts: { platform: number; agent: number } }>;
+  random(exclude?: string[], viewerId?: string): Promise<{ items: AppView[]; allShown: boolean }>;
+  app(id: string, options?: { includeHidden?: boolean; viewerId?: string; management?: boolean }): Promise<AppView>;
+  instructions(id: string, entryId: string, options?: { includeHidden?: boolean; viewerId?: string; management?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string; distribution: Record<string, unknown> }>;
+  distributionPackage(id: string, assetId: string, viewerId?: string): Promise<{ id: string; sha256: string; bytes: Buffer }>;
 }
 
 interface PublicationRecord {
+  identity_required: boolean;
   id: string;
   actor_id: string;
   idempotency_digest: string;
@@ -303,6 +308,29 @@ export function createService(config: ServiceConfig): PlazaService {
     return record;
   }
 
+  async function authorizePublication(queryable: Queryable, record: PublicationRecord, viewerId?: string, bindNew = false) {
+    const input = getInput(record);
+    const existing = await findAppByKey(queryable, validateProjectId(input.projectId), input.appKey);
+    const owned = existing ? await accessRecord(queryable, existing.id) : undefined;
+    if (!config.applicationIdentity && !record.identity_required && !owned) return;
+    if (!viewerId) throw new DomainError(401, 'LOGIN_REQUIRED', '请在天宫同源入口登录后确认或恢复本次发布。');
+    if (existing) { await requireAppAction(queryable, existing.id, viewerId); return; }
+    const claim = (await queryable.query('SELECT user_id FROM plaza_publication_actors WHERE publication_id=$1', [record.id])).rows[0];
+    if (claim && claim.user_id !== viewerId) throw new DomainError(404, 'PUBLICATION_NOT_FOUND', '未找到本次发布。');
+    if (bindNew && !claim) await queryable.query('INSERT INTO plaza_publication_actors(publication_id,user_id) VALUES($1,$2)', [record.id, viewerId]);
+  }
+  async function publicationView(record: PublicationRecord, viewerId?: string): Promise<PublicationView> {
+    const input = getInput(record);
+    const existing = await findAppByKey(config.db, validateProjectId(input.projectId), input.appKey);
+    const identityRequired = config.applicationIdentity || record.identity_required || !!(existing && await accessRecord(config.db, existing.id));
+    if (identityRequired && !viewerId) return {
+      id: record.id, status: record.status, revision: record.revision, nextAction: record.next_action,
+      expiresAt: asIso(record.expires_at), requiresIdentity: true,
+    };
+    await authorizePublication(config.db, record, viewerId);
+    return recordView(record);
+  }
+
   function encryptToken(token: string): EncryptedToken {
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", encryptionKey, iv);
@@ -372,9 +400,9 @@ export function createService(config: ServiceConfig): PlazaService {
     return result.rows[0];
   }
 
-  async function findAppById(id: string, queryable: Queryable = config.db, includeHidden = false): Promise<AppRecord | undefined> {
+  async function findAppById(id: string, queryable: Queryable = config.db, includeHidden = false, viewerId?: string, management = false): Promise<AppRecord | undefined> {
     const visibility = includeHidden ? '' : " AND COALESCE(l.status, 'published') = 'published'";
-    const result = await queryable.query<AppRecord>(`${APP_SELECT} WHERE a.id = $1 AND s.audience = $2${visibility}`, [id, config.audience]);
+    const result = await queryable.query<AppRecord>(`${APP_SELECT} WHERE a.id = $1 AND s.audience = $2${visibility} AND ${appAccessPredicate('$3::uuid', management)}`, [id, config.audience, viewerId ?? null]);
     return result.rows[0];
   }
 
@@ -538,7 +566,7 @@ export function createService(config: ServiceConfig): PlazaService {
         throw new DomainError(409, "REVISION_CONFLICT", "应用修订已变化，请重新提交候选并查看新预览。");
       }
       if (
-        existing?.digest === source.digest &&
+        !config.applicationIdentity && !(existing && await accessRecord(tx, existing.id)) && existing?.digest === source.digest &&
         existing.commit_sha === source.source.commitSha &&
         existing.audience === config.audience
       ) {
@@ -585,7 +613,7 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
-  async function register(record: PublicationRecord, source: LoadedSource): Promise<PublicationRecord> {
+  async function register(record: PublicationRecord, source: LoadedSource, viewerId?: string): Promise<PublicationRecord> {
     if (!record.digest || record.digest !== source.digest) {
       throw new DomainError(409, "SOURCE_MISMATCH", "固定来源内容已变化，请重新提交并确认新的预览。");
     }
@@ -606,6 +634,7 @@ export function createService(config: ServiceConfig): PlazaService {
       // Serialize catalog writers across service instances before checking the
       // current canonical names; the preview may predate another registration.
       await tx.query("LOCK TABLE catalog_apps IN SHARE ROW EXCLUSIVE MODE");
+      await authorizePublication(tx, lockedPublication, viewerId, true);
       let app = await findAppByKey(tx, projectId, input.appKey, true);
       if (app?.lifecycle_status === 'deleted') {
         throw new DomainError(409, 'APP_RESTORE_REQUIRED', '应用已删除，请先在本地管理后台恢复后再完成收录。');
@@ -672,6 +701,9 @@ export function createService(config: ServiceConfig): PlazaService {
         }
       }
 
+      if (config.applicationIdentity && currentRevision === 0) {
+        await initializePrivateApplication(tx, appId, viewerId!);
+      }
       const nextRevision = currentRevision + 1;
       const existingSnapshot = (await tx.query<{ id: string }>(
         `SELECT id FROM published_snapshots WHERE app_id = $1 AND commit_sha = $2 AND digest = $3 AND audience = $4`,
@@ -741,10 +773,11 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
-  async function updateConfirmed(id: string, revision: number, digest: string, attempt?: PublicationAttempt): Promise<PublicationRecord> {
+  async function updateConfirmed(id: string, revision: number, digest: string, attempt?: PublicationAttempt, viewerId?: string): Promise<PublicationRecord> {
     return config.db.transaction(async (tx) => {
       const current = (await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1 FOR UPDATE", [id])).rows[0];
       if (!current) throw notFound();
+      await authorizePublication(tx, current, viewerId, true);
       if (current.status === "registered") return current;
       if (current.status !== "preview_ready" || current.revision !== revision || current.digest !== digest) {
         throw new DomainError(409, "SOURCE_MISMATCH", "确认参数与当前预览修订或摘要不一致，请刷新预览。");
@@ -760,20 +793,21 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
-  async function confirmPublication(record: PublicationRecord, confirmation: { revision: number; digest: string }, actorContext: 'publication_link' | 'management'): Promise<PublicationView> {
+  async function confirmPublication(record: PublicationRecord, confirmation: { revision: number; digest: string }, actorContext: 'publication_link' | 'management', viewerId?: string): Promise<PublicationView> {
+    await authorizePublication(config.db, record, viewerId);
     if (record.status === 'registered') return recordView(record);
     if (!Number.isInteger(confirmation?.revision) || confirmation.revision < 1 || !/^[a-f0-9]{64}$/.test(confirmation?.digest ?? '')) {
       throw new DomainError(400, 'VALIDATION_FAILED', '确认必须包含预览修订号和摘要。');
     }
     const attempt: PublicationAttempt | undefined = config.analytics ? { id: randomUUID(), startedAt: new Date().toISOString(), kind: 'confirm', actorContext } : undefined;
-    const confirmed = await updateConfirmed(record.id, confirmation.revision, confirmation.digest, attempt);
+    const confirmed = await updateConfirmed(record.id, confirmation.revision, confirmation.digest, attempt, viewerId);
     if (confirmed.status === 'registered') return recordView(confirmed);
     try {
       const source = await assertAuthorAndSource(confirmed);
       if (source.digest !== confirmation.digest) {
         throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
       }
-      const registered = await register(confirmed, source);
+      const registered = await register(confirmed, source, viewerId);
       await finishAttempt(record.id, attempt, 'success');
       return recordView(registered);
     } catch (error) {
@@ -783,7 +817,8 @@ export function createService(config: ServiceConfig): PlazaService {
     }
   }
 
-  async function retryPublication(record: PublicationRecord, actorContext: 'publication_link' | 'management'): Promise<PublicationView> {
+  async function retryPublication(record: PublicationRecord, actorContext: 'publication_link' | 'management', viewerId?: string): Promise<PublicationView> {
+    await authorizePublication(config.db, record, viewerId);
     if (record.status === 'registered') return recordView(record);
     if (record.status === 'preview_ready') return recordView(record);
     if (record.status === 'cancelled') throw new DomainError(409, 'PUBLICATION_CANCELLED', '该发布候选已取消。');
@@ -813,7 +848,7 @@ export function createService(config: ServiceConfig): PlazaService {
         if (!record.digest || source.digest !== record.digest) {
           throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
         }
-        const registered = await register(record, source);
+        const registered = await register(record, source, viewerId);
         await finishAttempt(record.id, attempt, 'success');
         return recordView(registered);
       }
@@ -869,8 +904,8 @@ export function createService(config: ServiceConfig): PlazaService {
             `INSERT INTO publications (
                id, actor_id, idempotency_digest, request_hash, submission, status, revision,
                candidate_app_id, token_ciphertext, token_iv, token_auth_tag,
-               next_action, expires_at, created_at, updated_at
-             ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11)
+               next_action, expires_at, created_at, updated_at, identity_required
+             ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11, $12)
              ON CONFLICT (actor_id, idempotency_digest) DO NOTHING RETURNING *`,
             [
               publicationId,
@@ -884,6 +919,7 @@ export function createService(config: ServiceConfig): PlazaService {
               encrypted.authTag,
               expiry,
               now,
+              !!config.applicationIdentity,
             ],
           );
           if (inserted.rows[0]) {
@@ -958,44 +994,55 @@ export function createService(config: ServiceConfig): PlazaService {
       return submitView(record);
     },
 
-    async publication(id, ticket) {
+    async publication(id, ticket, viewerId) {
       await cleanupExpiredTokens();
-      return recordView(await loadPublication(id, ticket));
+      return publicationView(await loadPublication(id, ticket), viewerId);
     },
 
-    async confirm(id, ticket, confirmation) {
+    // Used only after the source channel has recovered its original receipt.
+    // Unlike the browser preview reader, this must not clean up or expire
+    // completed history, or turn a read-only recovery into a database write.
+    async receiptView(id, ticket, viewerId) {
+      const record = await loadManagementPublication(id);
+      checkTicket(record, ticket);
+      if (record.status !== 'registered' && new Date(record.expires_at).getTime() <= Date.now()) throw notFound();
+      return publicationView(record, viewerId);
+    },
+
+    async confirm(id, ticket, confirmation, viewerId) {
       await cleanupExpiredTokens();
       const record = await loadPublication(id, ticket);
-      return confirmPublication(record, confirmation, 'publication_link');
+      return confirmPublication(record, confirmation, 'publication_link', viewerId);
     },
 
-    async retry(id, ticket) {
+    async retry(id, ticket, viewerId) {
       await cleanupExpiredTokens();
       const record = await loadPublication(id, ticket);
-      return retryPublication(record, 'publication_link');
+      return retryPublication(record, 'publication_link', viewerId);
     },
 
-    async managementPublication(id) {
-      return recordView(await loadManagementPublication(id));
+    async managementPublication(id, viewerId) {
+      return publicationView(await loadManagementPublication(id), viewerId);
     },
 
-    async managementConfirm(id, confirmation) {
+    async managementConfirm(id, confirmation, viewerId) {
       await cleanupExpiredTokens();
-      return confirmPublication(await loadManagementPublication(id, true), confirmation, 'management');
+      return confirmPublication(await loadManagementPublication(id, true), confirmation, 'management', viewerId);
     },
 
-    async managementRetry(id) {
+    async managementRetry(id, viewerId) {
       await cleanupExpiredTokens();
-      return retryPublication(await loadManagementPublication(id, true), 'management');
+      return retryPublication(await loadManagementPublication(id, true), 'management', viewerId);
     },
 
-    changeLifecycle(id, action, expectedAppRevision, expectedLifecycleRevision) {
+    changeLifecycle(id, action, expectedAppRevision, expectedLifecycleRevision, viewerId) {
       return changeAppLifecycle(config.db, {
         appId: id,
         audience: config.audience,
         action,
         expectedAppRevision,
         expectedLifecycleRevision,
+        viewerId, requireIdentity: config.applicationIdentity,
         analytics: config.analytics,
       });
     },
@@ -1022,7 +1069,8 @@ export function createService(config: ServiceConfig): PlazaService {
       const requestedTags = (options.tags ?? []).filter(tag => tag.trim());
       if (requestedTags.length > 12) throw new DomainError(400, "VALIDATION_FAILED", "一次最多筛选 12 个标签。");
       const filters: string[] = ["s.audience = $1"];
-      const params: unknown[] = [config.audience];
+      const params: unknown[] = [config.audience, options.viewerId ?? null];
+      filters.push(appAccessPredicate('$2::uuid', options.management));
       if (usage === 'platform') filters.push(HAS_WEB_ENTRY);
       if (usage === 'agent') filters.push(`NOT (${HAS_WEB_ENTRY})`);
       const lifecycleStatuses: AppLifecycleStatus[] = !options.includeHidden
@@ -1069,7 +1117,7 @@ export function createService(config: ServiceConfig): PlazaService {
         platform: Number(totalResult.rows[0]?.platform_total ?? 0),
         agent: Number(totalResult.rows[0]?.agent_total ?? 0),
       };
-      const tags = await catalogTags(config.db, config.audience, lifecycleStatuses);
+      const tags = await catalogTags(config.db, config.audience, lifecycleStatuses, options.viewerId, options.management);
       const itemParams = [...params, pageSize, (page - 1) * pageSize];
       const limitParam = `$${itemParams.length - 1}`;
       const offsetParam = `$${itemParams.length}`;
@@ -1089,22 +1137,22 @@ export function createService(config: ServiceConfig): PlazaService {
       };
     },
 
-    tags: () => catalogTags(config.db, config.audience),
+    tags: (viewerId, management) => catalogTags(config.db, config.audience, undefined, viewerId, management),
 
-    async random(exclude = []) {
+    async random(exclude = [], viewerId) {
       if (exclude.length > 6 || exclude.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
         throw new DomainError(400, 'VALIDATION_FAILED', 'exclude 最多包含 6 个应用 UUID。');
       }
       const result = await config.db.query<AppRecord>(
-        `${APP_SELECT} WHERE s.audience = $1 AND COALESCE(l.status, 'published') = 'published'`,
-        [config.audience],
+        `${APP_SELECT} WHERE s.audience = $1 AND COALESCE(l.status, 'published') = 'published' AND ${appAccessPredicate('$2::uuid')}`,
+        [config.audience, viewerId ?? null],
       );
       return { items: sampleCatalog(result.rows, exclude).map(publicCard), allShown: result.rows.length <= 6 };
     },
 
     async app(id, options = {}) {
       await cleanupExpiredTokens();
-      const record = await findAppById(id, config.db, options.includeHidden === true);
+      const record = await findAppById(id, config.db, options.includeHidden === true, options.viewerId, options.management);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
       const assets = (await config.db.query<DistributionAssetRecord>('SELECT * FROM distribution_assets WHERE snapshot_id = $1 ORDER BY entry_id', [record.snap_id])).rows;
@@ -1117,7 +1165,7 @@ export function createService(config: ServiceConfig): PlazaService {
       }
       if (Object.keys(disabled).length) view.entryAvailability = disabled;
       const availableAssets = assets.filter(asset => !disabled[asset.entry_id]);
-      view.distributions = availableAssets.map(asset => ({ entryId: asset.entry_id, type: asset.package_type, delivery: asset.delivery_mode, sha256: asset.sha256,
+      view.distributions = availableAssets.map(asset => ({ assetId: asset.id, url: `${publicUrl}/api/apps/${id}/packages/${asset.id}`, entryId: asset.entry_id, type: asset.package_type, delivery: asset.delivery_mode, sha256: asset.sha256,
         size: asset.byte_size, files: parseJsonValue<DistributionFile[]>(asset.files), ...(asset.guide_text ? { guide: asset.guide_text } : {}) }));
       if ((record.lifecycle_status ?? 'published') === 'published' && assets.some(asset => asset.guide_text)) {
         const usagePath = view.manifest.docs.usage;
@@ -1159,8 +1207,8 @@ export function createService(config: ServiceConfig): PlazaService {
       return view;
     },
 
-    async distributionPackage(id, assetId) {
-      const record = await findAppById(id);
+    async distributionPackage(id, assetId, viewerId) {
+      const record = await findAppById(id, config.db, false, viewerId);
       if (!record) throw new DomainError(404, 'ASSET_NOT_FOUND', '分发包不存在。');
       const asset = (await config.db.query<DistributionAssetRecord>(
         'SELECT * FROM distribution_assets WHERE snapshot_id = $1 AND id = $2', [record.snap_id, assetId])).rows[0];
@@ -1172,7 +1220,7 @@ export function createService(config: ServiceConfig): PlazaService {
 
     async instructions(id, entryId, options = {}) {
       await cleanupExpiredTokens();
-      const record = await findAppById(id, config.db, options.includeHidden === true);
+      const record = await findAppById(id, config.db, options.includeHidden === true, options.viewerId, options.management);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
       const entry = view.manifest.entries.find((item): item is AgentEntry => item.id === entryId && item.kind === "agent");
@@ -1209,6 +1257,8 @@ export function createService(config: ServiceConfig): PlazaService {
         ].join('\n\n');
         return { text: remoteContext, compatibility: [...entry.compatibility], source: view.source, instructionsPath: entry.instructionsPath, version: view.version, distribution };
       }
+      const access = await accessRecord(config.db, id);
+      const restricted = !!access && access.scope !== 'all';
       const context = [
         `# ${view.manifest.name} · ${view.version}`,
         "请将这个 AI 应用安装或升级到我的本地 Agent 环境。按以下流程执行，并报告实际验证结果。",
@@ -1220,7 +1270,7 @@ export function createService(config: ServiceConfig): PlazaService {
           ? `## 广场固定分发包\n下载：${distribution.url}\nSHA-256：\`${asset.sha256}\`\n大小：${asset.byte_size} 字节；类型：${asset.package_type}。下载后先校验 SHA-256，再解压并依据下方安装说明执行。应用代码使用此广场分发包，不从仓库或其他地址替换；作者列明的独立运行环境和依赖按可信渠道准备，不能将其他应用版本冒充目标版本。`
           : '## 安装暂不可用\n当前版本尚未提供可下载的广场确认分发包。请联系广场维护者刷新分发资料；停止安装和升级，不要求用户配置 GitLab 权限，也不从仓库或其他地址自行获取文件。分发恢复后须先核对 SHA-256。',
         "## 安装与升级流程",
-        `1. 执行前读取 GET ${publicUrl}/api/apps/${view.id}，以广场当前已确认收录的版本为目标；若与本提示词的 commit 不同，重新读取 GET ${publicUrl}/api/apps/${view.id}/instructions/${encodeURIComponent(entry.id)} 的指引，再固定本次版本与 commit。不要使用仓库 HEAD 或尚未收录的 Release。无法读取或入口已移除时停止，不猜测最新版。`,
+        restricted ? `1. 此应用受限。请本人在已登录的广场页面核对当前版本 ${view.version} 和固定 commit，再通过“下载安装包”取得并核对 SHA-256，将本地文件交给 Agent。MCP 消费侧仍匿名，不能读取此应用；不要向 Agent 提供天宫 Token、Cookie 或浏览器会话。无法取得本人授权的本地包时停止，不猜测或绕过权限。` : `1. 执行前读取 GET ${publicUrl}/api/apps/${view.id}，以广场当前已确认收录的版本为目标；若与本提示词的 commit 不同，重新读取 GET ${publicUrl}/api/apps/${view.id}/instructions/${encodeURIComponent(entry.id)} 的指引，再固定本次版本与 commit。不要使用仓库 HEAD 或尚未收录的 Release。无法读取或入口已移除时停止，不猜测最新版。`,
         `2. 依据来源项目、appKey=${JSON.stringify(view.manifest.appKey)} 和入口 ${JSON.stringify(entry.id)}，在当前 Host 已知的应用配置/安装位置识别本地版本、commit 和改动。仅凭同名目录不能认定已安装；位置、版本或归属未知时先问我，不扫描无关目录，不覆盖不明文件。`,
         asset ? "3. 未安装：下载并校验广场分发包，按下方作者说明安装。已安装旧版：先展示本地版本 → 目标版本及变更范围，核对升级步骤、兼容性和权限。已是目标版本且 commit 一致：执行可用性检查后告知，无需重复安装。若本地版本更高，不自动降级。安装时在新目录保存 .plaza-installation.json，记录广场应用 ID、入口 ID、版本、固定 commit 和分发包 SHA-256；若同名文件归属不明先询问，不覆盖。该记录不修改应用源码；如果应用本身报告的 commit 为 unknown，须如实报告，不得伪造。"
           : "3. 未安装：无可用分发包时停止安装。已安装旧版：保留现有版本和配置，等待广场维护者刷新分发资料；已是目标版本时只检查现有安装，不重新下载；不自动降级。",

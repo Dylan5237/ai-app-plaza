@@ -86,7 +86,7 @@ export async function registerIdentity(app: FastifyInstance, config: Config, db:
     const result = await service.favorites(actor, options);
     const items = await Promise.all(result.items.map(async saved => {
       try {
-        const { documents: _documents, distributions: _distributions, ...app } = await catalog.app(saved.app_id);
+        const { documents: _documents, distributions: _distributions, ...app } = await catalog.app(saved.app_id, { viewerId: actor.id });
         return { id: saved.app_id, app };
       } catch (error) {
         if (!(error instanceof DomainError) || error.statusCode !== 404) throw error;
@@ -101,9 +101,11 @@ export async function registerIdentity(app: FastifyInstance, config: Config, db:
     const actor = await authenticate(request);
     const { id } = z.object({ id: z.string().uuid() }).strict().parse(request.params);
     const { saved } = z.object({ saved: z.boolean() }).strict().parse(request.body);
-    if (saved) await catalog.app(id);
+    if (saved) await catalog.app(id, { viewerId: actor.id });
     await service.saveFavorite(actor, id, saved, config.audience);
     return { id, saved };
   });
-  return { service, authenticate };
+  return { service, authenticate, sameOrigin };
 }
+
+export type IdentityHttp = NonNullable<Awaited<ReturnType<typeof registerIdentity>>>;

@@ -42,22 +42,23 @@ export function registerManagementLifecycle(
       pageSize: options.pageSize,
       includeHidden: true,
       lifecycleStatus: options.status,
+      viewerId: request.plazaUserId, management: !!config.tiangong,
     });
   });
 
   app.get('/api/management/apps/:id', async request => {
     const id = appIdSchema.parse(request.params).id;
-    return service.app(id, { includeHidden: true });
+    return service.app(id, { includeHidden: true, viewerId: request.plazaUserId, management: !!config.tiangong });
   });
 
   app.get('/api/management/apps/:id/instructions/:entryId', async request => {
     const params = z.object({ id: z.string().uuid(), entryId: z.string().min(1).max(64) }).strict().parse(request.params);
-    return service.instructions(params.id, params.entryId, { includeHidden: true });
+    return service.instructions(params.id, params.entryId, { includeHidden: true, viewerId: request.plazaUserId, management: !!config.tiangong });
   });
 
   app.get('/api/management/apps/:id/publish-contract', async request => {
     const id = appIdSchema.parse(request.params).id;
-    const current = await service.app(id, { includeHidden: true });
+    const current = await service.app(id, { includeHidden: true, viewerId: request.plazaUserId, management: !!config.tiangong });
     const managedTarget = await managed?.findByAppId(id);
     const contract = await publishContract(config, current, managedTarget, false, await service.tags());
     if ('prompt' in contract && typeof contract.prompt === 'string') {
@@ -71,6 +72,6 @@ export function registerManagementLifecycle(
   app.post('/api/management/apps/:id/lifecycle', async request => {
     const id = appIdSchema.parse(request.params).id;
     const body = lifecycleSchema.parse(request.body);
-    return service.changeLifecycle(id, body.action, body.expectedAppRevision, body.expectedLifecycleRevision);
+    return service.changeLifecycle(id, body.action, body.expectedAppRevision, body.expectedLifecycleRevision, request.plazaUserId);
   });
 }

@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import ListPagination from './ListPagination.vue'
 
-const emit = defineEmits(['open-app', 'open-update', 'open-publication', 'open-editor', 'open-create'])
+const emit = defineEmits(['open-app', 'open-update', 'open-publication', 'open-editor', 'open-create', 'open-access'])
 const props = defineProps({ state: { type: Object, required: true }, managementEnabled: { type: Boolean, default: false }, managementMode: { type: String, default: 'disabled' } })
 const { view, query, status, page, pageSize } = toRefs(props.state)
 const records = ref(null)
@@ -23,7 +23,7 @@ const title = computed(() => ({ apps: '应用管理', publications: '待收录�
 const description = computed(() => ({
   apps: '集中管理应用详情、版本更新和上下架。',
   publications: '打开原发布预览，核对应用详情与版本，再确认收录或更新。',
-  uploads: '展示尚未生成预览的托管上传；资料就绪后转入待收录列表。',
+  uploads: props.managementMode === 'identity' ? '展示本人可维护应用尚未生成预览的上传；首次上传通过原私有回执继续。' : '展示尚未生成预览的托管上传；资料就绪后转入待收录列表。',
   trash: '删除的应用保留源码与历史版本，恢复后保持下架状态。',
 })[view.value])
 const stageLabels = { prepared: '上传已占位', project_ready: '项目已准备', commit_ready: '源码已上传', tag_ready: '版本已创建', release_ready: '正在生成预览', submitted: '预览已生成' }
@@ -89,8 +89,10 @@ async function changeLifecycle(row, action) {
   finally { mutating.value = '' }
 }
 defineExpose({ reload: load })
+function revalidateAccess() { if (props.managementMode === 'identity' && !mutating.value) { rows.value = []; total.value = 0; void load() } }
 watch(() => props.managementEnabled, load)
 onMounted(async () => {
+  window.addEventListener('focus', revalidateAccess)
   await nextTick()
   updatePageSize(false)
   layoutObserver = new ResizeObserver(scheduleLayout)
@@ -98,7 +100,7 @@ onMounted(async () => {
   layoutObserver.observe(footer.value)
   load()
 })
-onUnmounted(() => { ++sequence; layoutObserver?.disconnect(); cancelAnimationFrame(layoutFrame) })
+onUnmounted(() => { ++sequence; window.removeEventListener('focus', revalidateAccess); layoutObserver?.disconnect(); cancelAnimationFrame(layoutFrame) })
 
 </script>
 
@@ -125,9 +127,10 @@ onUnmounted(() => { ++sequence; layoutObserver?.disconnect(); cancelAnimationFra
         <el-table-column v-if="view !== 'uploads'" label="作者" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ authors(row) }}</template></el-table-column>
         <el-table-column label="状态" min-width="130"><template #default="{ row }"><el-tag :type="row.expired || row.status === 'failed' ? 'warning' : 'info'" effect="light">{{ stateLabel(row) }}</el-tag></template></el-table-column>
         <el-table-column label="更新时间" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ date(row.updatedAt || row.createdAt) }}</template></el-table-column>
-        <el-table-column label="操作" :width="isApps ? 360 : 190"><template #default="{ row }"><div class="management-actions">
+        <el-table-column label="操作" :width="isApps ? managementMode === 'identity' ? 450 : 360 : 190"><template #default="{ row }"><div class="management-actions">
           <template v-if="isApps">
             <el-button link type="primary" :data-testid="`management-detail-${row.id}`" @click="emit('open-app', row.id)">详情</el-button>
+            <el-button v-if="managementMode === 'identity'" link type="primary" @click="emit('open-access', row.id)">归属与权限</el-button>
             <template v-if="view !== 'trash'">
               <el-button link type="primary" :disabled="!managementEnabled || Boolean(mutating)" :data-testid="`management-edit-${row.id}`" @click="emit('open-editor', row.id)">修改</el-button>
               <el-button link type="primary" :disabled="!managementEnabled || Boolean(mutating)" :data-testid="`management-update-${row.id}`" @click="emit('open-update', row.id)">发布新版本</el-button>

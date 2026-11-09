@@ -23,7 +23,8 @@ test('favorites use the authenticated account, are idempotent and retain no inac
   const list = await req('GET', 'favorites');
   assert.equal(list.json().total, 1); assert.equal(list.json().items[0].app.id, first.appId);
   assert.equal(list.json().items[0].app.documents, undefined);
-  await h.service.changeLifecycle(first.appId, 'offline', 1, 1);
+  await h.db.query("INSERT INTO plaza_app_access(app_id,owner_id,scope) VALUES($1,$2,'all')", [first.appId, member.user.id]);
+  await h.service.changeLifecycle(first.appId, 'offline', 1, 1, member.user.id);
   const unavailable = await req('GET', 'favorites');
   assert.deepEqual(unavailable.json().items, [{ id: first.appId, app: null }]);
   assert.ok(!unavailable.body.includes(first.source.name));

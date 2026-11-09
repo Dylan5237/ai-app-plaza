@@ -11,6 +11,7 @@ let requestVersion = 0
 async function load() {
   const version = ++requestVersion
   loading.value = true
+  data.value = null
   error.value = ''
   try {
     const result = await apiRequest(`/api/operations/dashboard?period=${period.value}`)
@@ -25,8 +26,8 @@ async function load() {
 }
 function choose(value) { if (period.value !== value) { period.value = value; load() } }
 function clearOnIdentityChange() { requestVersion++; data.value = null; loading.value = false; error.value = '身份状态已变化，请重新核验后重试。' }
-onMounted(() => { window.addEventListener('plaza-identity-invalid', clearOnIdentityChange); load() })
-onUnmounted(() => { requestVersion++; window.removeEventListener('plaza-identity-invalid', clearOnIdentityChange) })
+onMounted(() => { window.addEventListener('plaza-identity-invalid', clearOnIdentityChange); window.addEventListener('focus', load); load() })
+onUnmounted(() => { requestVersion++; window.removeEventListener('plaza-identity-invalid', clearOnIdentityChange); window.removeEventListener('focus', load) })
 const n = value => value == null ? '—' : Number(value).toLocaleString('zh-CN')
 const pct = (part,total) => part == null || !total ? '—' : `${(part/total*100).toFixed(1)}%`
 const dateTime = value => {

@@ -6,6 +6,8 @@ import AppManagement from './pages/AppManagement.vue'
 import IdentityBar from './components/IdentityBar.vue'
 import IdentityGroups from './components/IdentityGroups.vue'
 import PersonalSpace from './pages/PersonalSpace.vue'
+import OperationsDashboard from './pages/OperationsDashboard.vue'
+import AdministrationCenter from './pages/AdministrationCenter.vue'
 import { identity } from './lib/identity.js'
 import { publicBasePath, publicPath } from './lib/public-path.js'
 import { primaryAction } from './lib/catalog.ts'
@@ -16,8 +18,13 @@ const showGroups = ref(false)
 const showPersonal = ref(false), detailFromPersonal = ref(false), directory = ref(null)
 let personalFocus = null
 let initialPersonalPending = new URLSearchParams(location.search).get('space') === 'favorites'
+const center = new URLSearchParams(location.search).get('space') || ''
+const isCenter = ['operations', 'governance', 'administrators', 'transfers'].includes(center)
+const centerAllowed = computed(() => center === 'transfers' ? Boolean(identity.user) : center === 'administrators' ? identity.user?.superAdministrator : identity.user?.administrator)
+let initialGroupPending = center === 'groups'
 watch(() => identity.epoch, () => {
   showGroups.value = false; showPersonal.value = false; detailFromPersonal.value = false
+  if (initialGroupPending && identity.user?.identityAdmin) { initialGroupPending = false; showGroups.value = true }
   if (initialPersonalPending && identity.user) {
     initialPersonalPending = false
     detailFromPersonal.value = new URLSearchParams(location.search).has('app')
@@ -37,8 +44,12 @@ async function returnToPersonal() {
   personalFocus?.focus({ preventScroll: true })
 }
 function showFavorites() {
-  if (showManagement.value) { location.assign(publicPath('/?space=favorites')); return }
+  if (showManagement.value || isCenter) { location.assign(publicPath('/?space=favorites')); return }
   showGroups.value = false; showPersonal.value = true; detailFromPersonal.value = false
+}
+function openGroups() {
+  if (showManagement.value || isCenter) { location.assign(publicPath('/?space=groups')); return }
+  showGroups.value = true; showPersonal.value = false
 }
 function filterTag(tag) { showPersonal.value = false; detailFromPersonal.value = false; directory.value?.filterByTag(tag) }
 async function usePersonalApp(app) {
@@ -50,11 +61,18 @@ async function usePersonalApp(app) {
 <template>
   <PortalFrame v-if="showPrototype" />
   <div v-else :class="identity.enabled ? 'identity-layout plaza-public' : 'identity-disabled'">
-    <IdentityBar @groups="showGroups = true; showPersonal = false" @personal="showFavorites" />
+    <IdentityBar @groups="openGroups" @personal="showFavorites" />
     <IdentityGroups v-if="showGroups && identity.user?.identityAdmin" :key="identity.epoch" @close="showGroups = false" />
     <PersonalSpace v-if="identity.user && (showPersonal || detailFromPersonal)" v-show="showPersonal" :key="identity.epoch" @close="showPersonal = false" @detail="openPersonalApp" @primary="usePersonalApp" @tag="filterTag" />
-    <AppManagement v-show="!showGroups && !showPersonal" v-if="showManagement && !detailFromPersonal" />
-    <ToolDirectory v-show="!showGroups && !showPersonal" v-else ref="directory" :personal-return="detailFromPersonal" @return="returnToPersonal" />
+    <template v-if="isCenter">
+      <OperationsDashboard v-if="centerAllowed && center === 'operations'" :key="identity.epoch" />
+      <AdministrationCenter v-else-if="centerAllowed" :key="identity.epoch" :mode="center" />
+      <main v-else class="center-denied"><h1>{{ identity.user ? '当前身份没有此页面权限' : '请先核验天宫身份' }}</h1><p>运营看板与治理功能仅对获授权管理员开放，负责人交接需本人登录。</p><a :href="publicPath('/')">返回应用广场</a></main>
+    </template>
+    <template v-else>
+      <AppManagement v-show="!showGroups && !showPersonal" v-if="showManagement && !detailFromPersonal" :key="identity.epoch" />
+      <ToolDirectory v-show="!showGroups && !showPersonal" v-else :key="identity.epoch" ref="directory" :personal-return="detailFromPersonal" @return="returnToPersonal" />
+    </template>
   </div>
 </template>
 
@@ -62,4 +80,5 @@ async function usePersonalApp(app) {
 .identity-disabled { display: contents; }
 .identity-layout { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
 .identity-layout > .directory-shell, .identity-layout > .publication-shell, .identity-layout > .management-shell { flex: 1; min-height: 0; height: auto; }
+.center-denied { padding: 32px; color: var(--plaza-ink); }.center-denied p { color: var(--plaza-muted); }.center-denied a { color: var(--plaza-brand); }
 </style>

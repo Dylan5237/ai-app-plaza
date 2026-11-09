@@ -1,3 +1,4 @@
+import { appAccessPredicate } from './app-access.js';
 import type { Database } from './database.js';
 import { DomainError } from './errors.js';
 import type { AppView, PublicationChange, PublicationStatus } from './service.js';
@@ -44,23 +45,41 @@ function summary(row: RecordRow): AdminPreviewSummary {
 
 // This reader deliberately does not use publication(id, ticket): reading an expired
 // publication there clears credentials. Administration must only SELECT safe fields.
-export function createPreviewAdministration(db: Database, options: { includeConfirmed?: boolean } = {}) {
+export function createPreviewAdministration(db: Database, options: { includeConfirmed?: boolean; identityMode?: boolean; sourceInstance?: string } = {}) {
   const listBase = options.includeConfirmed ? PUBLICATION_STATUSES : BASE;
+  const identityMode = options.identityMode;
+  const sourceInstance = options.sourceInstance;
+  const appMatch = (instanceParameter?: string) => `a.project_id=publications.submission->>'projectId'
+    AND a.app_key=publications.submission->>'appKey'${instanceParameter ? ` AND a.instance_id=${instanceParameter}` : ''}`;
   return {
-    async list(options: { query: string; status: AdminPreviewStatus; page: number; pageSize?: number }) {
-      const params: unknown[] = [];
+    async list(options: { query: string; status: AdminPreviewStatus; page: number; pageSize?: number; viewerId?: string }) {
+      if (identityMode && !options.viewerId) throw new DomainError(401, 'LOGIN_REQUIRED', '请登录后查看本人的发布候选。');
+      const params: unknown[] = sourceInstance ? [sourceInstance] : [];
+      const matchingApp = appMatch(sourceInstance ? '$1' : undefined);
       let where = listBase;
       if (options.query.trim()) {
         params.push(`%${options.query.trim().replace(/[\\%_]/g, '\\$&')}%`);
-        where += ` AND (COALESCE(preview_jsonb->'manifest'->>'name', '') ILIKE $1
-          OR COALESCE(submission->>'appKey', '') ILIKE $1
+        const pattern = `$${params.length}`;
+        where += ` AND (COALESCE(preview_jsonb->'manifest'->>'name', '') ILIKE ${pattern}
+          OR COALESCE(submission->>'appKey', '') ILIKE ${pattern}
           OR EXISTS (SELECT 1 FROM jsonb_array_elements(
             CASE WHEN jsonb_typeof(preview_jsonb->'manifest'->'maintainers') = 'array'
               THEN preview_jsonb->'manifest'->'maintainers' ELSE '[]'::jsonb END
           ) AS maintainer(value) WHERE
-            (CASE WHEN jsonb_typeof(value) = 'string' THEN value #>> '{}' ELSE '' END) ILIKE $1
-            OR COALESCE(value->>'name', '') ILIKE $1 OR COALESCE(value->>'nameEn', '') ILIKE $1))`;
+            (CASE WHEN jsonb_typeof(value) = 'string' THEN value #>> '{}' ELSE '' END) ILIKE ${pattern}
+            OR COALESCE(value->>'name', '') ILIKE ${pattern} OR COALESCE(value->>'nameEn', '') ILIKE ${pattern}))`;
       }
+      if (options.viewerId) {
+        params.push(options.viewerId);
+        const actor = `$${params.length}::uuid`;
+        where += ` AND (EXISTS(SELECT 1 FROM plaza_publication_actors pa WHERE pa.publication_id=publications.id AND pa.user_id=${actor}
+            AND NOT EXISTS(SELECT 1 FROM catalog_apps a WHERE ${matchingApp}))
+          OR EXISTS(SELECT 1 FROM catalog_apps a WHERE ${matchingApp}
+            AND ${appAccessPredicate(actor, true)}))`;
+      }
+      if (!options.viewerId) where += ` AND identity_required=false
+        AND NOT EXISTS(SELECT 1 FROM plaza_publication_actors pa WHERE pa.publication_id=publications.id)
+        AND NOT EXISTS(SELECT 1 FROM catalog_apps a JOIN plaza_app_access ap ON ap.app_id=a.id WHERE ${matchingApp})`;
       const stats = (await db.query<any>(`SELECT count(*) AS all,
         count(*) FILTER (WHERE expires_at > now() AND status = 'preview_ready') AS preview_ready,
         count(*) FILTER (WHERE expires_at <= now()) AS expired,
@@ -80,7 +99,10 @@ export function createPreviewAdministration(db: Database, options: { includeConf
       return { items: rows.rows.map(summary), total: counts[options.status], page: options.page, pageSize, counts };
     },
     async detail(id: string) {
-      const row = (await db.query<RecordRow>(`SELECT ${FIELDS}, preview_jsonb FROM publications WHERE id = $1 AND ${BASE}`, [id])).rows[0];
+      const row = (await db.query<RecordRow>(`SELECT ${FIELDS}, preview_jsonb FROM publications WHERE id = $1 AND ${BASE} AND identity_required=false
+        AND NOT EXISTS(SELECT 1 FROM plaza_publication_actors pa WHERE pa.publication_id=publications.id)
+        AND NOT EXISTS(SELECT 1 FROM catalog_apps a JOIN plaza_app_access ap ON ap.app_id=a.id
+          WHERE ${appMatch(sourceInstance ? '$2' : undefined)})`, sourceInstance ? [id, sourceInstance] : [id])).rows[0];
       if (!row) throw new DomainError(404, 'NOT_FOUND', '未找到未确认的发布记录');
       const stored = json(row.preview_jsonb);
       let preview: AppView | undefined;

@@ -165,11 +165,12 @@ export interface ManagedPublisher {
     version?: string;
   }>;
   findByAppId(appId: string): Promise<{ managedAppId: string; projectId: string; appKey: string } | undefined>;
-  editorContext(appId: string): Promise<ManagedEditorContext>;
+  editorContext(appId: string, viewerId?: string): Promise<ManagedEditorContext>;
   editMetadata(
     appId: string,
     input: ManagedMetadataEditInput,
     idempotencyKey: string,
+    viewerId?: string,
   ): Promise<SubmitResult & { operationId: string; managedAppId: string; sourceUploaded: true }>;
 }
 
@@ -357,17 +358,16 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     if (input.expectedAppRevision === 0) {
       throw new DomainError(409, "REVISION_CONFLICT", "应用已收录，请读取当前 revision 后再提交更新。");
     }
-    let app;
-    try {
-      app = await config.service.app(catalogAppId, { includeHidden: true });
-    } catch (error) {
-      if (error instanceof DomainError) throw error;
-      throw new DomainError(503, "SOURCE_UNAVAILABLE", "暂时无法读取广场应用状态，请稍后用相同幂等键重试。");
-    }
-    if (app.source.projectId !== binding.project_id || app.manifest.appKey !== binding.app_key) {
+    // The publish key was verified against this fixed source binding above. Read
+    // only internal revision facts here; an anonymous catalog read must stay closed.
+    const app = (await config.db.query(`SELECT a.project_id,a.app_key,a.revision,s.version,s.commit_sha,
+      COALESCE(l.status,'published') AS lifecycle_status FROM catalog_apps a
+      JOIN published_snapshots s ON s.id=a.current_snapshot_id
+      LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id WHERE a.id=$1`, [catalogAppId])).rows[0];
+    if (!app || app.project_id !== binding.project_id || app.app_key !== binding.app_key) {
       throw ownerError();
     }
-    if (app.lifecycle?.status === "deleted") {
+    if (app.lifecycle_status === "deleted") {
       throw new DomainError(409, "APP_DELETED", "已删除的应用不能提交更新。请先由维护者恢复应用状态。");
     }
     if (app.revision !== input.expectedAppRevision) {
@@ -377,7 +377,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     if (difference === undefined || difference <= 0) {
       throw new DomainError(409, "VERSION_NOT_NEWER", "更新版本必须高于广场当前版本，请准备新的 projectVersion 后重新提交。");
     }
-    return app.source.commitSha;
+    return app.commit_sha;
   }
 
   async function findCatalogAppId(binding: BindingRecord): Promise<string | undefined> {
@@ -391,12 +391,12 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     return result.rows[0]?.id;
   }
 
-  async function loadEditorContext(appId: string): Promise<{
+  async function loadEditorContext(appId: string, viewerId?: string): Promise<{
     context: ManagedEditorContext;
     binding?: BindingRecord;
   }> {
     if (!isUuid(appId)) throw new DomainError(400, "VALIDATION_FAILED", "应用 ID 格式无效。");
-    const app = await config.service.app(appId, { includeHidden: true });
+    const app = await config.service.app(appId, { includeHidden: true, viewerId, management: !!viewerId });
     const binding = (await config.db.query<BindingRecord>(
       `SELECT binding.*
          FROM managed_app_bindings AS binding
@@ -857,23 +857,23 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       });
     },
 
-    async editorContext(appId) {
-      return (await loadEditorContext(appId)).context;
+    async editorContext(appId, viewerId) {
+      return (await loadEditorContext(appId, viewerId)).context;
     },
 
-    async editMetadata(appId, input, idempotencyKey) {
+    async editMetadata(appId, input, idempotencyKey, viewerId) {
       validateIdempotencyKey(idempotencyKey);
       if (!input || typeof input !== "object" || !Number.isInteger(input.expectedAppRevision) || input.expectedAppRevision < 0 ||
           !input.documents || typeof input.documents !== "object" || Array.isArray(input.documents) ||
           Object.values(input.documents).some(value => typeof value !== "string")) {
         throw new DomainError(400, "VALIDATION_FAILED", "资料修订需要有效的 expectedAppRevision、Manifest 和共享文档。");
       }
-      const initial = await loadEditorContext(appId);
+      const initial = await loadEditorContext(appId, viewerId);
       if (!initial.binding || !initial.context.editable || !initial.binding.publish_key_digest) {
         throw editorUnavailable(initial.context.reason);
       }
       return withKeyLock(initial.binding.publish_key_digest, async () => {
-        const current = await loadEditorContext(appId);
+        const current = await loadEditorContext(appId, viewerId);
         const binding = current.binding;
         if (!binding || !current.context.editable || !binding.publish_key_digest) throw editorUnavailable(current.context.reason);
         const app = current.context.app;

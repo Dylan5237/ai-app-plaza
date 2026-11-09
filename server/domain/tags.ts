@@ -1,3 +1,4 @@
+import { appAccessPredicate } from './app-access.js';
 import { DomainError } from './errors.js';
 import type { Queryable } from './database.js';
 import type { AppLifecycleStatus } from './app-lifecycle.js';
@@ -25,7 +26,7 @@ export function validateCapabilityTags(value: unknown): asserts value is string[
   }
 }
 
-export async function catalogTags(db: Queryable, audience: string, statuses: readonly AppLifecycleStatus[] = ['published']): Promise<string[]> {
+export async function catalogTags(db: Queryable, audience: string, statuses: readonly AppLifecycleStatus[] = ['published'], viewerId?: string, management = false): Promise<string[]> {
   if (statuses.length === 0) return [];
   const placeholders = statuses.map((_, index) => `$${index + 2}`);
   const result = await db.query<{ tag: string }>(
@@ -34,8 +35,8 @@ export async function catalogTags(db: Queryable, audience: string, statuses: rea
        LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
        ${TAG_OVERRIDE_JOIN}
        CROSS JOIN LATERAL jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
-      WHERE s.audience = $1 AND COALESCE(l.status, 'published') IN (${placeholders.join(', ')})
-      ORDER BY tag.value`, [audience, ...statuses],
+      WHERE s.audience = $1 AND COALESCE(l.status, 'published') IN (${placeholders.join(', ')}) AND ${appAccessPredicate(`$${statuses.length + 2}::uuid`, management)}
+      ORDER BY tag.value`, [audience, ...statuses, viewerId ?? null],
   );
   return result.rows.map(row => row.tag);
 }

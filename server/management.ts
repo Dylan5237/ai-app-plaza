@@ -7,6 +7,7 @@ import { createPreviewAdministration } from './domain/preview-administration.js'
 import type { PlazaService } from './domain/service.js';
 import { registerManagementEditor } from './management-editor.js';
 import { registerManagementLifecycle } from './management-lifecycle.js';
+import { appAccessPredicate } from './domain/app-access.js';
 
 interface UploadRow {
   id: string;
@@ -28,7 +29,8 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
   if (!managementEnabled(config)) return;
   registerManagementLifecycle(app, config, db, service, managed);
   registerManagementEditor(app, config, db, service, managed);
-  const publications = createPreviewAdministration(db, { includeConfirmed: true });
+  const publications = createPreviewAdministration(db, { includeConfirmed: true, identityMode: !!config.tiangong,
+    sourceInstance: new URL(config.gitlabUrl).toString().replace(/\/+$/, '') });
 
   app.get('/api/management/publications', async request => {
     const options = z.object({
@@ -37,12 +39,12 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
       page: z.coerce.number().int().min(1).max(100000).default(1),
       pageSize: z.coerce.number().int().min(1).max(100).default(20),
     }).strict().parse(request.query);
-    return publications.list(options);
+    return publications.list({ ...options, viewerId: request.plazaUserId });
   });
 
   app.get('/api/management/publications/:id', async request => {
     const id = z.object({ id: z.string().uuid() }).strict().parse(request.params).id;
-    const result = await service.managementPublication(id);
+    const result = await service.managementPublication(id, request.plazaUserId);
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
 
@@ -53,12 +55,12 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
   const emptyBody = z.object({}).strict();
   app.post('/api/management/publications/:id/confirm', async request => {
     const id = z.object({ id: z.string().uuid() }).strict().parse(request.params).id;
-    return service.managementConfirm(id, confirmation.parse(request.body));
+    return service.managementConfirm(id, confirmation.parse(request.body), request.plazaUserId);
   });
   app.post('/api/management/publications/:id/retry', async request => {
     const id = z.object({ id: z.string().uuid() }).strict().parse(request.params).id;
     emptyBody.parse(request.body ?? {});
-    return service.managementRetry(id);
+    return service.managementRetry(id, request.plazaUserId);
   });
 
   app.get('/api/management/uploads', async request => {
@@ -69,6 +71,12 @@ export function registerManagement(app: FastifyInstance, config: Config, db: Dat
     }).strict().parse(request.query);
     const params: unknown[] = [];
     let where = 'operation.publication_id IS NULL';
+    if (config.tiangong) {
+      params.push(request.plazaUserId, new URL(config.gitlabUrl).toString().replace(/\/+$/, ''), config.audience);
+      where += ` AND EXISTS(SELECT 1 FROM catalog_apps a JOIN published_snapshots s ON s.id=a.current_snapshot_id
+        WHERE a.instance_id=$2 AND a.project_id=binding.project_id AND a.app_key=binding.app_key
+        AND s.audience=$3 AND ${appAccessPredicate('$1::uuid', true)})`;
+    }
     if (options.query.trim()) {
       const pattern = searchParam(options.query, params);
       where += ` AND (binding.app_key ILIKE ${pattern} OR operation.tag ILIKE ${pattern})`;

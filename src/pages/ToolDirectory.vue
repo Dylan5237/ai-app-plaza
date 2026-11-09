@@ -5,6 +5,7 @@ import PlazaIcon from '../components/PlazaIcon.vue'
 import '../styles/design-tokens.css'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
+import { identity } from '../lib/identity.js'
 import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
 import CatalogCard from '../components/CatalogCard.vue'
@@ -442,7 +443,7 @@ function clearFilters() {
 
 function appPath(id) { return `${props.management && props.managementEnabled ? '/api/management' : '/api'}/apps/${encodeURIComponent(id)}` }
 
-async function openApp(id, { fromHistory = false, entryContext = null } = {}) {
+async function openApp(id, { fromHistory = false, entryContext = null, revalidating = false } = {}) {
   if (!id) return
   primaryRequestSequence += 1
   if (!props.management) {
@@ -472,13 +473,13 @@ async function openApp(id, { fromHistory = false, entryContext = null } = {}) {
   instructionEntry.value = null
   instructionError.value = ''
   await nextTick()
-  if (!props.management) { if (shell()) shell().scrollTop = 0; detailHeading.value?.focus() }
+  if (!props.management && !revalidating) { if (shell()) shell().scrollTop = 0; detailHeading.value?.focus() }
   try {
     const result = await apiRequest(appPath(id))
     if (requestSequence !== detailRequestSequence) return
     selectedApp.value = result
     await nextTick()
-    if (!props.management && requestSequence === detailRequestSequence && detailVisible.value) {
+    if (!props.management && !revalidating && requestSequence === detailRequestSequence && detailVisible.value) {
       const context = appEvent(result)
       if (context) track('app_detail_viewed', eventAttributes({ entryContext: entryContext || (detailOriginUrl ? (query.value.trim() ? 'search_result' : 'card') : 'deep_link') }), { ...context, ...resultContext() })
     }
@@ -548,6 +549,22 @@ function closeAgentInstructions() {
   instructionError.value = ''
 }
 
+function refreshVisibleAccess() {
+  if (!identity.user || !identity.enabled) return
+  copyFallbackVisible.value = false; copyFallbackText.value = ''
+  if (shareVisible.value && shareAppId.value) closeShareDialog()
+  if (publicationId.value) { if (!publicationBusy.value) void loadPublication(); return }
+  const appId = selectedApp.value?.id
+  if (detailVisible.value && appId) void openApp(appId, { fromHistory: true, revalidating: true })
+  else { closeAgentInstructions(); selectedApp.value = null }
+  if (props.management) return
+  apps.value = []; authorTags.value = []; total.value = 0
+  usageCounts.value = { platform: 0, agent: 0 }
+  randomRequestSequence++; randomItems.value = []; randomLoaded = false
+  void loadCatalog()
+  if (discoveryTab.value === 'random') void loadRandom()
+}
+
 async function loadAgentInstructions(entry) {
   if (!selectedApp.value?.id || !entry?.id) return
   const requestSequence = ++instructionRequestSequence
@@ -567,6 +584,7 @@ async function loadAgentInstructions(entry) {
   } catch (error) {
     if (requestSequence !== instructionRequestSequence || selectedApp.value?.id !== appId || instructionEntry.value?.id !== entryId) return
     instructionError.value = errorText(error)
+    if ([401, 403, 404].includes(error?.status)) refreshVisibleAccess()
     if (!props.management) recordFailure('instructions', error)
     if (!props.management && error?.status === 404) refreshOnReturn = true
   } finally {
@@ -837,6 +855,7 @@ onMounted(async () => {
   window.addEventListener('popstate', handlePopState)
   window.addEventListener('keydown', handleDetailKey, true)
   window.addEventListener('resize', scheduleCatalogLayout)
+  window.addEventListener('focus', refreshVisibleAccess)
   document.addEventListener('visibilitychange', onVisibilityChange)
   if (preparePublicationRoute()) return
   if (props.management) return
@@ -857,6 +876,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleDetailKey, true)
   window.removeEventListener('hashchange', handleHashChange)
   window.removeEventListener('resize', scheduleCatalogLayout)
+  window.removeEventListener('focus', refreshVisibleAccess)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   clearExposureObserver()
   layoutObserver?.disconnect()
@@ -882,7 +902,8 @@ onUnmounted(() => {
             {{ publication?.status || (publicationLoading ? '读取中' : '待读取') }}
           </span>
         </div>
-        <p class="publication-audience">确认收录后，应用目录对所有能访问本门户的人开放。</p>
+        <p class="publication-audience">{{ identity.enabled ? (isUpdate ? '确认更新保持既有负责人和分享范围。' : '首次收录将绑定当前核验身份为负责人，默认仅自己可见；之后可在应用权限中调整分享。') : '确认收录后，应用目录对所有能访问本门户的人开放。' }}</p>
+        <el-alert v-if="publication?.requiresIdentity" title="请先使用天宫身份登录，再核对本次发布资料。发布票据不代替应用维护授权。" type="info" :closable="false" />
         <p v-if="publication?.expiresAt" class="publication-expiry">预览有效期至 {{ formatDate(publication.expiresAt) }}</p>
         <p v-if="publicationExpired" class="publication-action-error" role="alert">此预览已过期，不能确认或重试；当前仅展示已保存的资料。</p>
         <div v-if="publicationLoading" class="publication-message" role="status">正在读取服务端发布状态…</div>
@@ -907,7 +928,7 @@ onUnmounted(() => {
           <strong>{{ formatVersion(publication.change.previousVersion) }} <span aria-label="更新至">→</span> {{ formatVersion(publication.preview?.version) }}</strong>
           <p>{{ publication.change.changedFields.length ? `变更项：${publication.change.changedFields.join('、')}` : '更新代码版本，公开资料未变。' }}</p>
         </section>
-        <div v-if="publication?.status === 'preview_ready' && !publication.digest" class="publication-action-error" role="alert">
+        <div v-if="publication?.status === 'preview_ready' && !publication.digest && !publication.requiresIdentity" class="publication-action-error" role="alert">
           服务未提供内容摘要校验值，暂时无法确认收录；请重新读取发布状态。
         </div>
         <div v-if="publicationError && publication" class="publication-action-error" role="alert">{{ publicationError }}</div>
@@ -969,7 +990,7 @@ onUnmounted(() => {
           源码提交
           <code>{{ publication.preview.source?.commitSha || '未提供提交标识' }}</code>
         </p>
-        <AppPublicContent :app="publication.preview" />
+        <AppPublicContent :app="publication.preview" @access-lost="loadPublication()" />
       </section>
     </main>
   </div>
@@ -1164,6 +1185,7 @@ onUnmounted(() => {
       <div v-if="selectedApp" class="detail-material-scroll" data-testid="detail-documents-content">
         <AppPublicContent
           :app="selectedApp"
+          @access-lost="refreshVisibleAccess"
           :show-header="false"
           :show-examples="false"
           :show-source="false"
@@ -1183,6 +1205,7 @@ onUnmounted(() => {
       <div v-if="selectedApp" class="detail-material-scroll" data-testid="detail-source-content">
         <AppPublicContent
           :app="selectedApp"
+          @access-lost="refreshVisibleAccess"
           :show-header="false"
           :show-capabilities="false"
           :show-conditions="false"

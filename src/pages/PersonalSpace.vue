@@ -10,6 +10,7 @@ let sequence = 0
 async function load() {
   const request = ++sequence
   loading.value = true; error.value = ''
+  items.value = []
   try {
     const result = await apiRequest(`/api/personal/favorites?page=${page.value}&pageSize=12`)
     if (request !== sequence) return

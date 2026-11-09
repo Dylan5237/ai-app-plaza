@@ -2,7 +2,9 @@ import { publicPath } from './public-path.js'
 
 let portalStorageKey = null
 let portalRequestEpoch = 0
+let authenticatedWebIdentity = false
 export function advanceIdentityRequests() { portalRequestEpoch++ }
+export function configureWebIdentity(active) { authenticatedWebIdentity = active === true }
 export function configurePortalIdentity(key) { portalStorageKey = key }
 export function readPortalToken() {
   if (!portalStorageKey) return null
@@ -28,8 +30,9 @@ export async function apiRequest(path, { method = 'GET', body, token, idempotenc
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey)
   const portalToken = readPortalToken()
-  const protectedPath = path.startsWith('/api/identity/') || path.startsWith('/api/personal/') || path === '/api/auth/me'
-  if (portalToken && protectedPath) headers.set('X-Plaza-Portal-Token', portalToken)
+  const protectedPath = /^\/api\/(identity|personal|access|management|operations|publications)(\/|\?|$)/.test(path) || path === '/api/auth/me'
+  const authenticatedRead = authenticatedWebIdentity && /^\/api\/(apps|tags)(\/|\?|$)/.test(path)
+  if (portalToken && (protectedPath || authenticatedRead)) headers.set('X-Plaza-Portal-Token', portalToken)
 
   let response
   try {
@@ -51,8 +54,10 @@ export async function apiRequest(path, { method = 'GET', body, token, idempotenc
   } catch {
     payload = null
   }
+  if (identityEpoch !== portalRequestEpoch) throw new ApiError('身份状态已变化，请重新读取。', 409, 'STALE_IDENTITY')
 
   if (!response.ok) {
+    if (payload?.error?.code === 'ADMINISTRATOR_REQUIRED') window.dispatchEvent(new Event('plaza-capabilities-changed'))
     if (identityEpoch === portalRequestEpoch && portalToken === readPortalToken() && path !== '/api/auth/me' && protectedPath && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED', 'IDENTITY_UNAVAILABLE'].includes(payload?.error?.code)) {
       window.dispatchEvent(new CustomEvent('plaza-identity-invalid', { detail: { message: payload?.error?.message || '身份核验未完成，请重试。', code: payload?.error?.code } }))
     }
@@ -65,4 +70,26 @@ export async function apiRequest(path, { method = 'GET', body, token, idempotenc
 
   if (payload === null) throw new ApiError('服务返回了无法读取的数据。', response.status)
   return payload
+}
+
+export async function downloadPackage(url) {
+  const target = new URL(url, location.href)
+  if (target.origin !== location.origin || !target.pathname.startsWith(publicPath('/api/apps/'))) throw new ApiError('请使用当前广场的分发包地址。')
+  const epoch = portalRequestEpoch, headers = new Headers({ Accept: 'application/zip' }), token = readPortalToken()
+  if (authenticatedWebIdentity && token) headers.set('X-Plaza-Portal-Token', token)
+  let response
+  try { response = await fetch(target, { headers, credentials: 'same-origin', redirect: 'error', cache: 'no-store' }) }
+  catch { throw new ApiError('下载未完成，请重试。') }
+  if (!response.ok) {
+    const result = await response.json().catch(() => null)
+    if (epoch === portalRequestEpoch && token === readPortalToken() && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED', 'IDENTITY_UNAVAILABLE'].includes(result?.error?.code)) {
+      window.dispatchEvent(new CustomEvent('plaza-identity-invalid', { detail: result.error }))
+    }
+    throw new ApiError(result?.error?.message || '分发包当前不可访问。', response.status, result?.error?.code)
+  }
+  const blob = await response.blob()
+  if (epoch !== portalRequestEpoch || token !== readPortalToken()) throw new ApiError('身份状态已变化，已停止下载。', 409, 'STALE_IDENTITY')
+  const objectUrl = URL.createObjectURL(blob), anchor = document.createElement('a')
+  anchor.href = objectUrl; anchor.download = 'plaza-application.zip'; anchor.click()
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
 }
