@@ -1,5 +1,7 @@
 import { DomainError } from './errors.js';
 import type { Database, Queryable } from './database.js';
+import type { Config } from '../config.js';
+import { appendBusinessFact } from './analytics-journal.js';
 
 export type AppLifecycleStatus = 'published' | 'offline' | 'deleted';
 export type AppLifecycleAction = 'offline' | 'online' | 'delete' | 'restore';
@@ -31,6 +33,7 @@ interface LifecycleInput {
   action: AppLifecycleAction;
   expectedAppRevision: number;
   expectedLifecycleRevision: number;
+  analytics?: Config['analytics'];
 }
 
 const badRequest = (message: string) => new DomainError(400, 'VALIDATION_FAILED', message);
@@ -94,6 +97,10 @@ export async function changeAppLifecycle(db: Database, input: LifecycleInput): P
         throw conflict('LIFECYCLE_REVISION_CONFLICT', '应用状态已变化，请重新读取后台详情后操作。');
       }
     }
+    await appendBusinessFact(tx, 'catalog_app_lifecycle', input.appId, input.analytics, 'app_lifecycle_changed', {
+      appId: input.appId, action: input.action, fromStatus: app.lifecycle_status, toStatus: nextStatus,
+      lifecycleRevision: nextRevision, appRevision: app.app_revision,
+    });
     return {
       appId: input.appId,
       appRevision: app.app_revision,

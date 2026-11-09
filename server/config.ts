@@ -13,6 +13,8 @@ export interface Config {
   localManagement?: boolean;
   intranetManagement?: true;
   httpsOrigin?: string;
+  analytics?: { environment: 'production' | 'test' | 'local'; siteInstanceId: string };
+  analyticsRetention?: { environment: 'production' | 'test' | 'local'; siteInstanceId: string };
 }
 
 function origin(value: string, name: string) {
@@ -133,10 +135,18 @@ export async function loadConfig(env = process.env): Promise<Config> {
     throw new Error('PLAZA_PREVIEW_ADMIN_PROXY_IP 必须是单一可信代理 IP');
   }
   const previewAdmin = trustedProxyIp ? { trustedProxyIp } : undefined;
+  const analyticsEnabled = env.PLAZA_ANALYTICS_ENABLED === '1';
+  const analyticsEnvironment = env.PLAZA_ANALYTICS_ENVIRONMENT || (local ? 'local' : 'production');
+  const analyticsSite = env.PLAZA_ANALYTICS_SITE_ID || 'plaza';
+  if (!['production', 'test', 'local'].includes(analyticsEnvironment) || !/^[a-zA-Z0-9_-]{1,64}$/.test(analyticsSite)) {
+    throw new Error('埋点环境或站点标识配置无效');
+  }
   const config: Config = { host, port, publicOrigin, gitlabUrl, secret, databaseUrl: env.DATABASE_URL,
     dataDir, local, audience: '所有能访问本门户的人', staticDir: resolve('dist'), rateLimit: true,
     ...(managedPublishing ? { managedPublishing } : {}), ...(previewAdmin ? { previewAdmin } : {}),
     ...(httpsOrigin ? { httpsOrigin } : {}),
+    analyticsRetention: { environment: analyticsEnvironment as 'production' | 'test' | 'local', siteInstanceId: analyticsSite },
+    ...(analyticsEnabled ? { analytics: { environment: analyticsEnvironment as 'production' | 'test' | 'local', siteInstanceId: analyticsSite } } : {}),
     ...(env.PLAZA_LOCAL_MANAGEMENT === '1' ? { localManagement: true } : {}),
     ...(env.PLAZA_INTRANET_MANAGEMENT === '1' ? { intranetManagement: true } : {}) };
   assertManagementConfig(config);

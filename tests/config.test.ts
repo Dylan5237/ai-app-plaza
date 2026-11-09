@@ -8,6 +8,16 @@ const nonLocalRequirements = {
   PLAZA_SECRET: 'test-only-production-config-with-long-secret',
 };
 
+test('disabling collection preserves the configured retention namespace', async () => {
+  const base = { ...nonLocalRequirements, PUBLIC_ORIGIN:'https://plaza.example.invalid', PLAZA_ANALYTICS_SITE_ID:'main', PLAZA_ANALYTICS_ENVIRONMENT:'production' };
+  const enabled = await loadConfig({ ...base, PLAZA_ANALYTICS_ENABLED:'1' });
+  const disabled = await loadConfig(base);
+  assert.deepEqual(enabled.analytics, { environment:'production', siteInstanceId:'main' });
+  assert.equal(disabled.analytics, undefined);
+  assert.deepEqual(disabled.analyticsRetention, enabled.analytics);
+  await assert.rejects(loadConfig({ ...base, PLAZA_ANALYTICS_SITE_ID:'invalid/site' }), /埋点环境或站点标识/);
+});
+
 test('optional HTTPS ingress preserves the canonical HTTP origin and requires an exact same-host private IP', async () => {
   const base = { ...nonLocalRequirements, PUBLIC_ORIGIN: 'http://192.168.2.145:16090', ALLOW_INSECURE_PORTAL: '1' };
   const disabled = await loadConfig(base);

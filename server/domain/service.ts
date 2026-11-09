@@ -33,9 +33,12 @@ import { compareProjectVersions, type AgentEntry, type AppManifest, type StoredA
 import { catalogTags, EFFECTIVE_TAGS, TAG_OVERRIDE_JOIN, validateTagReuse } from './tags.js';
 import { distributionPath, hasConflictingInstallSource, MAX_DISTRIBUTION_BYTES, storeDistribution, type DistributionFile } from './distribution.js';
 import { disabledLegacyEntry, normalizeLegacyGuide, normalizeLegacyRequirements, type DisabledLegacyEntry } from './legacy-distribution.js';
+import { appendBusinessFact } from './analytics-journal.js';
+import type { Config } from '../config.js';
 
 export interface AppView {
   id: string;
+  snapshotId?: string;
   revision: number;
   manifest: StoredAppManifest;
   tags: string[];
@@ -96,12 +99,13 @@ export interface ServiceConfig {
   audience: string;
   distributionDir?: string;
   staticDir?: string;
+  analytics?: Config['analytics'];
 }
 
 export interface PlazaService {
   cleanupExpiredTokens(): Promise<void>;
   tags(): Promise<string[]>;
-  submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult>;
+  submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string, origin?: { mode: 'managed'; operationId: string }): Promise<SubmitResult>;
   lookupManagedReceipt(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult | undefined>;
   publication(id: string, ticket: string): Promise<PublicationView>;
   managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
@@ -142,6 +146,8 @@ interface PublicationRecord {
   created_at: Date | string;
   updated_at: Date | string;
 }
+
+interface PublicationAttempt { id: string; startedAt: string; kind: 'submit' | 'confirm' | 'retry'; actorContext?: 'publication_link' | 'management' }
 
 interface AppRecord {
   id: string;
@@ -233,6 +239,17 @@ export function createService(config: ServiceConfig): PlazaService {
   const encryptionKey = createHash("sha256").update("ai-app-plaza/token-encryption/v1\0").update(secret).digest();
   const instanceId = reader.baseUrl.toString().replace(/\/$/, "");
   let activeDistributionReads = 0;
+
+  async function finishAttempt(id: string, attempt: PublicationAttempt | undefined, result: 'success' | 'failure' | 'unknown', safeErrorCode?: string) {
+    if (!config.analytics || !attempt) return;
+    try {
+      await config.db.transaction(tx => appendBusinessFact(tx, 'publications', id, config.analytics, 'publish_attempt_finished', {
+        publicationId: id, attemptId: attempt.id, attemptStartedAt: attempt.startedAt, attemptKind: attempt.kind,
+        result, resultRevision: 1, durationMs: Math.max(0, Date.now() - new Date(attempt.startedAt).getTime()),
+        safeErrorCode: safeErrorCode || null,
+      }));
+    } catch { console.error('统计结果暂未记录，原业务结果不受影响'); }
+  }
 
   const cleanupExpiredTokens = async () => {
     await config.db.query(
@@ -372,6 +389,7 @@ export function createService(config: ServiceConfig): PlazaService {
     };
     return {
       id: record.id,
+      snapshotId: record.snap_id,
       revision: record.revision,
       manifest: parseJsonValue<StoredAppManifest>(record.manifest),
       tags: parseJsonValue<string[]>(record.effective_tags ?? []),
@@ -480,7 +498,10 @@ export function createService(config: ServiceConfig): PlazaService {
     const nextAction = mustSubmitAgain
       ? "submit_again"
       : retryAllowed ? "retry" : "submit_again";
-    await config.db.query(
+    return config.db.transaction(async tx => {
+    const before = (await tx.query<PublicationRecord>('SELECT * FROM publications WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    if (!before) throw notFound();
+    await tx.query(
       `UPDATE publications
           SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
               confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER') THEN NULL ELSE confirmed_at END,
@@ -488,9 +509,13 @@ export function createService(config: ServiceConfig): PlazaService {
         WHERE id = $1 AND status <> 'registered'`,
       [id, failure.code, failure.message, nextAction],
     );
-    const result = await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id]);
+    const result = await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id]);
     if (!result.rows[0]) throw notFound();
+    if (before.status !== result.rows[0].status) await appendBusinessFact(tx, 'publications', id, config.analytics, 'publication_state_changed', {
+      publicationId: id, fromState: before.status, toState: result.rows[0].status, safeErrorCode: failure.code,
+    });
     return result.rows[0];
+    });
   }
 
   async function preparePreview(record: PublicationRecord, source: LoadedSource): Promise<PublicationRecord> {
@@ -525,6 +550,11 @@ export function createService(config: ServiceConfig): PlazaService {
             WHERE id = $1 RETURNING *`,
           [record.id, existing.id, JSON.stringify(resultPreview(current, source)), source.digest, currentRevision],
         );
+        await appendBusinessFact(tx, 'publications', record.id, config.analytics, 'publication_state_changed', {
+          publicationId: record.id, fromState: locked.status, toState: 'registered', appId: existing.id,
+          snapshotId: existing.snap_id, registrationKind: 'noop', appRevision: currentRevision,
+          catalogStatusAfter: existing.lifecycle_status || 'published', lifecycleRevision: existing.lifecycle_revision || 1,
+        });
         return updated.rows[0]!;
       }
 
@@ -538,6 +568,9 @@ export function createService(config: ServiceConfig): PlazaService {
           WHERE id = $1 RETURNING *`,
         [record.id, source.digest, currentRevision, JSON.stringify(view)],
       );
+      if (locked.status !== 'preview_ready') await appendBusinessFact(tx, 'publications', record.id, config.analytics, 'publication_state_changed', {
+        publicationId: record.id, fromState: locked.status, toState: 'preview_ready', previewRevision: locked.revision,
+      });
       return updated.rows[0]!;
     });
   }
@@ -589,6 +622,11 @@ export function createService(config: ServiceConfig): PlazaService {
             WHERE id = $1 RETURNING *`,
           [record.id, app.id, JSON.stringify(resultPreview(existingView, source))],
         );
+        await appendBusinessFact(tx, 'publications', record.id, config.analytics, 'publication_state_changed', {
+          publicationId: record.id, fromState: lockedPublication.status, toState: 'registered', appId: app.id,
+          snapshotId: app.snap_id, registrationKind: 'noop', appRevision: app.revision,
+          catalogStatusAfter: app.lifecycle_status || 'published', lifecycleRevision: app.lifecycle_revision || 1,
+        });
         return updated.rows[0]!;
       }
 
@@ -621,6 +659,11 @@ export function createService(config: ServiceConfig): PlazaService {
                 WHERE id = $1 RETURNING *`,
               [record.id, app.id, JSON.stringify(resultPreview(existingView, source))],
             );
+            await appendBusinessFact(tx, 'publications', record.id, config.analytics, 'publication_state_changed', {
+              publicationId: record.id, fromState: lockedPublication.status, toState: 'registered', appId: app.id,
+              snapshotId: app.snap_id, registrationKind: 'noop', appRevision: app.revision,
+              catalogStatusAfter: app.lifecycle_status || 'published', lifecycleRevision: app.lifecycle_revision || 1,
+            });
             return updated.rows[0]!;
           }
           throw new DomainError(409, "REVISION_CONFLICT", "另一个候选已先创建应用，旧预览不能覆盖新版本，请重新提交候选。");
@@ -685,11 +728,18 @@ export function createService(config: ServiceConfig): PlazaService {
           WHERE id = $1 RETURNING *`,
         [record.id, appId, JSON.stringify(resultPreview(savedView, source, lockedPublication))],
       );
+      const managedOperation = config.analytics ? (await tx.query<{ operation_kind: string; id: string }>('SELECT id,operation_kind FROM managed_publish_operations WHERE publication_id=$1 ORDER BY created_at DESC LIMIT 1', [record.id])).rows[0] : undefined;
+      await appendBusinessFact(tx, 'publications', record.id, config.analytics, 'publication_state_changed', {
+        publicationId: record.id, fromState: lockedPublication.status, toState: 'registered', appId, snapshotId,
+        registrationKind: currentRevision === 0 ? 'new' : managedOperation?.operation_kind === 'metadata_patch' ? 'metadata_edit' : 'version_update',
+        publishOperationId: managedOperation?.id || record.id, appRevision: nextRevision,
+        catalogStatusAfter: savedApp.lifecycle_status || 'published', lifecycleRevision: savedApp.lifecycle_revision || 1,
+      });
       return updated.rows[0]!;
     });
   }
 
-  async function updateConfirmed(id: string, revision: number, digest: string): Promise<PublicationRecord> {
+  async function updateConfirmed(id: string, revision: number, digest: string, attempt?: PublicationAttempt): Promise<PublicationRecord> {
     return config.db.transaction(async (tx) => {
       const current = (await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1 FOR UPDATE", [id])).rows[0];
       if (!current) throw notFound();
@@ -697,6 +747,9 @@ export function createService(config: ServiceConfig): PlazaService {
       if (current.status !== "preview_ready" || current.revision !== revision || current.digest !== digest) {
         throw new DomainError(409, "SOURCE_MISMATCH", "确认参数与当前预览修订或摘要不一致，请刷新预览。");
       }
+      if (attempt) await appendBusinessFact(tx, 'publications', id, config.analytics, 'publication_confirm_requested', {
+        publicationId: id, attemptId: attempt.id, attemptStartedAt: attempt.startedAt, actorContext: attempt.actorContext || 'publication_link',
+      });
       const updated = await tx.query<PublicationRecord>(
         `UPDATE publications SET confirmed_at = COALESCE(confirmed_at, now()), updated_at = now() WHERE id = $1 RETURNING *`,
         [id],
@@ -705,12 +758,13 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
-  async function confirmPublication(record: PublicationRecord, confirmation: { revision: number; digest: string }): Promise<PublicationView> {
+  async function confirmPublication(record: PublicationRecord, confirmation: { revision: number; digest: string }, actorContext: 'publication_link' | 'management'): Promise<PublicationView> {
     if (record.status === 'registered') return recordView(record);
     if (!Number.isInteger(confirmation?.revision) || confirmation.revision < 1 || !/^[a-f0-9]{64}$/.test(confirmation?.digest ?? '')) {
       throw new DomainError(400, 'VALIDATION_FAILED', '确认必须包含预览修订号和摘要。');
     }
-    const confirmed = await updateConfirmed(record.id, confirmation.revision, confirmation.digest);
+    const attempt: PublicationAttempt | undefined = config.analytics ? { id: randomUUID(), startedAt: new Date().toISOString(), kind: 'confirm', actorContext } : undefined;
+    const confirmed = await updateConfirmed(record.id, confirmation.revision, confirmation.digest, attempt);
     if (confirmed.status === 'registered') return recordView(confirmed);
     try {
       const source = await assertAuthorAndSource(confirmed);
@@ -718,18 +772,38 @@ export function createService(config: ServiceConfig): PlazaService {
         throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
       }
       const registered = await register(confirmed, source);
+      await finishAttempt(record.id, attempt, 'success');
       return recordView(registered);
     } catch (error) {
-      return recordView(await markFailed(record.id, error));
+      const failed = await markFailed(record.id, error);
+      await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
+      return recordView(failed);
     }
   }
 
-  async function retryPublication(record: PublicationRecord): Promise<PublicationView> {
+  async function retryPublication(record: PublicationRecord, actorContext: 'publication_link' | 'management'): Promise<PublicationView> {
     if (record.status === 'registered') return recordView(record);
     if (record.status === 'preview_ready') return recordView(record);
     if (record.status === 'cancelled') throw new DomainError(409, 'PUBLICATION_CANCELLED', '该发布候选已取消。');
     if (record.next_action === 'submit_again') {
       throw new DomainError(409, record.error_code ?? 'SOURCE_MISMATCH', record.error_message ?? '当前候选需要重新提交并生成新的预览。');
+    }
+    let attempt: PublicationAttempt | undefined;
+    if (config.analytics) {
+      const current = await config.db.transaction(async tx => {
+        const locked = (await tx.query<PublicationRecord>('SELECT * FROM publications WHERE id=$1 FOR UPDATE', [record.id])).rows[0];
+        if (!locked) throw notFound();
+        if (locked.status === 'registered' || locked.status === 'preview_ready') return locked;
+        if (locked.status === 'cancelled' || locked.next_action === 'submit_again') return locked;
+        attempt = { id: randomUUID(), startedAt: new Date().toISOString(), kind: 'retry', actorContext };
+        await appendBusinessFact(tx, 'publications', record.id, config.analytics, 'publication_retry_requested', {
+          publicationId: record.id, attemptId: attempt.id, attemptStartedAt: attempt.startedAt, actorContext, retryKind: 'retry',
+        });
+        return locked;
+      });
+      if (current.status === 'registered' || current.status === 'preview_ready') return recordView(current);
+      if (current.status === 'cancelled' || current.next_action === 'submit_again') throw new DomainError(409, current.error_code || 'PUBLICATION_CANCELLED', '当前候选无法继续重试。');
+      record = current;
     }
     try {
       const source = await assertAuthorAndSource(record);
@@ -737,11 +811,17 @@ export function createService(config: ServiceConfig): PlazaService {
         if (!record.digest || source.digest !== record.digest) {
           throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
         }
-        return recordView(await register(record, source));
+        const registered = await register(record, source);
+        await finishAttempt(record.id, attempt, 'success');
+        return recordView(registered);
       }
-      return recordView(await preparePreview(record, source));
+      const prepared = await preparePreview(record, source);
+      await finishAttempt(record.id, attempt, 'success');
+      return recordView(prepared);
     } catch (error) {
-      return recordView(await markFailed(record.id, error));
+      const failed = await markFailed(record.id, error);
+      await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
+      return recordView(failed);
     }
   }
 
@@ -768,7 +848,7 @@ export function createService(config: ServiceConfig): PlazaService {
   const service: PlazaService = {
     cleanupExpiredTokens,
 
-    async submit(input, gitlabToken, idempotencyKey) {
+    async submit(input, gitlabToken, idempotencyKey, origin) {
       await cleanupExpiredTokens();
       validateSubmitInput(input, gitlabToken, idempotencyKey);
       return reader.withAuthor(input, gitlabToken, async (actorId, load) => {
@@ -778,6 +858,7 @@ export function createService(config: ServiceConfig): PlazaService {
           .digest("hex");
         const encrypted = encryptToken(gitlabToken);
         const now = new Date();
+        const submitAttempt: PublicationAttempt | undefined = config.analytics && !origin ? { id: randomUUID(), startedAt: now.toISOString(), kind: 'submit' } : undefined;
         const publicationId = randomUUID();
         const candidateAppId = randomUUID();
         const expiry = new Date(now.getTime() + PUBLICATION_TTL_MS);
@@ -803,7 +884,17 @@ export function createService(config: ServiceConfig): PlazaService {
               now,
             ],
           );
-          if (inserted.rows[0]) return { record: inserted.rows[0], isNew: true };
+          if (inserted.rows[0]) {
+            const existingForAnalytics = config.analytics && !origin ? await findAppByKey(tx, validateProjectId(input.projectId), input.appKey) : undefined;
+            if (!origin) await appendBusinessFact(tx, 'publications', publicationId, config.analytics, 'publish_operation_received', {
+              publicationId, publishOperationId: publicationId, attemptId: submitAttempt?.id || publicationId, attemptStartedAt: now.toISOString(),
+              publishMode: 'direct', publishKind: existingForAnalytics ? 'update' : 'new',
+            });
+            await appendBusinessFact(tx, 'publications', publicationId, config.analytics, 'publication_state_changed', {
+              publicationId, publishOperationId: origin?.operationId || publicationId, fromState: 'none', toState: 'checking',
+            });
+            return { record: inserted.rows[0], isNew: true };
+          }
           const existing = (await tx.query<PublicationRecord>(
             "SELECT * FROM publications WHERE actor_id = $1 AND idempotency_digest = $2 FOR UPDATE",
             [actorId, idempotencyDigest],
@@ -824,9 +915,12 @@ export function createService(config: ServiceConfig): PlazaService {
         try {
           const source = await load();
           const prepared = await preparePreview(created.record, source);
+          await finishAttempt(created.record.id, submitAttempt, 'success');
           return submitView(prepared);
         } catch (error) {
-          return submitView(await markFailed(created.record.id, error));
+          const failed = await markFailed(created.record.id, error);
+          await finishAttempt(created.record.id, submitAttempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
+          return submitView(failed);
         }
       });
     },
@@ -870,13 +964,13 @@ export function createService(config: ServiceConfig): PlazaService {
     async confirm(id, ticket, confirmation) {
       await cleanupExpiredTokens();
       const record = await loadPublication(id, ticket);
-      return confirmPublication(record, confirmation);
+      return confirmPublication(record, confirmation, 'publication_link');
     },
 
     async retry(id, ticket) {
       await cleanupExpiredTokens();
       const record = await loadPublication(id, ticket);
-      return retryPublication(record);
+      return retryPublication(record, 'publication_link');
     },
 
     async managementPublication(id) {
@@ -885,12 +979,12 @@ export function createService(config: ServiceConfig): PlazaService {
 
     async managementConfirm(id, confirmation) {
       await cleanupExpiredTokens();
-      return confirmPublication(await loadManagementPublication(id, true), confirmation);
+      return confirmPublication(await loadManagementPublication(id, true), confirmation, 'management');
     },
 
     async managementRetry(id) {
       await cleanupExpiredTokens();
-      return retryPublication(await loadManagementPublication(id, true));
+      return retryPublication(await loadManagementPublication(id, true), 'management');
     },
 
     changeLifecycle(id, action, expectedAppRevision, expectedLifecycleRevision) {
@@ -900,6 +994,7 @@ export function createService(config: ServiceConfig): PlazaService {
         action,
         expectedAppRevision,
         expectedLifecycleRevision,
+        analytics: config.analytics,
       });
     },
 

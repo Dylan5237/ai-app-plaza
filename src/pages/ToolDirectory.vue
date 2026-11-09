@@ -12,6 +12,7 @@ import CatalogWheel from '../components/CatalogWheel.vue'
 import { apiRequest } from '../lib/api.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
+import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false } })
 
@@ -24,6 +25,74 @@ const randomAllShown = ref(false)
 let randomLoaded = false
 let randomRequestSequence = 0
 const scrollPositions = { catalog: 0, random: 0 }
+let measurementEnabled = false
+let portalViewed = false
+let publicationFlowId = null
+let resultSetId = null
+let randomResultSetId = null
+let discoveryRequestId = uuid()
+let exposureObserver
+let exposureGeneration = 0
+const exposureTimers = new Map()
+const exposed = new Set()
+function pageContext() { return detailVisible.value ? 'detail' : discoveryTab.value === 'random' ? 'random' : 'catalog' }
+function entryMode() { return detailOriginUrl ? 'catalog' : new URLSearchParams(location.search).has('app') ? 'detail_link' : 'catalog' }
+function eventAttributes(extra = {}) { return { pageContext: pageContext(), entryMode: entryMode(), ...extra } }
+function appEvent(app) { return app?.id && app?.snapshotId ? { appId: app.id, snapshotId: app.snapshotId } : null }
+function resultContext() { const id = discoveryTab.value === 'random' ? randomResultSetId : resultSetId; return id ? { resultSetId: id } : {} }
+function recordFailure(operationKind, error) {
+  const allowed = ['NOT_FOUND', 'RATE_LIMITED', 'INVALID_REQUEST', 'SERVICE_UNAVAILABLE']
+  const safeErrorCode = allowed.includes(error?.code) ? error.code : error?.status ? 'UNKNOWN_ERROR' : 'NETWORK_ERROR'
+  const interactionId = uuid()
+  if (interactionId) track('portal_operation_failed', eventAttributes({ operationKind, safeErrorCode }), { interactionId, ...resultContext() })
+}
+function recordEntry(app, entry, placement) {
+  const appContext = appEvent(app), interactionId = uuid()
+  if (!props.management && appContext && interactionId && entry?.id && ['web', 'agent'].includes(entry.kind)) {
+    track('app_entry_clicked', eventAttributes({ entryId: entry.id, entryKind: entry.kind, placement }), { ...appContext, interactionId, ...resultContext() })
+  }
+}
+function clearExposureObserver() {
+  exposureGeneration++
+  exposureObserver?.disconnect()
+  exposureObserver = undefined
+  for (const timer of exposureTimers.values()) clearTimeout(timer)
+  exposureTimers.clear()
+}
+async function observeCards() {
+  clearExposureObserver()
+  const generation = exposureGeneration
+  if (!measurementEnabled || props.management || detailVisible.value || document.hidden || typeof IntersectionObserver === 'undefined') return
+  await nextTick()
+  if (generation !== exposureGeneration || document.hidden || detailVisible.value) return
+  const random = discoveryTab.value === 'random'
+  const resultId = random ? randomResultSetId : resultSetId
+  const list = random ? randomItems.value : apps.value
+  if (!resultId || !directoryMain.value) return
+  const selector = random ? '[data-testid="wheel-current"] [data-testid="app-card"]' : '.catalog-results [data-testid="app-card"]'
+  const cards = [...directoryMain.value.querySelectorAll(selector)]
+  exposureObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      const card = entry.target
+      const key = `${resultId}:${card.dataset.appId}`
+      clearTimeout(exposureTimers.get(card)); exposureTimers.delete(card)
+      if (!entry.isIntersecting || entry.intersectionRatio < .5 || exposed.has(key)) continue
+      const app = list.find(item => item.id === card.dataset.appId)
+      const context = appEvent(app)
+      if (!context) continue
+      const position = Math.max(1, list.findIndex(item => item.id === app.id) + 1)
+      exposureTimers.set(card, setTimeout(() => {
+        exposureTimers.delete(card)
+        if (document.hidden || detailVisible.value || !card.isConnected || exposed.has(key)) return
+        exposed.add(key)
+        track('app_card_exposed', eventAttributes({ position, section: random ? 'random' : 'catalog' }), { ...context, resultSetId: resultId })
+      }, 1000))
+    }
+  }, { threshold: [.5] })
+  cards.forEach(card => exposureObserver.observe(card))
+}
+function onVisibilityChange() { void observeCards() }
+watch(randomIndex, () => { if (discoveryTab.value === 'random') void observeCards() }, { flush: 'post' })
 const detailHeading = ref(null)
 let detailOriginFocus = null
 let detailOriginUrl = ''
@@ -38,6 +107,7 @@ async function selectDiscovery(tab) {
   await nextTick()
   if (shell()) shell().scrollTop = scrollPositions[tab]
   if (tab === 'random' && !randomLoaded) await loadRandom()
+  void observeCards()
 }
 
 async function loadRandom() {
@@ -49,11 +119,13 @@ async function loadRandom() {
     const result = await apiRequest(`/api/apps/random?${params}`)
     if (sequence !== randomRequestSequence) return
     randomItems.value = result.items
+    randomResultSetId = uuid()
     randomAllShown.value = result.allShown
     randomIndex.value = 0
     randomLoaded = true
+    void observeCards()
   } catch (error) {
-    if (sequence === randomRequestSequence) randomError.value = errorText(error)
+    if (sequence === randomRequestSequence) { randomError.value = errorText(error); recordFailure('random', error) }
   } finally {
     if (sequence === randomRequestSequence) randomLoading.value = false
   }
@@ -84,8 +156,10 @@ async function usePrimary(app) {
       link.href = safeHttpUrl(latest.entry.url)
       link.rel = 'noreferrer'
       tab.document.body.appendChild(link)
+      recordEntry(current, latest.entry, 'card')
       link.click()
     } else {
+      recordEntry(current, latest.entry, 'card')
       selectedApp.value = current
       await loadAgentInstructions(latest.entry)
     }
@@ -228,7 +302,7 @@ function formatDate(value) {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed)
 }
 
-async function loadCatalog({ preserveNotice = false } = {}) {
+async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' } = {}) {
   const requestSequence = ++catalogRequestSequence
   catalogLoading.value = true
   catalogError.value = ''
@@ -250,9 +324,21 @@ async function loadCatalog({ preserveNotice = false } = {}) {
     total.value = Number.isFinite(Number(result.total)) ? Number(result.total) : 0
     usageCounts.value = result.usageCounts || { platform: 0, agent: 0 }
     page.value = Number.isFinite(Number(result.page)) && Number(result.page) > 0 ? Number(result.page) : page.value
+    if (!props.management) {
+      measurementEnabled = result.analyticsEnabled === true
+      enableAnalytics(measurementEnabled)
+      resultSetId = uuid()
+      if (measurementEnabled && !portalViewed) { track('portal_viewed', eventAttributes()); portalViewed = true }
+      await nextTick()
+      if (requestSequence !== catalogRequestSequence) return
+      const length = [...trimmedQuery].length
+      if (resultSetId && discoveryRequestId) track('catalog_results_viewed', eventAttributes({ trigger, discoveryRequestId, resultCount: total.value, renderedCount: apps.value.length, page: page.value, pageSize: pageSize.value, usageType: selectedUsage.value, selectedTags: [...selectedTags.value], hasQuery: length > 0, queryLengthBucket: length === 0 ? '0' : length <= 10 ? '1-10' : length <= 50 ? '11-50' : '51-200' }), { resultSetId })
+      void observeCards()
+    }
   } catch (error) {
     if (requestSequence !== catalogRequestSequence) return
     catalogError.value = errorText(error)
+    if (!props.management) recordFailure(trigger === 'search' ? 'search' : trigger === 'filter' ? 'filter' : 'catalog', error)
   } finally {
     if (requestSequence === catalogRequestSequence) catalogLoading.value = false
   }
@@ -281,7 +367,7 @@ function updateCatalogPageSize(reload = true) {
   if (capacity === pageSize.value) return
   pageSize.value = capacity
   page.value = 1
-  if (reload && catalogReady) loadCatalog({ preserveNotice: true })
+  if (reload && catalogReady) loadCatalog({ preserveNotice: true, trigger: 'layout_refresh' })
 }
 
 function scheduleCatalogLayout() {
@@ -306,7 +392,8 @@ watch([catalogNotice, usageCounts], async () => {
 
 function searchCatalog() {
   page.value = 1
-  return loadCatalog()
+  discoveryRequestId = uuid()
+  return loadCatalog({ trigger: 'search' })
 }
 
 function selectUsage(usage) {
@@ -314,7 +401,8 @@ function selectUsage(usage) {
   selectedUsage.value = usage
   page.value = 1
   updateCatalogPageSize(false)
-  loadCatalog()
+  discoveryRequestId = uuid()
+  loadCatalog({ trigger: 'filter' })
 }
 
 function toggleTag(tag) {
@@ -322,26 +410,35 @@ function toggleTag(tag) {
     ? selectedTags.value.filter((item) => item !== tag)
     : [...selectedTags.value, tag]
   page.value = 1
-  loadCatalog()
+  discoveryRequestId = uuid()
+  loadCatalog({ trigger: 'filter' })
 }
 
 function changePage(nextPage) {
   page.value = nextPage
-  loadCatalog()
+  loadCatalog({ trigger: 'pagination' })
 }
 
+function clearTags() {
+  if (!selectedTags.value.length) return
+  selectedTags.value = []
+  page.value = 1
+  discoveryRequestId = uuid()
+  loadCatalog({ trigger: 'filter' })
+}
 function clearFilters() {
   query.value = ''
   selectedTags.value = []
   selectedUsage.value = 'all'
   page.value = 1
   updateCatalogPageSize(false)
-  loadCatalog()
+  discoveryRequestId = uuid()
+  loadCatalog({ trigger: 'filter' })
 }
 
 function appPath(id) { return `${props.management && props.managementEnabled ? '/api/management' : '/api'}/apps/${encodeURIComponent(id)}` }
 
-async function openApp(id, { fromHistory = false } = {}) {
+async function openApp(id, { fromHistory = false, entryContext = null } = {}) {
   if (!id) return
   primaryRequestSequence += 1
   if (!props.management) {
@@ -359,6 +456,7 @@ async function openApp(id, { fromHistory = false } = {}) {
   const requestSequence = ++detailRequestSequence
   instructionRequestSequence += 1
   detailVisible.value = true
+  clearExposureObserver()
   detailDocumentsVisible.value = false
   detailSourceVisible.value = false
   instructionDialogVisible.value = false
@@ -375,8 +473,13 @@ async function openApp(id, { fromHistory = false } = {}) {
     const result = await apiRequest(appPath(id))
     if (requestSequence !== detailRequestSequence) return
     selectedApp.value = result
+    await nextTick()
+    if (!props.management && requestSequence === detailRequestSequence && detailVisible.value) {
+      const context = appEvent(result)
+      if (context) track('app_detail_viewed', eventAttributes({ entryContext: entryContext || (detailOriginUrl ? (query.value.trim() ? 'search_result' : 'card') : 'deep_link') }), { ...context, ...resultContext() })
+    }
   } catch (error) {
-    if (requestSequence === detailRequestSequence) detailError.value = errorText(error)
+    if (requestSequence === detailRequestSequence) { detailError.value = errorText(error); if (!props.management) recordFailure('detail', error) }
   } finally {
     if (requestSequence === detailRequestSequence) detailLoading.value = false
   }
@@ -393,6 +496,7 @@ async function restoreDiscovery() {
   }
   if (shell()) shell().scrollTop = scrollPositions[discoveryTab.value]
   detailOriginFocus?.focus({ preventScroll: true })
+  void observeCards()
 }
 
 function returnFromDetail() {
@@ -458,6 +562,7 @@ async function loadAgentInstructions(entry) {
   } catch (error) {
     if (requestSequence !== instructionRequestSequence || selectedApp.value?.id !== appId || instructionEntry.value?.id !== entryId) return
     instructionError.value = errorText(error)
+    if (!props.management) recordFailure('instructions', error)
     if (!props.management && error?.status === 404) refreshOnReturn = true
   } finally {
     if (requestSequence === instructionRequestSequence) instructionLoading.value = false
@@ -469,17 +574,20 @@ async function copyAgentInstructions() {
   if (!entry || instructionLoading.value) return
   if (!props.management) await loadAgentInstructions(entry)
   if (instruction.value && instruction.value.distribution?.status !== 'disabled') {
-    await copyText(instruction.value.text, '接入说明已复制')
+    const app = selectedApp.value
+    const copied = await copyText(instruction.value.text, '接入说明已复制')
+    const context = appEvent(app), interactionId = uuid()
+    if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'usage', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
   }
 }
 
 async function copyText(text, successMessage) {
-  if (!text) return
+  if (!text) return false
   try {
     if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
     await navigator.clipboard.writeText(text)
     ElMessage.success(successMessage)
-    return
+    return true
   } catch {
     // Continue to the legacy copy path for HTTP intranet pages without Clipboard API access.
   }
@@ -504,12 +612,14 @@ async function copyText(text, successMessage) {
 
   if (copied) {
     ElMessage.success(successMessage)
+    return true
   } else {
     copyFallbackText.value = String(text)
     copyFallbackVisible.value = true
     await nextTick()
     selectManualCopyText()
     ElMessage.warning('自动复制不可用，已选中文本，请按 Ctrl+C 复制。')
+    return false
   }
 }
 
@@ -522,23 +632,43 @@ function closeShareDialog() {
   contractRequestSequence += 1
   contractLoading.value = false
   publishContract.value = null
+  publicationFlowId = null
 }
 
 async function openShareDialog(appId = '') {
   const sequence = ++contractRequestSequence
   shareAppId.value = appId
+  publicationFlowId = uuid()
   shareVisible.value = true
   contractLoading.value = true
   contractError.value = ''
   publishContract.value = null
   try {
     const result = await apiRequest(appId ? `${appPath(appId)}/publish-contract` : '/api/publish-contract')
-    if (sequence === contractRequestSequence) publishContract.value = result
+    if (sequence === contractRequestSequence) {
+      publishContract.value = result
+      await nextTick()
+      const context = appId ? appEvent(selectedApp.value) : null
+      if (!props.management && publicationFlowId && (!appId || context)) track('publish_panel_viewed', eventAttributes({ publishKind: appId ? 'update' : 'new', placement: appId ? 'detail' : 'header' }), { flowId: publicationFlowId, ...(context || {}) })
+    }
   } catch (error) {
     if (sequence === contractRequestSequence) contractError.value = errorText(error)
   } finally {
     if (sequence === contractRequestSequence) contractLoading.value = false
   }
+}
+
+async function copyPublishPrompt() {
+  if (!publishContract.value?.prompt) return
+  const copied = await copyText(publishContract.value.prompt, shareAppId.value ? '更新任务已复制' : '发布任务已复制')
+  const interactionId = uuid()
+  if (!props.management && publicationFlowId && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: shareAppId.value ? 'update' : 'publish', result: copied ? 'success' : 'failure' }), { flowId: publicationFlowId, interactionId })
+}
+async function copyExample(text) {
+  const app = selectedApp.value
+  const copied = await copyText(text, '示例任务已复制')
+  const context = appEvent(app), interactionId = uuid()
+  if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'example', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
 }
 
 function publicationToken(id) {
@@ -618,7 +748,17 @@ async function loadPublication(id = publicationId.value) {
   }
   try {
     const result = await apiRequest(publicationPath(id), token ? { token } : {})
-    if (current()) publication.value = result
+    if (current()) {
+      publication.value = result
+      if (result.analyticsEnabled === true) {
+        measurementEnabled = true; enableAnalytics(true)
+        const viewerContext = props.management ? 'management' : 'publication_link'
+        const pageContext = props.management ? 'management' : 'publication'
+        if (!portalViewed) { track('portal_viewed', eventAttributes({ pageContext, entryMode: viewerContext })); portalViewed = true }
+        await nextTick()
+        if (current() && result.preview && Number.isInteger(result.revision) && result.revision > 0) track('publication_preview_viewed', eventAttributes({ pageContext, entryMode: viewerContext, viewerContext, previewRevision: result.revision }), { publicationId: id })
+      }
+    }
   } catch (error) {
     if (current()) publicationError.value = errorText(error)
   } finally {
@@ -683,7 +823,7 @@ async function returnToCatalog() {
   await loadCatalog()
   if (appId) {
     catalogNotice.value = '目录已刷新，以下为已收录应用的最新详情。'
-    await openApp(appId)
+    await openApp(appId, { entryContext: 'after_publication' })
   }
 }
 
@@ -692,6 +832,7 @@ onMounted(async () => {
   window.addEventListener('popstate', handlePopState)
   window.addEventListener('keydown', handleDetailKey, true)
   window.addEventListener('resize', scheduleCatalogLayout)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   if (preparePublicationRoute()) return
   if (props.management) return
 
@@ -699,7 +840,7 @@ onMounted(async () => {
   await nextTick()
   updateCatalogPageSize(false)
   catalogReady = true
-  await loadCatalog()
+  await loadCatalog({ trigger: 'initial' })
   if (appId) await openApp(appId)
 })
 
@@ -711,6 +852,8 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleDetailKey, true)
   window.removeEventListener('hashchange', handleHashChange)
   window.removeEventListener('resize', scheduleCatalogLayout)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  clearExposureObserver()
   layoutObserver?.disconnect()
   cancelAnimationFrame(layoutFrame)
 })
@@ -857,7 +1000,7 @@ onUnmounted(() => {
         </div>
         <div ref="tagRow" class="tag-filter-row" aria-label="按作者标签筛选">
           <span class="tag-filter-label">想做什么</span>
-          <button class="filter-chip tag-all" :class="{active: !selectedTags.length}" :aria-pressed="!selectedTags.length" @click="selectedTags = []; searchCatalog()">全部</button>
+          <button class="filter-chip tag-all" :class="{active: !selectedTags.length}" :aria-pressed="!selectedTags.length" @click="clearTags">全部</button>
           <button v-for="tag in visibleTags" :key="tag" class="filter-chip" :class="{ active: selectedTags.includes(tag) }" data-testid="tag-chip" :aria-pressed="selectedTags.includes(tag)" @click="toggleTag(tag)">{{ tag }}</button>
           <ElPopover v-if="overflowTags.length" trigger="click" placement="bottom-end" :width="280">
             <template #reference><button class="tag-more" data-testid="tag-more" :aria-label="`还有 ${overflowTags.length} 个标签`">+{{ overflowTags.length }}</button></template>
@@ -947,6 +1090,7 @@ onUnmounted(() => {
                 :href="safeHttpUrl(entry.url)"
                 target="_blank"
                 rel="noopener noreferrer"
+                @click="recordEntry(selectedApp, entry, 'detail')"
               >打开应用</a>
               <button v-else class="primary-button entry-button" disabled>应用入口不可用</button>
             </template>
@@ -954,7 +1098,7 @@ onUnmounted(() => {
               <span v-if="selectedAppEntries.length > 1 && entry.label" class="entry-label">{{ entry.label }}</span>
               <button class="primary-button entry-button" data-testid="use-agent"
                 :disabled="selectedApp.entryAvailability?.[entry.id]?.status === 'disabled'"
-                @click="loadAgentInstructions(entry)">接入我的Agent</button>
+                @click="recordEntry(selectedApp, entry, 'detail'); loadAgentInstructions(entry)">接入我的Agent</button>
               <p v-if="selectedApp.entryAvailability?.[entry.id]?.status === 'disabled'" class="entry-label" data-testid="agent-disabled-reason">
                 {{ selectedApp.entryAvailability[entry.id].reason }}
               </p>
@@ -965,7 +1109,7 @@ onUnmounted(() => {
             :examples="selectedApp.manifest?.examples"
             presentation="selector"
             class="detail-examples"
-            @copy="copyText($event, '示例任务已复制')"
+            @copy="copyExample($event)"
           />
         </aside>
       </div>
@@ -1069,7 +1213,7 @@ onUnmounted(() => {
             type="primary"
             data-testid="copy-publish-prompt"
             :disabled="!publishContract.prompt"
-            @click="copyText(publishContract.prompt, shareAppId ? '更新任务已复制' : '发布任务已复制')"
+            @click="copyPublishPrompt"
           >{{ shareAppId ? '复制更新提示词' : '复制发布提示词' }}</el-button>
         </div>
         <div class="share-links">
