@@ -184,7 +184,7 @@ function click(event) {
 .random-section { min-height: 400px; }
 .random-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 18px 0; }
 h2 { margin: 0; font-size: 18px; }
-.random-heading p { margin: 7px 0 0; color: #7b8798; font-size: 13px; }
+.random-heading p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 13px; }
 .random-actions { display: flex; gap: 8px; }
 button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--plaza-line); border-radius: var(--plaza-control-radius); background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 13px; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
@@ -196,7 +196,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .wheel-controls, .wheel-dots { display: flex; justify-content: center; align-items: center; gap: 12px; }
 .wheel-dots button { width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 50%; background: #d3dce9; border-color: transparent; }
 .wheel-dots button[aria-pressed=true] { background: var(--plaza-brand); }
-.wheel-status, .random-state { color: #7b8798; font-size: 13px; text-align: center; }
+.wheel-status, .random-state { color: var(--plaza-muted); font-size: 13px; text-align: center; }
 .wheel-hint { margin: 8px 0 0; color: var(--plaza-muted,#657085); font-size: 11px; text-align: center; }
 .random-state { padding: 80px 0; }
 .random-error { padding: 12px; color: #9b4d4d; background: #fff8f8; border-radius: 6px; font-size: 13px; }

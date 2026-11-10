@@ -163,7 +163,7 @@ function formatVersion(value) {
 .overview-summary { margin: 8px 0 10px; color: #536174; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .overview-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .overview-tags span { max-width: 100%; padding: 3px 8px; border: 1px solid #e4e8ee; border-radius: 4px; background: #fafbfc; color: #667386; font-size: 12px; overflow-wrap: anywhere; }
-.overview-meta { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; margin-top: 11px; color: #8993a2; font-size: 12px; }
+.overview-meta { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; margin-top: 11px; color: var(--plaza-muted); font-size: 12px; }
 .overview-author { min-width: 0; color: #53657b; overflow-wrap: anywhere; }
 .overview-dates { display: flex; min-width: 0; flex-wrap: wrap; gap: 4px 13px; }
 .overview-section { min-width: 0; margin-top: 17px; }
@@ -175,7 +175,7 @@ function formatVersion(value) {
 .overview-condition-line { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 8px; min-width: 0; }
 .overview-condition-line strong { color: #475873; font-weight: 550; }
 .overview-condition-line span { min-width: 0; overflow-wrap: anywhere; }
-.overview-hidden-hint { margin: 1px 0 0; color: #7b8798; font-size: 10px; }
+.overview-hidden-hint { margin: 1px 0 0; color: var(--plaza-muted); font-size: 10px; }
 .overview-hidden-hint button { padding: 0; border: 0; background: transparent; color: #315fbd; font: inherit; cursor: pointer; }
 .overview-hidden-hint button:hover { text-decoration: underline; text-underline-offset: 2px; }
 .overview-steps-section { margin-top: 16px; }

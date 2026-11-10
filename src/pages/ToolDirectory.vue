@@ -1317,9 +1317,9 @@ onUnmounted(() => {
 .detail-actions { align-self: start; min-width: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
 .detail-action-heading { padding-bottom: 12px; border-bottom: 1px solid #e8ebf0; }
 .detail-action-heading h2 { margin: 0; color: #2d3b50; font-size: 15px; }
-.detail-action-heading p { margin: 5px 0 0; color: #8791a1; font-size: 12px; }
+.detail-action-heading p { margin: 5px 0 0; color: var(--plaza-muted); font-size: 12px; }
 .entry-action { margin-top: 11px; }
-.entry-label { display: block; margin-bottom: 5px; color: #8993a2; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.entry-label { display: block; margin-bottom: 5px; color: var(--plaza-muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .entry-button { width: 100%; min-height: 38px; }
 .entry-empty { padding: 15px 0; color: #8590a0; font-size: 12px; line-height: 1.6; }
 .detail-examples { padding-top: 13px; border-top: 1px solid #e4e8ee; }
@@ -1347,7 +1347,7 @@ onUnmounted(() => {
 .share-steps span { color: #8792a2; font-size: 12px; line-height: 1.5; }
 .publish-prompt-wrap { margin-top: 19px; padding: 13px; border: 1px solid #e5e9ef; border-radius: 7px; background: #fbfcfd; }
 .prompt-heading { display: flex; justify-content: space-between; margin-bottom: 9px; color: #43536a; font-size: 12px; }
-.prompt-heading span { color: #9aa3b0; font-weight: 400; }
+.prompt-heading span { color: var(--plaza-muted); font-weight: 400; }
 .publish-prompt { max-height: 245px; overflow: auto; margin: 0 0 12px; padding: 11px; border: 1px solid #e8ebf0; border-radius: 5px; background: #fff; color: #4c5c71; font: 12px/1.65 Consolas, "Microsoft YaHei", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
 .share-links { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 14px; color: #778395; font-size: 12px; }
 .share-links span { display: flex; flex-basis: 100%; gap: 8px; }
@@ -1370,14 +1370,14 @@ onUnmounted(() => {
 .status-registered { border-color: #d8e8dc; background: #f5faf6; color: #4b7955; }
 .status-failed { border-color: #efdddd; background: #fff8f8; color: #9b5151; }
 .publication-audience { margin: 13px 0 0; color: #58677b; font-size: 13px; line-height: 1.6; }
-.publication-expiry { margin: 7px 0 0; color: #8993a2; font-size: 11px; }
+.publication-expiry { margin: 7px 0 0; color: var(--plaza-muted); font-size: 11px; }
 .publication-message { margin-top: 12px; color: #68768a; font-size: 13px; line-height: 1.65; }
 .publication-message.is-error, .publication-action-error { color: #9b4d4d; }
 .publication-message.is-success { color: #4c7253; }
 .publication-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 17px; }
 .publication-preview { margin-top: 16px; }
 .preview-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid #e8ebf0; }
-.publication-source-commit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 13px 0; color: #8a94a3; font-size: 11px; }
+.publication-source-commit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 13px 0; color: var(--plaza-muted); font-size: 11px; }
 .publication-source-commit code { color: #55667d; font-family: Consolas, monospace; overflow-wrap: anywhere; }
 @media(min-width:1780px){.directory-main{--catalog-columns:4}}
 @media(max-width:1120px){.directory-main{--catalog-columns:2}}
