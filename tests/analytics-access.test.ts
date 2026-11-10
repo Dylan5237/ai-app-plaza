@@ -41,4 +41,3 @@ test('application analytics require the current public or authorized browsing sc
   assert.equal((await send()).statusCode, 200, 'public app events remain anonymously accepted');
   assert.deepEqual(await counts(), [4, 4]);
 });
-
