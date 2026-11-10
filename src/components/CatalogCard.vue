@@ -82,10 +82,10 @@ function detail(event) {
 .app-title { display: -webkit-box; min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: var(--plaza-ink); font: inherit; font-size: 17px; font-weight: 650; line-height:26px; text-align: left; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; cursor: pointer; }
 .app-title:hover { color: var(--plaza-brand); }
 .app-version, .public-app-version { flex: none; padding: 2px 7px; border: 0; border-radius: 5px; background: var(--plaza-brand); color: var(--plaza-surface); font-size: 11px; line-height:18px; white-space: nowrap; }
-.app-summary { display: -webkit-box; height: 40px; min-height: 40px; margin: 10px 0 8px; overflow: hidden; color: var(--plaza-text); font-size: 14px; line-height:22px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.app-summary { display: -webkit-box; height: 44px; min-height: 44px; margin: 10px 0 8px; overflow: hidden; color: var(--plaza-text); font-size: 14px; line-height:22px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .app-tags { display: flex; height: 22px; min-height: 22px; flex-wrap: nowrap; align-items: flex-start; gap: 6px; margin-top: auto; overflow: hidden; }
-.app-format { flex: none; padding: 3px 7px; border: 1px solid var(--plaza-brand-soft); border-radius: 4px; background: var(--plaza-brand-soft); color: var(--plaza-brand); font-size: 11px; line-height:18px; white-space: nowrap; }
-.app-tag, .app-tag-more { max-width: calc(50% - 3px); overflow: hidden; padding: 3px 7px; border: 1px solid var(--plaza-line); border-radius: 4px; background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 11px; line-height:18px; text-overflow: ellipsis; white-space: nowrap; }
+.app-format { flex: none; padding: 1px 7px; border: 1px solid var(--plaza-brand-soft); border-radius: 4px; background: var(--plaza-brand-soft); color: var(--plaza-brand); font-size: 11px; line-height:18px; white-space: nowrap; }
+.app-tag, .app-tag-more { max-width: calc(50% - 3px); overflow: hidden; padding: 1px 7px; border: 1px solid var(--plaza-line); border-radius: 4px; background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 11px; line-height:18px; text-overflow: ellipsis; white-space: nowrap; }
 .app-tag { cursor: pointer; }
 .app-tag:hover, .app-tag.active { border-color: var(--plaza-brand); background: var(--plaza-brand-soft); color: var(--plaza-brand); }
 .app-tag-more { border-color: transparent; background: transparent; color: var(--plaza-muted); }
@@ -95,9 +95,10 @@ function detail(event) {
 .app-author { max-width: 150px; overflow: hidden; color: var(--plaza-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap;;line-height:18px;}
 .app-dates { display: grid; gap: 2px; color: var(--plaza-muted); font-size: 11px; line-height:18px; text-align: right; white-space: nowrap; }
 @media (min-width: 761px) and (max-height: 800px) {
-  .app-card { padding: 12px 20px; }
-  .app-summary { height: 20px; min-height: 20px; margin: 6px 0; -webkit-line-clamp: 1; }
-  .app-card-footer { padding-top: 6px; margin-top: 6px; }
+  .app-card { padding: 8px 20px; }
+  .app-summary { height: 22px; min-height: 22px; margin: 4px 0; -webkit-line-clamp: 1; }
+  .app-card-footer { padding-top: 4px; margin-top: 4px; }
+  .app-dates { gap: 0; }
 }
 
 .app-card { position: relative; }
