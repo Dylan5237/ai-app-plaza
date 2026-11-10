@@ -141,3 +141,32 @@ test('directory reads leave expired publication credentials to the scheduled cle
   assert.equal((await h.db.query('SELECT token_ciphertext FROM publications WHERE id=$1', [publicationId])).rows[0].token_ciphertext, null,
     'the scheduled cleanup still removes expired credentials');
 });
+
+test('random sampling returns at most six card rows without transferring catalog documents', async t => {
+  const h = await startHarness();
+  t.after(() => h.close());
+  const ids: string[] = [];
+  for (let i = 1; i <= 7; i++) {
+    const seeded = await seedTagCatalog(h.db, h.config.audience, ['MCP'], i);
+    ids.push(seeded.appId);
+    await h.db.query('UPDATE published_snapshots SET documents=$2::jsonb WHERE id=$1', [seeded.snapshotId, JSON.stringify({ 'large.md': 'x'.repeat(80 * 1024) })]);
+  }
+
+  let returnedBytes = 0;
+  const db = h.db as any;
+  const query = db.query.bind(db);
+  db.query = async (sql: string, params?: readonly unknown[]) => {
+    const result = await query(sql, params);
+    returnedBytes += Buffer.byteLength(JSON.stringify(result.rows));
+    return result;
+  };
+  const previous = ids.slice(0, 6);
+  const batch = await h.service.random(previous);
+  assert.equal(batch.items.length, 6);
+  assert.equal(batch.allShown, false);
+  assert.equal(new Set(batch.items.map(item => item.id)).size, 6);
+  assert.equal(batch.items[0]?.id, ids[6], 'the sole never-shown app is selected before the previous batch');
+  assert.ok(batch.items.slice(1).every(item => previous.includes(item.id)), 'the previous batch fills the remaining slots without duplicates');
+  assert.ok(batch.items.every(item => Object.keys(item.documents).length === 0));
+  assert.ok(returnedBytes < 256 * 1024, `small card selection transferred ${returnedBytes} bytes instead of catalog documents`);
+});

@@ -220,6 +220,7 @@ const APP_SELECT = `
     LEFT JOIN published_snapshots s ON s.id = a.current_snapshot_id
     LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
     ${TAG_OVERRIDE_JOIN}`;
+const RANDOM_APP_SELECT = APP_SELECT.replace('s.manifest, s.documents,', "s.manifest, '{}'::jsonb AS documents,");
 
 /** Partial Fisher–Yates: every remaining candidate has the same chance at each draw. */
 export function sampleCatalog<T extends { id: string }>(items: T[], exclude: string[] = [], draw: (max: number) => number = randomInt): T[] {
@@ -1142,11 +1143,30 @@ export function createService(config: ServiceConfig): PlazaService {
       if (exclude.length > 6 || exclude.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
         throw new DomainError(400, 'VALIDATION_FAILED', 'exclude 最多包含 6 个应用 UUID。');
       }
+      const selection = await config.db.query<{ id: string; total_count: number }>(`WITH visible AS MATERIALIZED (
+        SELECT a.id FROM catalog_apps a JOIN published_snapshots s ON s.id=a.current_snapshot_id
+        LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id
+        WHERE s.audience=$1 AND COALESCE(l.status,'published')='published' AND ${appAccessPredicate('$2::uuid')}
+      ), fresh AS (
+        SELECT id, random() AS sample_order FROM visible WHERE NOT (id=ANY($3::uuid[])) ORDER BY sample_order LIMIT 6
+      ), repeated AS (
+        SELECT id, random() AS sample_order FROM visible WHERE id=ANY($3::uuid[])
+          AND (SELECT count(*) FROM fresh)<6
+        ORDER BY sample_order LIMIT (SELECT GREATEST(0,6-count(*)) FROM fresh)
+      ), picked AS (
+        SELECT id,0 AS priority,sample_order FROM fresh
+        UNION ALL SELECT id,1 AS priority,sample_order FROM repeated
+      ), total AS (SELECT count(*) AS total_count FROM visible)
+      SELECT picked.id,total.total_count FROM picked CROSS JOIN total ORDER BY picked.priority,picked.sample_order`,
+      [config.audience, viewerId ?? null, exclude]);
+      const ids = selection.rows.map(row => row.id);
+      if (!ids.length) return { items: [], allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
       const result = await config.db.query<AppRecord>(
-        `${APP_SELECT} WHERE s.audience = $1 AND COALESCE(l.status, 'published') = 'published' AND ${appAccessPredicate('$2::uuid')}`,
-        [config.audience, viewerId ?? null],
+        `${RANDOM_APP_SELECT} WHERE a.id=ANY($1::uuid[]) AND s.audience=$2 AND COALESCE(l.status,'published')='published'
+          AND ${appAccessPredicate('$3::uuid')} ORDER BY array_position($1::uuid[],a.id)`,
+        [ids, config.audience, viewerId ?? null],
       );
-      return { items: sampleCatalog(result.rows, exclude).map(publicCard), allShown: result.rows.length <= 6 };
+      return { items: result.rows.map(publicCard), allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
     },
 
     async app(id, options = {}) {
