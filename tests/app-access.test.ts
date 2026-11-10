@@ -185,6 +185,11 @@ test('HTTP management and dashboard independently authenticate every caller and 
   const app = await seedTagCatalog(h.db, h.config.audience, ['治理']);
   const headers = (who = owner, token = 'fixture-member') => h.headers({ cookie: who.cookie, 'x-plaza-portal-token': token });
   const get = (path: string, extra: Record<string, string> = headers()) => h.app.inject({ url: `/plaza${path}`, headers: extra });
+  for (const path of ['/api/management/apps/------------------------------------', '/api/management/publications/------------------------------------']) {
+    const malformed = await get(path, headers(admin, 'fixture-admin'));
+    assert.equal(malformed.statusCode, 400, `${path} is rejected as a malformed UUID before database access`);
+    assert.equal(malformed.json().error.code, 'INVALID_REQUEST');
+  }
   assert.equal((await get('/api/management/apps', h.headers())).statusCode, 401);
   assert.equal((await get('/api/operations/dashboard', headers())).statusCode, 403);
   assert.equal((await get('/api/operations/dashboard', { ...headers(), 'x-plaza-role': 'super_administrator' })).statusCode, 403);
