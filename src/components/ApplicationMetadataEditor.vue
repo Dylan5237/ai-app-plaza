@@ -17,6 +17,11 @@ const pendingRequests = new Map()
 const locked = computed(() => saving.value || Boolean(pending.value))
 let sequence = 0
 const clone = value => JSON.parse(JSON.stringify(value))
+const content = value => JSON.stringify({ ...value, projectVersion: undefined })
+const changed = computed(() => Boolean(manifest.value && context.value?.app && (
+  content(manifest.value) !== content(context.value.app.manifest) ||
+  JSON.stringify(documents.value) !== JSON.stringify(context.value.app.documents)
+)))
 const arrayFields = [
   ['scenarios', '应用场景'], ['inputs', '输入内容'], ['outputs', '输出结果'],
 ]
@@ -62,6 +67,7 @@ async function close() {
 }
 async function save() {
   if (saving.value || !context.value?.editable || !manifest.value) return
+  if (!pending.value && !changed.value) return
   if (!pending.value) {
     pending.value = {
       key: crypto.randomUUID(),
@@ -95,6 +101,7 @@ async function save() {
       <template v-if="manifest">
         <p class="editor-context">{{ context.app.manifest.name }} · 当前 v{{ context.app.version }} · {{ context.app.manifest.appKey }}</p>
         <p class="editor-note">保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。</p>
+        <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
         <el-alert v-if="pending && !saving" title="保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基本资料" name="overview">
@@ -142,7 +149,7 @@ async function save() {
     <template #footer>
       <el-button :disabled="saving" @click="close">取消</el-button>
       <el-button v-if="error && !pending" :disabled="saving" @click="load">重新读取</el-button>
-      <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : '保存到 GitLab 并预览' }}</el-button>
+      <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading || (!changed && !pending)" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : '保存到 GitLab 并预览' }}</el-button>
     </template>
   </el-dialog>
 </template>
