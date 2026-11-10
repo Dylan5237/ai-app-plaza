@@ -188,7 +188,7 @@ h2 { margin: 0; font-size: 17px;;line-height:26px;}
 .random-actions { display: flex; gap: 8px; }
 button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--plaza-line); border-radius: var(--plaza-control-radius); background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 14px; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
-.refresh-button { background: var(--plaza-brand); border-color: var(--plaza-brand); color: #fff; }
+.refresh-button { background: var(--plaza-brand); border-color: var(--plaza-brand); color: var(--plaza-surface); }
 .wheel { position: relative; height: 370px; overflow: hidden; touch-action: pan-y; }
 .wheel-card { position: absolute; width: min(390px, 76%); left: 50%; top: 24px; transform: translate3d(calc(-50% + var(--offset) * 51%),calc(var(--distance) * 14px),0) scale(calc(1 - var(--distance) * .12)); opacity: var(--wheel-opacity); will-change: transform,opacity; }
 .wheel-card :deep(.app-card) { --catalog-card-height: 290px; }
@@ -200,9 +200,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .wheel-dots button[aria-pressed="true"]::before { background: var(--plaza-brand); }
 
 .wheel-status, .random-state { color: var(--plaza-muted); font-size: 14px; text-align: center;;line-height:22px;}
-.wheel-hint { margin: 8px 0 0; color: var(--plaza-muted,#657085); font-size: 11px; text-align: center;;line-height:18px;}
+.wheel-hint { margin: 8px 0 0; color: var(--plaza-muted); font-size: 11px; text-align: center;;line-height:18px;}
 .random-state { padding: 80px 0; }
-.random-error { padding: 12px; color: var(--plaza-danger); background: #fff8f8; border-radius: 6px; font-size: 14px;;line-height:22px;}
+.random-error { padding: 12px; color: var(--plaza-danger); background: var(--plaza-surface); border-radius: 6px; font-size: 14px;;line-height:22px;}
 button:focus-visible, .wheel:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 @media (max-width: 620px) { .random-heading { align-items: flex-start; flex-direction: column; } .wheel-card { width: 86%; } }
 @media (hover: none), (pointer: coarse) { .wheel { height: 410px; }.wheel-hint{display:none} }

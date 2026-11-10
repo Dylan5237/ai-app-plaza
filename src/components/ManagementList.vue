@@ -161,7 +161,7 @@ onUnmounted(() => { ++sequence; window.removeEventListener('focus', revalidateAc
 .management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .management-heading h1 { margin: 0 0 7px; color: var(--plaza-ink); font-size: 24px;;line-height:32px;}
 .management-heading p { margin: 0; color: var(--plaza-muted); font-size: 14px; line-height:22px; }
-.local-label { flex: none; padding: 5px 10px; border: 1px solid #dbe7ff; border-radius: 4px; background: #edf3ff; color: var(--plaza-brand); font-size: 12px;;line-height:18px;}
+.local-label { flex: none; padding: 5px 10px; border: 1px solid var(--plaza-brand-soft); border-radius: 4px; background: var(--plaza-brand-soft); color: var(--plaza-brand); font-size: 12px;;line-height:18px;}
 .management-heading-actions { display: flex; align-items: center; gap: 12px; }
 .management-tabs { display: flex; gap: 24px; margin-bottom: 16px; border-bottom: 1px solid var(--plaza-line); }
 .management-tabs button { padding: 9px 0 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--plaza-muted); font-size: 14px; cursor: pointer;;line-height:22px;}

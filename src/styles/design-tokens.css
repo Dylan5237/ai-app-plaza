@@ -8,6 +8,6 @@
   --plaza-shadow:0 3px 12px rgb(34 43 64 / 4%);--plaza-motion:180ms;--plaza-hover-delay:120ms;
   --el-color-primary:var(--plaza-brand);--el-color-primary-light-3:#7486df;--el-color-primary-light-5:#a0aceb;--el-color-primary-light-7:#c5cdf5;--el-color-primary-light-8:#dce2fb;--el-color-primary-light-9:#edf0ff;--el-color-primary-dark-2:#2d43a8;
   --el-color-success:var(--plaza-success);--el-color-warning:var(--plaza-warning);--el-color-danger:var(--plaza-danger);
-  --el-text-color-primary:var(--plaza-ink);--el-text-color-regular:var(--plaza-text);--el-text-color-secondary:var(--plaza-muted);--el-border-color:var(--plaza-line);--el-border-radius-base:var(--plaza-control-radius);
+  --el-text-color-primary:var(--plaza-ink);--el-text-color-regular:var(--plaza-text);--el-text-color-secondary:var(--plaza-muted);--el-text-color-placeholder:var(--plaza-muted);--el-border-color:var(--plaza-line);--el-border-radius-base:var(--plaza-control-radius);
 }
 .plaza-public{color:var(--plaza-ink);background:var(--plaza-canvas)}

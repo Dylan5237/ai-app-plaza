@@ -73,27 +73,27 @@ function detail(event) {
 </template>
 
 <style scoped>
-.app-card { display: flex; height: var(--catalog-card-height); min-width: 0; flex-direction: column; padding: 20px; border: 1px solid var(--plaza-line,#e4e6ec); border-radius: var(--plaza-radius,16px); background: #fff; box-shadow: var(--plaza-shadow); transition: border-color .16s ease-out, box-shadow .16s ease-out; }
+.app-card { display: flex; height: var(--catalog-card-height); min-width: 0; flex-direction: column; padding: 20px; border: 1px solid var(--plaza-line); border-radius: var(--plaza-radius,16px); background: var(--plaza-surface); box-shadow: var(--plaza-shadow); transition: border-color .16s ease-out, box-shadow .16s ease-out; }
 .app-card { cursor: pointer; }
-.app-card:hover { border-color: #ccd6e4; box-shadow: 0 5px 15px rgb(25 43 67 / 5%); }
+.app-card:hover { border-color: var(--plaza-brand); box-shadow: 0 5px 15px rgb(25 43 67 / 5%); }
 .app-card-top { display: flex; min-height: 44px; flex-shrink: 0; align-items: center; gap: 12px; padding-right:0 }
 .app-card-top :deep(.favorite-button) { position: relative; z-index: 2; }
 .app-card-identity{min-width:0;flex:1}.app-card-identity .app-version{display:inline-block;margin:4px 0 0;padding:0;background:transparent;color:var(--plaza-muted);font-size:11px;line-height:18px;}
-.app-title { display: -webkit-box; min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: #253044; font: inherit; font-size: 17px; font-weight: 650; line-height:26px; text-align: left; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; cursor: pointer; }
-.app-title:hover { color: #315fbd; }
-.app-version, .public-app-version { flex: none; padding: 2px 7px; border: 0; border-radius: 5px; background: #669cde; color: #fff; font-size: 11px; line-height:18px; white-space: nowrap; }
-.app-summary { display: -webkit-box; height: 40px; min-height: 40px; margin: 10px 0 8px; overflow: hidden; color: #657184; font-size: 14px; line-height:22px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.app-title { display: -webkit-box; min-width: 0; padding: 0; overflow: hidden; border: 0; background: transparent; color: var(--plaza-ink); font: inherit; font-size: 17px; font-weight: 650; line-height:26px; text-align: left; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; cursor: pointer; }
+.app-title:hover { color: var(--plaza-brand); }
+.app-version, .public-app-version { flex: none; padding: 2px 7px; border: 0; border-radius: 5px; background: var(--plaza-brand); color: var(--plaza-surface); font-size: 11px; line-height:18px; white-space: nowrap; }
+.app-summary { display: -webkit-box; height: 40px; min-height: 40px; margin: 10px 0 8px; overflow: hidden; color: var(--plaza-text); font-size: 14px; line-height:22px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .app-tags { display: flex; height: 22px; min-height: 22px; flex-wrap: nowrap; align-items: flex-start; gap: 6px; margin-top: auto; overflow: hidden; }
-.app-format { flex: none; padding: 3px 7px; border: 1px solid #d5e2ff; border-radius: 4px; background: #edf3ff; color: #315fbd; font-size: 11px; line-height:18px; white-space: nowrap; }
-.app-tag, .app-tag-more { max-width: calc(50% - 3px); overflow: hidden; padding: 3px 7px; border: 1px solid #e5e9ef; border-radius: 4px; background: #fafbfc; color: #596477; font: inherit; font-size: 11px; line-height:18px; text-overflow: ellipsis; white-space: nowrap; }
+.app-format { flex: none; padding: 3px 7px; border: 1px solid var(--plaza-brand-soft); border-radius: 4px; background: var(--plaza-brand-soft); color: var(--plaza-brand); font-size: 11px; line-height:18px; white-space: nowrap; }
+.app-tag, .app-tag-more { max-width: calc(50% - 3px); overflow: hidden; padding: 3px 7px; border: 1px solid var(--plaza-line); border-radius: 4px; background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 11px; line-height:18px; text-overflow: ellipsis; white-space: nowrap; }
 .app-tag { cursor: pointer; }
-.app-tag:hover, .app-tag.active { border-color: #c2d1e7; background: #f1f5fb; color: #4a6792; }
-.app-tag-more { border-color: transparent; background: transparent; color: #657085; }
+.app-tag:hover, .app-tag.active { border-color: var(--plaza-brand); background: var(--plaza-brand-soft); color: var(--plaza-brand); }
+.app-tag-more { border-color: transparent; background: transparent; color: var(--plaza-muted); }
 .app-tag { max-width: calc((100% - 10px) / 3); min-width: 0; flex-shrink: 1; }
-.app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding-top: 10px; margin-top: 10px; border-top: 1px solid #edf0f3; }
+.app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding-top: 10px; margin-top: 10px; border-top: 1px solid var(--plaza-line); }
 .app-card-author-action { display: flex; min-width: 0; align-items: center; gap: 10px; }
-.app-author { max-width: 150px; overflow: hidden; color: #53647a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap;;line-height:18px;}
-.app-dates { display: grid; gap: 2px; color: #657085; font-size: 11px; line-height:18px; text-align: right; white-space: nowrap; }
+.app-author { max-width: 150px; overflow: hidden; color: var(--plaza-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap;;line-height:18px;}
+.app-dates { display: grid; gap: 2px; color: var(--plaza-muted); font-size: 11px; line-height:18px; text-align: right; white-space: nowrap; }
 @media (min-width: 761px) and (max-height: 800px) {
   .app-card { padding: 12px 20px; }
   .app-summary { height: 20px; min-height: 20px; margin: 6px 0; -webkit-line-clamp: 1; }
@@ -109,12 +109,12 @@ function detail(event) {
 .actions-open .card-action-buttons > * { pointer-events:auto; }
 .keyboard-open .card-actions,.keyboard-open .card-action-content{transition:none}
 .card-action-buttons { display:flex;align-items:center;justify-content:center;gap:8px; }
-.card-primary, .card-detail, .card-actions :deep(.platform-open-button) { min-height: 40px; box-shadow:0 2px 6px rgb(15 30 55 / 8%); transition:background-color .12s ease-out,box-shadow .12s ease-out; border: 1px solid #d6dde7; border-radius: 9px; padding: 8px 10px; background: #fff; color: #334ab4; font: inherit; font-size: 14px; line-height:22px; white-space: nowrap; cursor: pointer; }
-.card-detail{background:rgb(255 255 255 / 92%);border-color:rgb(255 255 255 / 75%);color:#405476}
-.card-primary:hover:enabled, .card-detail:hover, .card-actions :deep(.platform-open-button:hover) { border-color: #a9bddf; background: #fff;box-shadow:0 4px 10px rgb(15 30 55 / 15%); }
-.card-detail:hover{color:#334ab4}
-.card-primary:disabled { color: #798595; cursor: not-allowed; }
-.card-entry-reason { margin: 16px auto 0; max-width:280px; padding:8px 10px; border-radius:8px; background:rgb(255 255 255 / 92%); color:#26364e; font-size: 11px; line-height:18px; text-align: center; }
+.card-primary, .card-detail, .card-actions :deep(.platform-open-button) { min-height: 40px; box-shadow:0 2px 6px rgb(15 30 55 / 8%); transition:background-color .12s ease-out,box-shadow .12s ease-out; border: 1px solid var(--plaza-line); border-radius: 9px; padding: 8px 10px; background: var(--plaza-surface); color: var(--plaza-brand); font: inherit; font-size: 14px; line-height:22px; white-space: nowrap; cursor: pointer; }
+.card-detail{background:rgb(255 255 255 / 92%);border-color:rgb(255 255 255 / 75%);color:var(--plaza-text)}
+.card-primary:hover:enabled, .card-detail:hover, .card-actions :deep(.platform-open-button:hover) { border-color: var(--plaza-brand); background: var(--plaza-surface);box-shadow:0 4px 10px rgb(15 30 55 / 15%); }
+.card-detail:hover{color:var(--plaza-brand)}
+.card-primary:disabled { color: var(--plaza-muted); cursor: not-allowed; }
+.card-entry-reason { margin: 16px auto 0; max-width:280px; padding:8px 10px; border-radius:8px; background:rgb(255 255 255 / 92%); color:var(--plaza-ink); font-size: 11px; line-height:18px; text-align: center; }
 .app-title:focus-visible, button:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 @media (hover: none), (pointer: coarse) {
   .app-card { height: auto; min-height: var(--catalog-card-height); }
@@ -123,8 +123,8 @@ function detail(event) {
   .card-action-buttons > * { pointer-events: auto; }
   .card-primary, .card-detail, .card-actions :deep(.platform-open-button) { min-height: 44px; }
   .app-card-top{padding-right:0}
-  .card-detail{background:#fff;color:#334ab4;border-color:#d6dde7}
-  .card-entry-reason { position: static; margin-top: 6px; padding:0; background:transparent; color: #8b4b37; }
+  .card-detail{background:var(--plaza-surface);color:var(--plaza-brand);border-color:var(--plaza-line)}
+  .card-entry-reason { position: static; margin-top: 6px; padding:0; background:transparent; color: var(--plaza-ink); }
 }
 @media (prefers-reduced-motion: reduce) { .app-card,.app-card:hover,.card-actions,.actions-open .card-actions,.card-action-content,.card-primary,.card-primary:hover:enabled,.card-detail,.card-detail:hover,.card-actions :deep(.platform-open-button),.card-actions :deep(.platform-open-button:hover){transition:none;transform:none} }
 </style>
