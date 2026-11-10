@@ -163,6 +163,18 @@ def atomic(path, data, mode=0o600):
     os.replace(temporary, path)
 
 
+def public_directory(path):
+    """New runtime directories must remain readable under the private operation umask."""
+    if path.exists():
+        require(path.is_dir() and not path.is_symlink(), 'PUBLIC_DIRECTORY_INVALID')
+        if os.name == 'posix':
+            require(path.stat().st_mode & 0o005 == 0o005, 'EXISTING_PUBLIC_DIRECTORY_UNREADABLE')
+        return
+    if not path.parent.exists(): public_directory(path.parent)
+    path.mkdir(mode=0o755)
+    path.chmod(0o755)  # mkdir's requested mode alone is narrowed by umask 0077.
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
@@ -328,18 +340,18 @@ class Release:
                 require(env_files and all(Path(p).is_relative_to(self.root / 'config') and not Path(p).is_symlink()
                         and Path(p).resolve().is_relative_to(self.root / 'config') for p in env_files), 'INHERITED_ENV_FILE_SCOPE_INVALID')
                 for i, path in enumerate(env_files): shutil.copy2(path, backup / ('environment-' + str(i)))
-                self.target.mkdir(mode=0o755)
+                public_directory(self.target)
                 with tarfile.open(self.p['archive']) as tar:
                     for entry in tar.getmembers():
                         destination = self.target / entry.name
-                        if entry.isdir(): destination.mkdir(mode=0o755, parents=True, exist_ok=True); continue
-                        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                        if entry.isdir(): public_directory(destination); continue
+                        public_directory(destination.parent)
                         with tar.extractfile(entry) as source, destination.open('xb') as output: shutil.copyfileobj(source, output)
                         destination.chmod(0o644)
                 modules = Path(self.p['previous_release']) / 'node_modules'
                 require(modules.is_dir() and all(not p.is_symlink() or p.resolve().is_relative_to(modules.resolve()) for p in modules.rglob('*')), 'DEPENDENCY_LINK_OUTSIDE_RELEASE')
                 shutil.copytree(modules, self.target / 'node_modules', symlinks=True)
-                self.ca.parent.mkdir(mode=0o755, exist_ok=True)
+                public_directory(self.ca.parent)
                 atomic(self.ca, Path(self.p['portal_ca']).read_bytes(), 0o644)
                 atomic(self.overlay, Path(self.p['identity_env']).read_bytes())
                 if not self.gate.exists(): atomic(self.gate, b'return 503;\n', 0o644)

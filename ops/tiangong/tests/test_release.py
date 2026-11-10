@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -232,6 +233,25 @@ class UpdatePhases(unittest.TestCase):
         host = self.host; host.stage(); Path(host.p['identity_env']).write_text('changed')
         with self.assertRaisesRegex(RuntimeError, 'FROZEN_INPUT'): host.switch()
         self.assertEqual(host.events, [])
+
+    def test_private_umask_keeps_runtime_readable_and_backups_private(self):
+        before = os.umask(0o077)
+        try: self.host.stage()
+        finally: os.umask(before)
+        if os.name == 'posix':
+            host = self.host
+            for path in [host.target, host.target / 'server', host.target / 'dist', host.ca.parent]:
+                self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(host.ca.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(host.overlay.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((host.operation / 'backup').stat().st_mode & 0o777, 0o700)
+
+    def test_existing_private_ca_directory_is_not_loosened(self):
+        if os.name != 'posix': return
+        directory = self.host.ca.parent; directory.mkdir(mode=0o700); directory.chmod(0o700)
+        with self.assertRaisesRegex(RuntimeError, 'EXISTING_PUBLIC_DIRECTORY_UNREADABLE'): self.host.stage()
+        self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.host.events, [])
 
     def test_unknown_start_result_retained_and_not_replayed(self):
         host = self.host; host.stage(); host.timeout_start = True
