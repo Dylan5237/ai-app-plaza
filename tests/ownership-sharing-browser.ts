@@ -110,6 +110,14 @@ try {
   await page.getByRole('dialog', { name: '应用归属与权限' }).getByRole('button', { name: '关闭', exact: true }).click();
   await receiver.getByRole('link', { name: '负责人交接', exact: true }).click();
   await receiver.getByRole('button', { name: '接受负责人职责', exact: true }).click();
+  const transferConfirmation = receiver.getByRole('dialog', { name: '接受负责人职责', exact: true });
+  await transferConfirmation.waitFor();
+  assert.match(await transferConfirmation.innerText(), new RegExp(target.source.name));
+  assert.match(await transferConfirmation.innerText(), /测试名册管理员.*→.*测试普通成员/);
+  assert.equal((await h.db.query('SELECT owner_id FROM plaza_app_access WHERE app_id=$1', [target.appId])).rows[0].owner_id, admin.user.id, 'opening confirmation does not accept');
+  await transferConfirmation.getByRole('button', { name: '返回', exact: true }).click();
+  await receiver.getByRole('button', { name: '接受负责人职责', exact: true }).click();
+  await receiver.getByRole('button', { name: '确认接受职责', exact: true }).click();
   await receiver.getByText('已接受负责人职责。', { exact: true }).waitFor();
   const access = (await h.db.query('SELECT * FROM plaza_app_access WHERE app_id=$1', [target.appId])).rows[0];
   assert.equal(access.owner_id, member.user.id); assert.equal(access.scope, 'groups');

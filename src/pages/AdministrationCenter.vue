@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import { identity } from '../lib/identity.js'
 import { publicPath } from '../lib/public-path.js'
@@ -50,7 +51,19 @@ function save() {
     write(`/api/access/apps/${selected.value.id}/adopt`, 'POST', { ownerId: ownerId.value, expectedAppRevision: selected.value.revision, reason: reason.value.trim(), sourceAuthorizationConfirmed: true }, '负责人已核验指定，原公开范围保持不变。')
   } else write('/api/access/administrators', 'PUT', { userId: selected.value.id, role: role.value, revision: selected.value.revision, reason: reason.value.trim() }, '管理员配置已保存并回读。')
 }
-function transfer(row, action) {
+async function transfer(row, action) {
+  if (busy.value || uncertain.value) return
+  if (action === 'accept' || action === 'cancel') {
+    const accepting = action === 'accept'
+    const impact = accepting
+      ? '接受后保留当前版本与分享范围；原负责人不自动保留维护权。接受后不能单方面撤销，需要现负责人重新发起交接。'
+      : '取消后负责人和现有版本、分享范围保持不变。需要交接时可由负责人重新发起。'
+    try {
+      await ElMessageBox.confirm(`应用：${row.name}。${row.owner_name} → ${row.receiver_name}。${impact}`, accepting ? '接受负责人职责' : '取消负责人交接', {
+        confirmButtonText: accepting ? '确认接受职责' : '确认取消交接', cancelButtonText: '返回', type: 'warning',
+      })
+    } catch { return }
+  }
   write(`/api/access/transfers/${row.id}`, 'POST', { action }, action === 'accept' ? '已接受负责人职责。' : action === 'decline' ? '已拒绝本次交接。' : '交接请求已取消。')
 }
 onMounted(load)
