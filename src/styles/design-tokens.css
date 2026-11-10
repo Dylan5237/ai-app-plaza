@@ -11,3 +11,4 @@
   --el-text-color-primary:var(--plaza-ink);--el-text-color-regular:var(--plaza-text);--el-text-color-secondary:var(--plaza-muted);--el-text-color-placeholder:var(--plaza-muted);--el-border-color:var(--plaza-line);--el-border-radius-base:var(--plaza-control-radius);
 }
 .plaza-public{color:var(--plaza-ink);background:var(--plaza-canvas)}
+:where(button,a,[tabindex]):focus-visible{outline:2px solid var(--plaza-brand);outline-offset:2px}
