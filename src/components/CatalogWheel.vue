@@ -194,8 +194,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .wheel-card :deep(.app-card) { --catalog-card-height: 290px; }
 .side-select { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
 .wheel-controls, .wheel-dots { display: flex; justify-content: center; align-items: center; gap: 12px; }
-.wheel-dots button { width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 50%; background: var(--plaza-line); border-color: transparent; }
-.wheel-dots button[aria-pressed=true] { background: var(--plaza-brand); }
+.wheel-dots button { position: relative; display: grid; width: 24px; height: 24px; min-height: 24px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; }
+.wheel-dots button::before { width: 10px; height: 10px; border-radius: 50%; background: var(--plaza-line); content: ""; }
+.wheel-dots button[aria-pressed="true"] { outline: 2px solid var(--plaza-brand); outline-offset: 1px; }
+.wheel-dots button[aria-pressed="true"]::before { background: var(--plaza-brand); }
+
 .wheel-status, .random-state { color: var(--plaza-muted); font-size: 14px; text-align: center;;line-height:22px;}
 .wheel-hint { margin: 8px 0 0; color: var(--plaza-muted,#657085); font-size: 11px; text-align: center;;line-height:18px;}
 .random-state { padding: 80px 0; }
