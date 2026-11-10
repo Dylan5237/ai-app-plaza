@@ -216,7 +216,8 @@ export async function createApp(config: Config, db: Database) {
     const result = await service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage, sort: search.sort, viewerId: await viewerId(request) });
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
-  app.post('/api/analytics/events', { config: { rateLimit: { groupId: ':analytics', max: 240, timeWindow: '1 minute' } } }, async request => recordBrowserEvent(db, config, request.body));
+  app.post('/api/analytics/events', { config: { rateLimit: { groupId: ':analytics', max: 240, timeWindow: '1 minute' } } }, async request =>
+    recordBrowserEvent(db, config, request.body, await viewerId(request)));
   app.get('/api/apps/random', async (request) => {
     const search = z.object({ exclude: z.union([z.string().uuid(), z.array(z.string().uuid()).max(6)]).optional() }).parse(request.query);
     return service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude, await viewerId(request));

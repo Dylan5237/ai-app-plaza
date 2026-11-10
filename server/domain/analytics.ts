@@ -63,13 +63,15 @@ export const browserEvent = z.object({
   if (value.eventName === 'prompt_copy_result' && ['publish', 'update'].includes(value.attributes.promptPurpose || '') && !value.flowId) context.addIssue({ code: 'custom', message: 'missing flow' });
 });
 
-export async function recordBrowserEvent(db: Database, config: Config, input: unknown) {
+export async function recordBrowserEvent(db: Database, config: Config, input: unknown, viewerId?: string) {
   if (!config.analytics) throw new DomainError(404, 'NOT_FOUND', '未找到请求的资源');
   const settings = config.analytics;
   const event = browserEvent.parse(input);
   if (event.attributes.selectedTags?.length) {
-    const allowed = new Set(await catalogTags(db, config.audience));
-    if (event.attributes.selectedTags.some(tag => !allowed.has(tag))) throw new DomainError(400, 'INVALID_REQUEST', '标签无效');
+    const allowed = new Map<string, string>((await catalogTags(db, config.audience, undefined, viewerId)).map(tag => [tag.toLowerCase(), tag]));
+    const selected = event.attributes.selectedTags.map(tag => allowed.get(tag.toLowerCase()));
+    if (selected.some(tag => tag === undefined)) throw new DomainError(400, 'INVALID_REQUEST', '标签无效');
+    event.attributes.selectedTags = selected as string[];
   }
   let snapshot: { version: string; tags: string[]; appType: 'platform' | 'agent' } | undefined;
   if (event.appId) {

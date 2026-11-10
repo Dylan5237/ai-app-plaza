@@ -18,16 +18,24 @@ if (process.argv.includes('--serve')) {
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 const errors: string[] = [];
 const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+const analyticsPortalTokens: (string | undefined)[] = [];
+page.on('request', request => {
+  if (new URL(request.url()).pathname.endsWith('/api/analytics/events')) analyticsPortalTokens.push(request.headers()['x-plaza-portal-token']);
+});
 page.on('pageerror', error => errors.push(error.message));
 try {
   await page.goto(`${h.origin}/plaza/fixture/portal`);
   await page.getByRole('button', { name: '以访客进入' }).click();
   await page.getByText('访客浏览', { exact: true }).waitFor();
+  await page.waitForRequest(request => new URL(request.url()).pathname.endsWith('/api/analytics/events')).catch(() => {});
+  assert.ok(analyticsPortalTokens.length > 0 && analyticsPortalTokens.every(token => token === undefined), 'anonymous analytics omits the portal token');
   await page.getByRole('button', { name: '登录后收藏', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '未检测到天宫登录状态' }).waitFor();
   await page.goto(`${h.origin}/plaza/fixture/portal`);
   await page.getByRole('button', { name: '以测试名册管理员进入' }).click();
   await page.getByRole('button', { name: '成员与小组' }).waitFor();
+  for (let attempt = 0; attempt < 30 && !analyticsPortalTokens.includes('fixture-admin'); attempt++) await page.waitForTimeout(100);
+  assert.ok(analyticsPortalTokens.includes('fixture-admin'), 'verified identity analytics carries the portal token');
   await page.route('**/api/auth/me', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'IDENTITY_UNAVAILABLE', message: '身份服务暂不可用' } }) }));
   await page.evaluate(() => dispatchEvent(new Event('focus')));
   await page.getByRole('alert').filter({ hasText: '身份服务暂不可用' }).waitFor();
@@ -158,6 +166,13 @@ try {
   });
   assert.equal(forbidden, 403);
   await page.getByRole('button', { name: '退出广场' }).click();
+  await page.getByText('访客浏览', { exact: true }).waitFor();
+  const analyticsCountAfterLogout = analyticsPortalTokens.length;
+  await page.reload();
+  await page.getByRole('button', { name: '使用天宫身份登录' }).waitFor();
+  for (let attempt = 0; attempt < 30 && analyticsPortalTokens.length === analyticsCountAfterLogout; attempt++) await page.waitForTimeout(100);
+  assert.ok(analyticsPortalTokens.length > analyticsCountAfterLogout, 'the post-logout page still emits anonymous analytics');
+  assert.ok(analyticsPortalTokens.slice(analyticsCountAfterLogout).every(token => token === undefined), 'explicit logout stops identity headers even while the portal token remains in storage');
   await page.evaluate(() => localStorage.setItem('fixture-sky-token', 'fixture-admin'));
   await page.getByRole('button', { name: '使用天宫身份登录' }).click();
   await page.getByRole('button', { name: '成员与小组' }).click();

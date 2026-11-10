@@ -11,6 +11,8 @@ import { DEFAULT_TAG, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 import { recordCatalogBaseline } from '../server/domain/analytics.js';
 import { maintainAnalyticsRetention } from '../server/domain/analytics-retention.js';
 import { appendBusinessFact } from '../server/domain/analytics-journal.js';
+import { createAppAccessService } from '../server/domain/app-access.js';
+import { startIdentityHarness } from './helpers/identity-fixture.js';
 
 test('browser events persist safe fields, deduplicate retries and exposures, and exclude hidden apps', async t => {
   const db = await openDatabase({ path: 'memory://' });
@@ -65,6 +67,28 @@ test('collection disabled rejects events and preserves existing catalog response
   assert.equal((await app.inject({ method:'POST',url:'/api/analytics/events',headers:{ host:'127.0.0.1:4000' },payload:{} })).statusCode, 404);
   const response = await app.inject({ method:'GET',url:'/api/apps',headers:{ host:'127.0.0.1:4000' } });
   assert.equal(response.json().analyticsEnabled, undefined);
+});
+
+test('selected analytics tags use the authenticated viewer catalog scope', async t => {
+  const h = await startIdentityHarness('', { analytics: true, superAdminAccount: 'fixture.admin' });
+  t.after(h.close);
+  const owner = await h.login('fixture-admin');
+  const privateApp = await seedTagCatalog(h.db, h.config.audience, ['PrivateOnly']);
+  const access = createAppAccessService(h.db, h.config.audience);
+  await access.adopt(owner.user.id, privateApp.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID(),
+    reason: '测试受限标签统计范围', sourceAuthorizationConfirmed: true });
+  await access.update(owner.user.id, privateApp.appId, { revision: 1, requestId: randomUUID(), scope: 'self', memberIds: [], groupIds: [] });
+  const event = { eventId: randomUUID(), eventName: 'catalog_results_viewed', occurredAt: new Date().toISOString(),
+    identityScope: 'persistent', visitorId: randomUUID(), sessionId: randomUUID(), viewId: randomUUID(), resultSetId: randomUUID(),
+    attributes: { pageContext: 'catalog', entryMode: 'catalog', trigger: 'filter', discoveryRequestId: randomUUID(), resultCount: 1,
+      renderedCount: 1, page: 1, pageSize: 8, usageType: 'all', selectedTags: ['privateonly'], hasQuery: false, queryLengthBucket: '0' } };
+  const send = (payload: object, headers: Record<string, string> = h.headers()) => h.app.inject({ method: 'POST', url: '/api/analytics/events', headers, payload });
+  assert.equal((await send(event)).statusCode, 400, 'anonymous callers cannot claim a tag visible only on a restricted app');
+  const authorizedEvent = { ...event, eventId: randomUUID() };
+  const authorized = await send(authorizedEvent, h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-admin' }));
+  assert.equal(authorized.statusCode, 200, authorized.body);
+  const recorded = (await h.db.query('SELECT attributes->\'selectedTags\' AS tags FROM analytics_events WHERE event_id=$1', [authorizedEvent.eventId])).rows[0].tags;
+  assert.deepEqual(recorded, ['PrivateOnly'], 'case-insensitive selection is persisted in the visible canonical spelling');
 });
 
 test('analytics rate limits cannot consume the catalog request budget', async t => {

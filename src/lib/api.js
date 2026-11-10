@@ -13,6 +13,9 @@ export function readPortalToken() {
     return value && value.length <= 8192 && value.trim() === value && !/[\x00-\x1f\x7f]/.test(value) ? value : null
   } catch { return null }
 }
+export function readAuthenticatedPortalToken() {
+  return authenticatedWebIdentity ? readPortalToken() : null
+}
 
 export class ApiError extends Error {
   constructor(message, status, code) {

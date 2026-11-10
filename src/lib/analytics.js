@@ -1,5 +1,6 @@
 // First-party anonymous measurement. Never sends URLs, search text, clipboard text or credentials.
 import { publicPath } from './public-path.js'
+import { readAuthenticatedPortalToken } from './api.js'
 let enabled = false
 let visitor = null
 let session = null
@@ -54,7 +55,10 @@ export function track(eventName, attributes, context = {}) {
   if (!identity.sessionId || !eventId) return
   const payload = JSON.stringify({ eventId, eventName, occurredAt: new Date().toISOString(), ...identity, viewId: view, ...context, attributes })
   const attempt = (remaining) => {
-    void fetch(publicPath('/api/analytics/events'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true, credentials: 'same-origin', cache: 'no-store' })
+    const headers = { 'Content-Type': 'application/json' }
+    const portalToken = readAuthenticatedPortalToken()
+    if (portalToken) headers['X-Plaza-Portal-Token'] = portalToken
+    void fetch(publicPath('/api/analytics/events'), { method: 'POST', headers, body: payload, keepalive: true, credentials: 'same-origin', cache: 'no-store' })
       .then(response => { if (!response.ok && response.status >= 500 && remaining) setTimeout(() => attempt(remaining - 1), 2000) })
       .catch(() => { if (remaining) setTimeout(() => attempt(remaining - 1), 2000) })
   }
