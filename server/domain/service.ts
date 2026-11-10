@@ -1055,7 +1055,6 @@ export function createService(config: ServiceConfig): PlazaService {
       if (usage !== undefined && !['all', 'platform', 'agent'].includes(usage)) {
         throw new DomainError(400, 'VALIDATION_FAILED', 'usage 必须是 all、platform 或 agent。');
       }
-      await cleanupExpiredTokens();
       const page = options.page ?? 1;
       const pageSize = options.pageSize ?? PAGE_SIZE;
       if (!Number.isInteger(page) || page < 1 || page > 100_000) {
@@ -1151,7 +1150,6 @@ export function createService(config: ServiceConfig): PlazaService {
     },
 
     async app(id, options = {}) {
-      await cleanupExpiredTokens();
       const record = await findAppById(id, config.db, options.includeHidden === true, options.viewerId, options.management);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
@@ -1219,7 +1217,6 @@ export function createService(config: ServiceConfig): PlazaService {
     },
 
     async instructions(id, entryId, options = {}) {
-      await cleanupExpiredTokens();
       const record = await findAppById(id, config.db, options.includeHidden === true, options.viewerId, options.management);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
