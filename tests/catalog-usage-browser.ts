@@ -478,6 +478,7 @@ try {
   // S4: preserve the exact filtered page and scroll position, without re-querying on return.
   await page.setViewportSize({ width: 390, height: 500 });
   await search(page, 'needle', 'all');
+  if (!await page.getByTestId('tag-chip').filter({ hasText: '组合筛选' }).isVisible()) await page.getByTestId('tag-more').click();
   await page.getByTestId('tag-chip').filter({ hasText: '组合筛选' }).click();
   await waitForCatalog(page);
   await page.getByTestId('pagination').locator('button.btn-next').click();
