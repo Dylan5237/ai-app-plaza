@@ -892,7 +892,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         };
         const bundle = validateBundle(submitInput, config.gitlabToken, "metadata_patch", config.gitlabUrl);
         assertMetadataIdentity(app.manifest, bundle.manifest, input.documents);
-        if (!await findOperation(binding.id, idempotencyDigest(binding.id, idempotencyKey)) &&
+        if (input.expectedAppRevision === app.revision && !await findOperation(binding.id, idempotencyDigest(binding.id, idempotencyKey)) &&
             isDeepStrictEqual({ ...app.manifest, projectVersion: undefined }, { ...bundle.manifest, projectVersion: undefined }) &&
             isDeepStrictEqual(app.documents, input.documents)) {
           throw new DomainError(400, 'NO_METADATA_CHANGES', '应用资料没有变化，请修改内容后再保存；仅版本号变化不会创建预览。');
