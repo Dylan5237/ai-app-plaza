@@ -50,8 +50,25 @@ try {
   await select(page, '核验后的负责人', adminLabel);
   await page.getByRole('textbox', { name: '核验依据或变更原因' }).fill('已核对固定来源、维护责任和原公开授权');
   await page.getByText('我已核对该应用的来源授权及原公开授权', { exact: true }).click();
+  let adoptionAttempts = 0;
+  await page.route(`**/api/access/apps/${target.appId}/adopt`, route => {
+    adoptionAttempts++;
+    if (adoptionAttempts === 1) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'ACCESS_REVISION_CONFLICT', message: '归属或权限已变化，请重新读取后核对。' } }) });
+    return route.continue();
+  });
   await page.getByRole('button', { name: '确认指定负责人', exact: true }).click();
+  const governanceDialog = page.getByRole('dialog', { name: '核验应用负责人', exact: true });
+  await governanceDialog.getByRole('alert').filter({ hasText: '填写内容已保留' }).waitFor();
+  assert.equal(await governanceDialog.getByRole('textbox', { name: '核验依据或变更原因' }).inputValue(), '已核对固定来源、维护责任和原公开授权');
+  assert.equal(await governanceDialog.getByRole('checkbox').isChecked(), true);
+  assert.equal(await governanceDialog.getByRole('button', { name: '确认指定负责人', exact: true }).isDisabled(), true, 'a stale form requires an explicit refresh');
+  await governanceDialog.getByRole('button', { name: '刷新记录并保留填写', exact: true }).click();
+  await governanceDialog.getByText('记录已刷新。填写内容已保留，请核对后重新确认。', { exact: true }).waitFor();
+  assert.equal(await governanceDialog.getByRole('textbox', { name: '核验依据或变更原因' }).inputValue(), '已核对固定来源、维护责任和原公开授权');
+  await governanceDialog.getByRole('button', { name: '确认指定负责人', exact: true }).click();
   await appRow.getByText('已归属', { exact: true }).waitFor();
+  await page.unroute(`**/api/access/apps/${target.appId}/adopt`);
+  assert.equal(adoptionAttempts, 2);
   assert.equal((await h.service.list()).total, 2, 'adoption preserves original public visibility');
   await page.screenshot({ path: 'artifacts/ownership-governance.png', fullPage: true });
   await page.getByRole('link', { name: '我的应用', exact: true }).click();

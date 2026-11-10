@@ -7,7 +7,7 @@ import { publicPath } from '../lib/public-path.js'
 
 const props = defineProps({ mode: { type: String, default: 'governance' } })
 const rows = ref([]), choices = ref([]), loading = ref(false), busy = ref(false), error = ref(''), notice = ref('')
-const selected = ref(null), ownerId = ref(''), role = ref('member'), reason = ref(''), verified = ref(false), uncertain = ref(false)
+const selected = ref(null), ownerId = ref(''), role = ref('member'), reason = ref(''), verified = ref(false), uncertain = ref(false), conflict = ref(false), conflictRefreshing = ref(false)
 let pending = null, generation = 0
 const title = computed(() => ({ governance: '应用归属核验', administrators: '管理员配置', transfers: '负责人交接' })[props.mode])
 const label = user => `${user.name}${user.account ? `（${user.account}）` : ''}`
@@ -22,7 +22,7 @@ async function load() {
   finally { if (version === generation) loading.value = false }
 }
 async function edit(row) {
-  error.value = ''; notice.value = ''; pending = null; uncertain.value = false; reason.value = ''; verified.value = false; ownerId.value = ''; role.value = row.role || 'member'
+  error.value = ''; notice.value = ''; pending = null; uncertain.value = false; conflict.value = false; reason.value = ''; verified.value = false; ownerId.value = ''; role.value = row.role || 'member'
   if (props.mode === 'governance') {
     try { choices.value = (await apiRequest('/api/access/candidates')).users } catch (err) { error.value = err.message; return }
   }
@@ -39,11 +39,29 @@ async function write(path, method, body, message) {
     await load()
   } catch (err) {
     uncertain.value = !err.status || err.status >= 500
-    error.value = uncertain.value ? '操作结果尚未确认。请重试同一请求，或先读取原操作结果。' : err.message
-    if (!uncertain.value) { pending = null; if (err.status === 409) { selected.value = null; await load() } }
+    if (err.status === 409 && selected.value) { pending = null; conflict.value = true; error.value = '记录已变化，填写内容已保留。请刷新当前记录后再确认。' }
+    else { error.value = uncertain.value ? '操作结果尚未确认。请重试同一请求，或先读取原操作结果。' : err.message; if (!uncertain.value) { pending = null; if (err.status === 409) await load() } }
   } finally { busy.value = false }
 }
+async function refreshConflict() {
+  if (!conflict.value || !selected.value || busy.value || conflictRefreshing.value) return
+  conflictRefreshing.value = true
+  const id = selected.value.id
+  const path = props.mode === 'governance' ? 'governance' : 'administrators'
+  try {
+    const data = await apiRequest(`/api/access/${path}`)
+    if (selected.value?.id !== id) return
+    const latest = data.items.find(item => item.id === id)
+    if (!latest) { error.value = '当前记录已不存在，未提交这次修改。'; return }
+    selected.value = latest
+    conflict.value = false
+    error.value = ''
+    notice.value = '记录已刷新。填写内容已保留，请核对后重新确认。'
+  } catch (err) { error.value = `刷新记录失败，填写内容仍已保留：${err.message}` }
+  finally { conflictRefreshing.value = false }
+}
 function save() {
+  if (conflict.value || conflictRefreshing.value) return
   if (uncertain.value && pending) { write(); return }
   if (!selected.value || !reason.value.trim()) return
   if (props.mode === 'governance') {
@@ -72,8 +90,8 @@ onMounted(load)
 <template>
   <main class="administration-center">
     <header><div><h1>{{ title }}</h1><p>{{ mode === 'governance' ? '逐项核对来源、原授权与真实负责人；不按显示姓名自动认领。' : mode === 'administrators' ? '平台管理与应用维护分别授权。普通管理员可查看看板和治理清单，超级管理员还可配置管理员与名册。' : '接收前负责人不变，接受时再次核对归属及权限。' }}</p></div><a :href="publicPath('/')">返回应用广场</a></header>
-    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <p v-if="notice" role="status">{{ notice }}</p>
+    <el-alert v-if="error && !selected" :title="error" type="error" :closable="false" show-icon />
+    <p v-if="notice && !selected" role="status">{{ notice }}</p>
     <div class="center-tools"><el-button :disabled="loading || busy" @click="load">刷新</el-button><el-button v-if="uncertain" type="primary" :loading="busy" @click="write()">核对并重试原操作</el-button></div>
     <div class="center-table" v-loading="loading">
       <el-table :data="rows" row-key="id" empty-text="暂无记录">
@@ -89,8 +107,10 @@ onMounted(load)
       </el-table>
     </div>
     <p v-if="mode === 'transfers'" class="center-note">接受后保留原版本和分享。原负责人不自动保留维护权；若权限已变化，需要负责人重新发起交接。</p>
-    <el-dialog :model-value="Boolean(selected)" :title="mode === 'governance' ? '核验应用负责人' : '调整平台角色'" width="min(560px, 92vw)" :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy" @close="selected = null">
+    <el-dialog :model-value="Boolean(selected)" :title="mode === 'governance' ? '核验应用负责人' : '调整平台角色'" width="min(560px, 92vw)" :close-on-click-modal="false" :show-close="!busy && !conflictRefreshing" :close-on-press-escape="!busy && !conflictRefreshing" @close="selected = null">
       <el-form v-if="selected" label-position="top" :disabled="busy || uncertain" @submit.prevent="save">
+        <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+        <p v-if="notice" role="status">{{ notice }}</p>
         <p>{{ mode === 'governance' ? selected.name : label(selected) }}</p>
         <el-form-item v-if="mode === 'governance'" label="核验后的负责人"><el-select v-model="ownerId" filterable aria-label="核验后的负责人"><el-option v-for="person in choices" :key="person.id" :value="person.id" :label="label(person)" /></el-select></el-form-item>
         <el-form-item v-else label="平台角色"><el-select v-model="role" aria-label="平台角色"><el-option label="普通成员" value="member" /><el-option label="管理员" value="administrator" /><el-option label="超级管理员" value="super_administrator" /></el-select></el-form-item>
@@ -98,7 +118,7 @@ onMounted(load)
         <el-checkbox v-if="mode === 'governance'" v-model="verified">我已核对该应用的来源授权及原公开授权</el-checkbox>
         <p class="center-note">{{ mode === 'governance' ? '只指定负责人，原公开范围与稳定应用 ID 保持不变。旧发布凭据需要另行交接，不自动转移。' : '变更将影响平台管理与看板访问，不自动认领或读取私有应用。最后一位超级管理员须先安排替代。' }}</p>
       </el-form>
-      <template #footer><el-button :disabled="busy" @click="selected = null">取消</el-button><el-button type="primary" :loading="busy" :disabled="!uncertain && (!reason.trim() || (mode === 'governance' ? !ownerId || !verified : role === selected?.role))" @click="save">{{ uncertain ? '核对并重试原操作' : mode === 'governance' ? '确认指定负责人' : '确认更改角色' }}</el-button></template>
+      <template #footer><el-button :disabled="busy || conflictRefreshing" @click="selected = null">取消</el-button><el-button v-if="conflict" :loading="conflictRefreshing" :disabled="busy || conflictRefreshing" @click="refreshConflict">刷新记录并保留填写</el-button><el-button type="primary" :loading="busy" :disabled="conflict || conflictRefreshing || (!uncertain && (!reason.trim() || (mode === 'governance' ? !ownerId || !verified : role === selected?.role)))" @click="save">{{ uncertain ? '核对并重试原操作' : mode === 'governance' ? '确认指定负责人' : '确认更改角色' }}</el-button></template>
     </el-dialog>
   </main>
 </template>
