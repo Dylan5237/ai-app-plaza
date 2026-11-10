@@ -33,8 +33,24 @@ try {
   await page.getByRole('button', { name: '登录后收藏', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '未检测到天宫登录状态' }).waitFor();
   await page.goto(`${h.origin}/plaza/fixture/portal`);
+  let failedFavoriteRead = false;
+  const favoriteReadSteps: string[] = [];
+  page.on('request', request => { if (request.method() === 'PUT' && new URL(request.url()).pathname.includes('/api/personal/favorites/')) favoriteReadSteps.push('save'); });
+  await page.route('**/api/personal/favorite-ids', route => {
+    favoriteReadSteps.push('ids');
+    if (!failedFavoriteRead) { failedFavoriteRead = true; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '收藏状态暂不可用' } }) }); }
+    return route.continue();
+  });
   await page.getByRole('button', { name: '以测试名册管理员进入' }).click();
   await page.getByRole('button', { name: '成员与小组' }).waitFor();
+  const retryFavorite = page.getByRole('button', { name: '收藏状态读取失败，点击重试', exact: true });
+  await retryFavorite.waitFor();
+  assert.equal(await retryFavorite.isEnabled(), true, 'the star offers a local retry after a failed read');
+  assert.deepEqual(favoriteReadSteps, ['ids'], 'the guest intent remains pending until favorite status is known');
+  await retryFavorite.click();
+  await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
+  assert.deepEqual(favoriteReadSteps, ['ids', 'ids', 'save'], 'successful status retry precedes the single favorite write');
+  await page.unroute('**/api/personal/favorite-ids');
   for (let attempt = 0; attempt < 30 && !analyticsPortalTokens.includes('fixture-admin'); attempt++) await page.waitForTimeout(100);
   assert.ok(analyticsPortalTokens.includes('fixture-admin'), 'verified identity analytics carries the portal token');
   await page.route('**/api/auth/me', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'IDENTITY_UNAVAILABLE', message: '身份服务暂不可用' } }) }));
