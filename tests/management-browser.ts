@@ -19,6 +19,16 @@ const postCount = () => report.requests.filter((r: any) => r.method === 'POST').
 try {
   const writesBefore = h.gitlab.state.writes.length;
   await page.goto(h.origin + '/admin'); await page.getByText('本地集成版本', { exact: true }).waitFor();
+  await page.getByTestId(`management-detail-${seeds.update.appId}`).waitFor();
+  const previousTotal = await page.getByTestId('management-pagination').innerText();
+  await page.route('**/api/management/apps?*', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '管理列表暂不可用' } }) }));
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '管理列表暂不可用' }).waitFor();
+  assert.equal(await page.getByTestId(`management-detail-${seeds.update.appId}`).count(), 1, 'failed refresh retains the management rows');
+  assert.equal(await page.getByTestId('management-pagination').innerText(), previousTotal, 'failed refresh retains the matching total');
+  await page.unroute('**/api/management/apps?*');
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '管理列表暂不可用' }).waitFor({ state: 'hidden' });
   await page.getByTestId(`management-detail-${seeds.update.appId}`).click(); await page.getByTestId('app-detail').waitFor();
   await page.getByTestId('read-full-docs').click(); await page.getByTestId('detail-documents-dialog').waitFor(); await page.getByTestId('detail-documents-dialog').locator('.el-dialog__headerbtn').click();
   await page.getByTestId('read-source').click(); await page.getByTestId('detail-source-dialog').waitFor(); await page.getByTestId('detail-source-dialog').locator('.el-dialog__headerbtn').click();
