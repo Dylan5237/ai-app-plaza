@@ -566,6 +566,7 @@ try {
   assert.equal(randomRequests, 1);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const selected = await currentId();
+  await page.keyboard.press('Tab');
   await page.getByTestId('wheel-current').getByTestId('card-detail').focus();
   assert.equal(await page.getByTestId('wheel-current').getByTestId('card-detail').evaluate(button => {
     const sample = document.createElement('i'); sample.style.color = 'var(--plaza-brand)'; document.body.append(sample);
