@@ -11,7 +11,6 @@ let requestVersion = 0
 async function load() {
   const version = ++requestVersion
   loading.value = true
-  data.value = null
   error.value = ''
   try {
     const result = await apiRequest(`/api/operations/dashboard?period=${period.value}`)
@@ -19,7 +18,7 @@ async function load() {
   } catch (err) {
     if (version === requestVersion) {
       // Identity failures must remove previously visible protected data immediately.
-      if (err.status === 401 || err.status === 403 || err.status === 503) data.value = null
+      if (err.status === 401 || err.status === 403) data.value = null
       error.value = err.message || '看板加载失败，请稍后重试。'
     }
   } finally { if (version === requestVersion) loading.value = false }

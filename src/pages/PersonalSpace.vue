@@ -10,13 +10,17 @@ let sequence = 0
 async function load() {
   const request = ++sequence
   loading.value = true; error.value = ''
-  items.value = []
   try {
     const result = await apiRequest(`/api/personal/favorites?page=${page.value}&pageSize=12`)
     if (request !== sequence) return
-    items.value = result.items; total.value = result.total
     if (page.value > 1 && !result.items.length) { page.value--; return load() }
-  } catch (e) { if (request === sequence) error.value = e.message }
+    items.value = result.items; total.value = result.total
+  } catch (e) {
+    if (request === sequence) {
+      if ([401, 403, 404].includes(e.status)) { items.value = []; total.value = 0 }
+      error.value = e.message
+    }
+  }
   finally { if (request === sequence) loading.value = false }
 }
 async function remove(id) {

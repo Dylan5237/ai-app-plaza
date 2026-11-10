@@ -34,6 +34,24 @@ try {
   await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
   await page.getByRole('button', { name: '我的收藏', exact: true }).click();
   await page.getByRole('heading', { name: '我的收藏', exact: true }).waitFor();
+  await page.locator('.personal-grid [data-testid="app-card"]').waitFor();
+  let releaseFavorites: (() => void) | undefined;
+  const favoritesGate = new Promise<void>(resolve => { releaseFavorites = resolve; });
+  await page.route('**/api/personal/favorites?*', async route => {
+    await favoritesGate;
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '收藏服务暂不可用' } }) });
+  });
+  const refreshingFavorites = page.waitForRequest('**/api/personal/favorites?*');
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await refreshingFavorites;
+  assert.equal(await page.locator('.personal-grid [data-testid="app-card"]').count(), 1, 'focus refresh retains the saved grid');
+  await page.getByText('正在更新收藏…', { exact: true }).waitFor();
+  releaseFavorites!();
+  await page.getByRole('alert').filter({ hasText: '收藏服务暂不可用' }).waitFor();
+  assert.equal(await page.locator('.personal-grid [data-testid="app-card"]').count(), 1, 'failed refresh retains the saved grid');
+  await page.unroute('**/api/personal/favorites?*');
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '收藏服务暂不可用' }).waitFor({ state: 'hidden' });
   await page.screenshot({ path: 'artifacts/personal-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'personal page does not overflow horizontally');

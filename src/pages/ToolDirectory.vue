@@ -342,6 +342,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
     }
   } catch (error) {
     if (requestSequence !== catalogRequestSequence) return
+    if ([401, 403].includes(error.status)) { apps.value = []; authorTags.value = []; total.value = 0; usageCounts.value = { platform: 0, agent: 0 } }
     catalogError.value = errorText(error)
     if (!props.management) recordFailure(trigger === 'search' ? 'search' : trigger === 'filter' ? 'filter' : 'catalog', error)
   } finally {
@@ -558,9 +559,6 @@ function refreshVisibleAccess() {
   if (detailVisible.value && appId) void openApp(appId, { fromHistory: true, revalidating: true })
   else { closeAgentInstructions(); selectedApp.value = null }
   if (props.management) return
-  apps.value = []; authorTags.value = []; total.value = 0
-  usageCounts.value = { platform: 0, agent: 0 }
-  randomRequestSequence++; randomItems.value = []; randomLoaded = false
   void loadCatalog()
   if (discoveryTab.value === 'random') void loadRandom()
 }

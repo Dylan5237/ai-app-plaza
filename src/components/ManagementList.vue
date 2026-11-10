@@ -49,7 +49,12 @@ async function load() {
     if (page.value > lastPage) { page.value = lastPage; await load(); return }
     rows.value = response.items || []
     table.value?.setScrollTop(0)
-  } catch (e) { if (current === sequence) { rows.value = []; total.value = 0; error.value = e.message || '暂时无法读取记录。' } }
+  } catch (e) {
+    if (current === sequence) {
+      if ([401, 403, 404].includes(e.status)) { rows.value = []; total.value = 0 }
+      error.value = e.message || '暂时无法读取记录。'
+    }
+  }
   finally { if (current === sequence) loading.value = false }
 }
 function changeView(value) { view.value = value; query.value = ''; status.value = 'all'; page.value = 1; load() }
@@ -89,7 +94,7 @@ async function changeLifecycle(row, action) {
   finally { mutating.value = '' }
 }
 defineExpose({ reload: load })
-function revalidateAccess() { if (props.managementMode === 'identity' && !mutating.value) { rows.value = []; total.value = 0; void load() } }
+function revalidateAccess() { if (props.managementMode === 'identity' && !mutating.value) void load() }
 watch(() => props.managementEnabled, load)
 onMounted(async () => {
   window.addEventListener('focus', revalidateAccess)

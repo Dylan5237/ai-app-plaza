@@ -14,13 +14,18 @@ if(!address || typeof address==='string') throw new Error('Vite did not bind a t
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 let deny=false;
+let fail=false;
+let releaseRefresh: (() => void) | undefined;
+let refreshGate: Promise<void> | undefined;
 const data={ status:'available',period:'30d',start:'2026-11-01T00:00:00.000Z',end:'2026-11-09T04:00:00.000Z',collectionStart:'2026-11-01T00:00:00.000Z',partial:true,appScopeAvailable:true,
   summary:{discoverySessions:10,usageSessions:4,discoveryVisitors:8,sessionOnly:2,searches:null,emptySearches:null,webActions:3,agentActions:2},
   days:[{day:'2026-11-03',discoverySessions:6,usageSessions:2},{day:'2026-11-08',discoverySessions:4,usageSessions:2}],
   apps:[{id:'11111111-1111-4111-8111-111111111111',name:'测试公开应用',exposure:12,details:4,webSessions:3,agentSessions:0}],
   supply:{available:1,newApps:0,updates:1},retention:null };
 await page.route('**/api/operations/dashboard?*', async route => {
+  if (refreshGate) await refreshGate;
   if(deny) return route.fulfill({status:403,contentType:'application/json',body:JSON.stringify({error:{message:'管理员权限已失效',code:'PERMISSION_DENIED'}})});
+  if(fail) return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{message:'看板服务暂不可用',code:'SERVICE_UNAVAILABLE'}})});
   return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({...data,period:new URL(route.request().url()).searchParams.get('period')})});
 });
 try {
@@ -34,6 +39,14 @@ try {
   await changed;
   await page.waitForFunction(()=>document.querySelector('[aria-label="统计时间范围"] button[aria-pressed="true"]')?.textContent?.includes('7'));
   assert.equal(await page.getByText('测试公开应用').count(),1);
+  refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByText('更新中…', {exact:true}).waitFor();
+  assert.equal(await page.getByText('测试公开应用').count(),1,'refresh keeps the loaded dashboard');
+  fail=true; releaseRefresh!(); refreshGate=undefined;
+  await page.getByText('看板服务暂不可用', {exact:true}).waitFor();
+  assert.equal(await page.getByText('测试公开应用').count(),1,'transient failure keeps the last successful result');
+  fail=false;
   await page.setViewportSize({width:390,height:844});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'mobile page must not overflow horizontally');
   await page.screenshot({path:'artifacts/operations-dashboard-mobile.png',fullPage:true});
