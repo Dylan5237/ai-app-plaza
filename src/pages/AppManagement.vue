@@ -44,9 +44,9 @@ onMounted(async () => {
 .management-shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; background: var(--plaza-canvas); }
 .management-shell :deep(.directory-shell), .management-shell :deep(.publication-shell) { flex: 1; min-height: 0; height: auto; }
 .management-topbar { flex-shrink: 0; box-sizing: border-box; display: flex; align-items: center; gap: 18px; min-height: 60px; padding: 12px 24px; border-bottom: 1px solid var(--plaza-line); background: var(--plaza-surface); }
-.management-brand { display: flex; align-items: center; gap: 9px; color: var(--plaza-ink); font-size: 16px; font-weight: 650; text-decoration: none; }
+.management-brand { display: flex; align-items: center; gap: 9px; color: var(--plaza-ink); font-size: 17px; font-weight: 650; text-decoration: none;;line-height:26px;}
 .management-brand img { width: 28px; height: 28px; }
-.management-context { padding-left: 16px; border-left: 1px solid var(--plaza-line); color: var(--plaza-muted); font-size: 14px; }
-.management-plaza-link { margin-left: auto; color: var(--plaza-brand); font-size: 13px; text-decoration: none; }
-@media (max-width: 560px) { .management-topbar { gap: 10px; padding: 10px 14px; } .management-brand { font-size: 14px; } .management-context { padding-left: 10px; font-size: 12px; } .management-plaza-link { font-size: 12px; } }
+.management-context { padding-left: 16px; border-left: 1px solid var(--plaza-line); color: var(--plaza-muted); font-size: 14px;;line-height:22px;}
+.management-plaza-link { margin-left: auto; color: var(--plaza-brand); font-size: 14px; text-decoration: none;;line-height:22px;}
+@media (max-width: 560px) { .management-topbar { gap: 10px; padding: 10px 14px; } .management-brand { font-size: 14px;;line-height:22px;} .management-context { padding-left: 10px; font-size: 12px;;line-height:18px;} .management-plaza-link { font-size: 12px;;line-height:18px;} }
 </style>

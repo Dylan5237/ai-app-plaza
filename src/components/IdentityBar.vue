@@ -29,7 +29,7 @@ onMounted(initializeIdentity)
 </template>
 
 <style scoped>
-.identity-bar { flex-shrink: 0; padding: 8px 24px; background: var(--plaza-surface); border-bottom: 1px solid var(--plaza-line); color: var(--plaza-ink); font-size: 13px; }
+.identity-bar { flex-shrink: 0; padding: 8px 24px; background: var(--plaza-surface); border-bottom: 1px solid var(--plaza-line); color: var(--plaza-ink); font-size: 14px;;line-height:22px;}
 .identity-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 14px; align-items: center; }
 small { color: var(--plaza-muted); margin-left: 6px; }
 button,a { min-height: 36px; box-sizing: border-box; display: inline-flex; align-items: center; border: 0; background: transparent; color: var(--plaza-brand); cursor: pointer; padding: 5px; font: inherit; text-decoration: none; }

@@ -157,7 +157,7 @@ async function save() {
 <style scoped>
 .metadata-content { min-height: 160px; max-height: 64vh; overflow-y: auto; padding: 0 4px; }
 .editor-context { margin: 0 0 8px; color: var(--plaza-ink); font-weight: 600; }
-.editor-note { margin: 0 0 16px; color: var(--plaza-muted); font-size: 13px; line-height: 1.7; }
+.editor-note { margin: 0 0 16px; color: var(--plaza-muted); font-size: 14px; line-height:22px; }
 .editor-alert { margin-bottom: 14px; }
 .editor-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
 .editor-author { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end; }
