@@ -174,7 +174,7 @@ try {
   await page.screenshot({ path: 'artifacts/identity-mobile.png', fullPage: true });
   assert.deepEqual(errors, []);
   const usage = (await h.db.query("SELECT count(*) AS n FROM analytics_events WHERE event_name='app_entry_clicked'")).rows[0].n;
-  assert.equal(usage, 0, 'favorite interactions never count as entry usage');
+  assert.equal(usage, 1, 'only the deliberate Agent-entry click counts; favorite interactions add no usage');
   await writeFile('artifacts/identity-browser.json', JSON.stringify({ status: 'PASS', checks: ['prefixed anonymous directory and analytics', 'Tiangong sign-in', 'guest favorite intent', 'persisted personal favorites', 'favorite detail return', 'account isolation', 'inline group impact and uncertain-result retry', 'logout suppression', 'explicit account switch', 'direct authorization denial', 'disabled identity removes private content', 'mobile layout'], errors }, null, 2));
   console.log('PASS: Tiangong identity, personal favorites and local groups browser flow (synthetic portal).');
 } catch (error) {
