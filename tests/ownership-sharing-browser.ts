@@ -89,6 +89,10 @@ try {
   });
   await page.getByRole('button', { name: '确认更改分享范围', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '保存结果尚未确认' }).waitFor();
+  const uncertainDialog = page.getByRole('dialog', { name: '应用归属与权限', exact: true });
+  assert.equal(await uncertainDialog.getByRole('button', { name: '关闭', exact: true }).isDisabled(), true, 'an unknown result keeps the original request available');
+  await page.keyboard.press('Escape');
+  assert.equal(await uncertainDialog.isVisible(), true, 'Escape cannot silently discard an unknown request');
   await page.getByRole('button', { name: '核对并重试原操作', exact: true }).click();
   await page.getByText('配置已保存，已回读当前结果。', { exact: true }).waitFor();
   assert.equal(sharingBodies.length, 2); assert.equal(sharingBodies[0], sharingBodies[1]);

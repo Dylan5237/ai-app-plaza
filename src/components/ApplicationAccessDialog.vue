@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 
 const props = defineProps({ appId: { type: String, default: '' } })
@@ -47,6 +48,14 @@ async function load(revalidating = false) {
 }
 watch(() => props.appId, () => { pending = null; uncertain.value = false; error.value = ''; notice.value = ''; section.value = 'sharing'; load() }, { immediate: true })
 function revalidate() { if (props.appId && !busy.value && !uncertain.value) void load(true) }
+function beforeClose(done) {
+  if (uncertain.value) { ElMessage.warning('原请求结果尚未确认，请先重试同一请求，确认后再关闭。'); return }
+  done()
+}
+function requestClose() {
+  if (uncertain.value) { ElMessage.warning('原请求结果尚未确认，请先重试同一请求，确认后再关闭。'); return }
+  emit('close')
+}
 onMounted(() => window.addEventListener('focus', revalidate))
 onUnmounted(() => { generation++; window.removeEventListener('focus', revalidate) })
 async function save() {
@@ -72,10 +81,11 @@ async function save() {
 </script>
 
 <template>
-  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy" @close="emit('close')">
+  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" :close-on-click-modal="false" :show-close="!busy && !uncertain" :close-on-press-escape="!busy && !uncertain" :before-close="beforeClose" @close="requestClose">
     <div v-loading="loading" class="access-form">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
       <p v-if="notice" role="status">{{ notice }}</p>
+      <el-alert v-if="uncertain" title="原请求结果尚未确认。请重试同一请求，确认后再关闭此弹窗。" type="warning" :closable="false" show-icon />
       <template v-if="current">
         <p>负责人：{{ label(current.people.find(item => item.id === current.owner_id) || { name: '已核验用户' }) }}</p>
         <p v-if="!current.canShare">当前范围：{{ scopes[current.scope] }}。你可维护此应用，归属、分享及委派由负责人调整。</p>
@@ -94,7 +104,7 @@ async function save() {
         </template>
       </template>
     </div>
-    <template #footer><el-button :disabled="busy" @click="emit('close')">关闭</el-button><el-button v-if="current?.canShare" type="primary" :loading="busy" :disabled="!uncertain && (!changed || !valid)" @click="save">{{ uncertain ? '核对并重试原操作' : section === 'transfer' ? '确认发起交接' : section === 'maintainers' ? '确认更改维护授权' : '确认更改分享范围' }}</el-button></template>
+    <template #footer><el-button :disabled="busy || uncertain" @click="requestClose">关闭</el-button><el-button v-if="current?.canShare" type="primary" :loading="busy" :disabled="!uncertain && (!changed || !valid)" @click="save">{{ uncertain ? '核对并重试原操作' : section === 'transfer' ? '确认发起交接' : section === 'maintainers' ? '确认更改维护授权' : '确认更改分享范围' }}</el-button></template>
   </el-dialog>
 </template>
 
