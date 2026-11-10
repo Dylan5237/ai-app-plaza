@@ -11,7 +11,7 @@ const server = await createServer({root:resolve('.'),server:{host:'127.0.0.1',po
 await server.listen();
 const address=server.httpServer?.address();
 if(!address || typeof address==='string') throw new Error('Vite did not bind a test port');
-const browser=await chromium.launch({channel:process.env.PLAYWRIGHT_CHANNEL || 'msedge',headless:true});
+const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 let deny=false;
 const data={ status:'available',period:'30d',start:'2026-11-01T00:00:00.000Z',end:'2026-11-09T04:00:00.000Z',collectionStart:'2026-11-01T00:00:00.000Z',partial:true,appScopeAvailable:true,

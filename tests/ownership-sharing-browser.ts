@@ -14,7 +14,7 @@ const groupId = randomUUID();
 await h.db.query('INSERT INTO plaza_groups(id,name) VALUES($1,$2)', [groupId, '浏览器分享小组']);
 await h.db.query('INSERT INTO plaza_group_members(group_id,user_id) VALUES($1,$2)', [groupId, member.user.id]);
 await mkdir('artifacts', { recursive: true });
-const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
+const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 const adminContext = await browser.newContext({ viewport: { width: 1440, height: 960 } });
 const memberContext = await browser.newContext({ viewport: { width: 1366, height: 900 } });
 const page = await adminContext.newPage(), receiver = await memberContext.newPage();
