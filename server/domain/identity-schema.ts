@@ -4,6 +4,7 @@ export const IDENTITY_SCHEMA = [
       account text, tenant_id text, verified_at timestamptz NOT NULL, UNIQUE(source, subject))`,
     `CREATE TABLE IF NOT EXISTS plaza_login_requests (
       id_hash text PRIMARY KEY, browser_hash text NOT NULL, expires_at timestamptz NOT NULL)`,
+    `ALTER TABLE plaza_login_requests ADD COLUMN IF NOT EXISTS client_hash text NOT NULL DEFAULT ''`,
     `CREATE TABLE IF NOT EXISTS plaza_sessions (
       token_hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES plaza_identities(id), expires_at timestamptz NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS plaza_groups (

@@ -37,16 +37,23 @@ export async function createIdentityService(db: Database, config: TiangongConfig
     return { id: row.id, subject: row.subject, name: row.name, account: row.account,
       identityAdmin: config.identityAdmins.includes(row.subject) || capabilities.superAdministrator, ...capabilities };
   }
-  async function cleanup() {
-    await db.query('DELETE FROM plaza_login_requests WHERE expires_at <= now()');
-    await db.query('DELETE FROM plaza_sessions WHERE expires_at <= now()');
+  async function cleanup(queryable: Queryable = db) {
+    await queryable.query('DELETE FROM plaza_login_requests WHERE expires_at <= now()');
+    await queryable.query('DELETE FROM plaza_sessions WHERE expires_at <= now()');
   }
-  async function challenge() {
-    await cleanup();
+  async function challenge(clientHash = 'internal') {
     const requestId = random(), browserSecret = random();
-    const inserted = await db.query(`INSERT INTO plaza_login_requests(id_hash,browser_hash,expires_at)
-      SELECT $1,$2,now()+interval '120 seconds' WHERE (SELECT count(*) FROM plaza_login_requests)<1000 RETURNING id_hash`, [hash(requestId), hash(browserSecret)]);
-    if (!inserted.rowCount) throw new DomainError(429, 'LOGIN_BUSY', '登录请求较多，请稍后重试。');
+    await db.transaction(async tx => {
+      // Serialize capacity checks across processes/instances, not only this Node runtime.
+      await tx.query('LOCK TABLE plaza_login_requests IN SHARE ROW EXCLUSIVE MODE');
+      await cleanup(tx);
+      const counts = (await tx.query<{ total: number | string; client: number | string }>(
+        'SELECT count(*) AS total, count(*) FILTER (WHERE client_hash=$1) AS client FROM plaza_login_requests', [clientHash])).rows[0]!;
+      if (Number(counts.client) >= 20) throw new DomainError(429, 'LOGIN_RATE_LIMITED', '当前访问端的待登录请求较多，请等待两分钟后重试。');
+      if (Number(counts.total) >= 1000) throw new DomainError(429, 'LOGIN_BUSY', '登录请求较多，请稍后重试。');
+      await tx.query(`INSERT INTO plaza_login_requests(id_hash,browser_hash,expires_at,client_hash)
+        VALUES($1,$2,now()+interval '120 seconds',$3)`, [hash(requestId), hash(browserSecret), clientHash]);
+    });
     return { requestId, browserSecret };
   }
   async function sessionUser(session?: string) {

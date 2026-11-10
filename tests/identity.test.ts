@@ -13,6 +13,25 @@ import { seedTagCatalog } from './helpers/tag-catalog.js';
 const env = { TIANGONG_AUTH_ENABLED: 'true', TIANGONG_USERINFO_URL: 'https://portal.example.invalid/findByToken',
   TIANGONG_SUCCESS_CODE: '00000000', TIANGONG_TOKEN_STORAGE_KEY: 'sky-token' };
 
+test('login capacity is atomic, isolated by client and released after expiry', async t => {
+  const db = await openDatabase({ path: 'memory://' }); t.after(() => db.close());
+  const service = await createIdentityService(db, tiangongConfig(env)!);
+  for (let i = 0; i < 20; i++) await service.challenge('client-a');
+  await assert.rejects(service.challenge('client-a'), (error: any) => error.statusCode === 429 && error.code === 'LOGIN_RATE_LIMITED');
+  await service.challenge('client-b');
+  await db.query("UPDATE plaza_login_requests SET expires_at=now()-interval '1 second' WHERE client_hash='client-a'");
+  await service.challenge('client-a');
+  assert.equal(Number((await db.query("SELECT count(*) AS n FROM plaza_login_requests WHERE client_hash='client-a'")).rows[0].n), 1);
+  await db.query('DELETE FROM plaza_login_requests');
+  await db.query(`INSERT INTO plaza_login_requests(id_hash,browser_hash,expires_at,client_hash)
+    SELECT 'seed-'||n,'browser-'||n,now()+interval '120 seconds','client-'||n FROM generate_series(1,999) AS gs(n)`);
+  const results = await Promise.allSettled([service.challenge('new-client-a'), service.challenge('new-client-b')]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  const rejected = results.find(result => result.status === 'rejected') as PromiseRejectedResult;
+  assert.equal(rejected.reason.code, 'LOGIN_BUSY');
+  assert.equal(Number((await db.query('SELECT count(*) AS n FROM plaza_login_requests')).rows[0].n), 1000);
+});
+
 test('Tiangong config is explicit and cannot silently accept unsafe or partial configuration', () => {
   assert.equal(tiangongConfig({}), undefined);
   for (const patch of [ { TIANGONG_AUTH_ENABLED: '1' }, { TIANGONG_TOKEN_STORAGE_KEY: '' }, { TIANGONG_SUCCESS_CODE: '' },

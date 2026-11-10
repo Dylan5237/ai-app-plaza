@@ -3,6 +3,19 @@ import assert from 'node:assert/strict';
 import { startIdentityHarness } from './helpers/identity-fixture.js';
 import { createApp } from '../server/app.js';
 
+test('pending login slots use the trusted client bucket without storing source addresses', async t => {
+  const h = await startIdentityHarness('/plaza', { trustedProxyIp: '127.0.0.1' }); t.after(h.close);
+  const challenge = (client: string) => h.app.inject({ method: 'POST', url: '/plaza/api/auth/tiangong/requests',
+    remoteAddress: '127.0.0.1', headers: h.headers({ 'x-real-ip': client }), payload: {} });
+  for (let i = 0; i < 20; i++) assert.equal((await challenge('198.51.100.60')).statusCode, 200);
+  assert.equal((await challenge('198.51.100.60')).statusCode, 429);
+  assert.equal((await challenge('198.51.100.61')).statusCode, 200, 'one client cannot consume another client quota');
+  const rows = (await h.db.query('SELECT client_hash FROM plaza_login_requests')).rows;
+  assert.equal(new Set(rows.map(row => row.client_hash)).size, 2);
+  assert.ok(rows.every(row => /^[a-f0-9]{64}$/.test(row.client_hash)));
+  assert.equal(JSON.stringify(rows).includes('198.51.100.'), false);
+});
+
 test('Tiangong clients behind an explicitly trusted proxy have independent limits for public and protected requests', async t => {
   const h = await startIdentityHarness('/plaza', { rateLimit: true, trustedProxyIp: '127.0.0.1' });
   t.after(h.close);
