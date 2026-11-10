@@ -520,10 +520,10 @@ try {
   const wheel = page.getByTestId('catalog-wheel');
   const wheelDots = page.getByTestId('random-discovery').locator('.wheel-dots button');
   assert.equal(await wheelDots.count(), 6);
-  assert.equal(await wheelDots.evaluateAll(buttons => buttons.every(button => {
+  assert.equal(await wheelDots.evaluateAll((buttons: HTMLElement[]) => buttons.every(button => {
     const box = button.getBoundingClientRect(); return box.width >= 24 && box.height >= 24;
   })), true, 'wheel selectors have at least a 24px target');
-  assert.ok(await page.getByTestId('random-discovery').locator('.wheel-dots button[aria-pressed="true"]').evaluate(button => parseFloat(getComputedStyle(button).outlineWidth) >= 2), 'the current wheel item has a shape cue beyond color');
+  assert.ok(await page.getByTestId('random-discovery').locator('.wheel-dots button[aria-pressed="true"]').evaluate((button: HTMLElement) => parseFloat(getComputedStyle(button).outlineWidth) >= 2), 'the current wheel item has a shape cue beyond color');
   const batchIds = () => wheel.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
   const refreshRandom = async () => {
     const response = page.waitForResponse((res: any) => new URL(res.url()).pathname === '/api/apps/random');
@@ -568,7 +568,7 @@ try {
   const selected = await currentId();
   await page.keyboard.press('Tab');
   await page.getByTestId('wheel-current').getByTestId('card-detail').focus();
-  assert.equal(await page.getByTestId('wheel-current').getByTestId('card-detail').evaluate(button => {
+  assert.equal(await page.getByTestId('wheel-current').getByTestId('card-detail').evaluate((button: HTMLElement) => {
     const sample = document.createElement('i'); sample.style.color = 'var(--plaza-brand)'; document.body.append(sample);
     const brand = getComputedStyle(sample).color; sample.remove();
     const style = getComputedStyle(button); return style.outlineColor === brand && parseFloat(style.outlineWidth) >= 2;
