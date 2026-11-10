@@ -304,6 +304,9 @@ try {
   });
   assertNoViewportOverflow(await overflowMetrics(), '1280x720');
 
+  // Paging above ends on the last page; an equal-capacity resize preserves that page.
+  await page.getByTestId('pagination').getByText('1', { exact: true }).click();
+  await waitForCatalog(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await waitForCatalog(page);
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
