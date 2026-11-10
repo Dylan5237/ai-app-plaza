@@ -514,6 +514,10 @@ try {
   await page.getByTestId('wheel-current').waitFor();
   await page.waitForLoadState('networkidle');
   const wheel = page.getByTestId('catalog-wheel');
+  assert.equal(await wheel.locator('.wheel-dots button').evaluateAll(buttons => buttons.every(button => {
+    const box = button.getBoundingClientRect(); return box.width >= 24 && box.height >= 24;
+  })), true, 'wheel selectors have at least a 24px target');
+  assert.ok(await wheel.locator('.wheel-dots button[aria-pressed="true"]').evaluate(button => parseFloat(getComputedStyle(button).outlineWidth) >= 2), 'the current wheel item has a shape cue beyond color');
   const batchIds = () => wheel.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
   const refreshRandom = async () => {
     const response = page.waitForResponse((res: any) => new URL(res.url()).pathname === '/api/apps/random');
@@ -557,6 +561,11 @@ try {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const selected = await currentId();
   await page.getByTestId('wheel-current').getByTestId('card-detail').focus();
+  assert.equal(await page.getByTestId('wheel-current').getByTestId('card-detail').evaluate(button => {
+    const sample = document.createElement('i'); sample.style.color = 'var(--plaza-brand)'; document.body.append(sample);
+    const brand = getComputedStyle(sample).color; sample.remove();
+    const style = getComputedStyle(button); return style.outlineColor === brand && parseFloat(style.outlineWidth) >= 2;
+  }), true, 'keyboard focus uses the accessible brand ring');
   await assertCardOverlay(page.getByTestId('wheel-current').getByTestId('app-card'));
   await page.screenshot({ path: 'artifacts/catalog-wheel-card-focus.png' });
   await page.keyboard.press('Enter');
