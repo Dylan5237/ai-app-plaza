@@ -84,7 +84,8 @@ try {
   assert.equal(await page.getByTestId('agent-instruction-content').innerText(), beforeFocus, 'focus preserves the active Agent instructions');
   releaseDetail!();
   await page.unroute(`**/api/apps/${registered.appId}`);
-  await page.getByTestId('agent-instruction-dialog').getByRole('button', { name: '关闭', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await page.getByTestId('agent-instruction-dialog').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '← 返回我的收藏', exact: true }).click();
   await page.getByRole('heading', { name: '我的收藏', exact: true }).waitFor();
   await page.getByRole('button', { name: '返回应用广场', exact: true }).click();
