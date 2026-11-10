@@ -25,10 +25,11 @@ page.on('request', request => {
 page.on('pageerror', error => errors.push(error.message));
 try {
   await page.goto(`${h.origin}/plaza/fixture/portal`);
+  const anonymousAnalytics = page.waitForRequest(request => new URL(request.url()).pathname.endsWith('/api/analytics/events'));
   await page.getByRole('button', { name: '以访客进入' }).click();
   await page.getByText('访客浏览', { exact: true }).waitFor();
-  await page.waitForRequest(request => new URL(request.url()).pathname.endsWith('/api/analytics/events')).catch(() => {});
-  assert.ok(analyticsPortalTokens.length > 0 && analyticsPortalTokens.every(token => token === undefined), 'anonymous analytics omits the portal token');
+  await anonymousAnalytics;
+  assert.ok(analyticsPortalTokens.length > 0 && analyticsPortalTokens.filter(token => token !== undefined).length === 0, 'anonymous analytics omits the portal token');
   await page.getByRole('button', { name: '登录后收藏', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '未检测到天宫登录状态' }).waitFor();
   await page.goto(`${h.origin}/plaza/fixture/portal`);

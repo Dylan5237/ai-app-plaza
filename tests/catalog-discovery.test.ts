@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { sampleCatalog } from '../server/domain/service.js';
@@ -126,6 +127,7 @@ test('directory reads leave expired publication credentials to the scheduled cle
   t.after(() => h.close());
   const app = await seedTagCatalog(h.db, h.config.audience, ['MCP']);
   const entry = app.source.entries.find((item: any) => item.kind === 'agent');
+  assert.ok(entry, 'fixture includes an Agent entry');
   const publicationId = randomUUID();
   await h.db.query(`INSERT INTO publications(id,actor_id,idempotency_digest,request_hash,submission,status,candidate_app_id,
     token_ciphertext,token_iv,token_auth_tag,next_action,expires_at,created_at,updated_at)
