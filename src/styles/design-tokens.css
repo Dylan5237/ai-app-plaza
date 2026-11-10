@@ -1,5 +1,5 @@
 /* Public product tokens. Keep aligned with docs/design/plaza-ui-ux.md. */
-.plaza-public, body:has(.plaza-public){
+:root {
   --plaza-canvas:#f6f5f1;--plaza-surface:#ffffff;--plaza-ink:#202a3b;--plaza-text:#596477;--plaza-muted:#657085;--plaza-line:#e4e6ec;
   --plaza-brand:#3e58ce;--plaza-brand-soft:#edf0ff;--plaza-share:#ffc89b;--plaza-share-ink:#613215;
   --plaza-primary-button:var(--plaza-brand);

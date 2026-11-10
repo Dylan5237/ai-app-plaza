@@ -47,6 +47,6 @@ onMounted(async () => {
 .management-brand { display: flex; align-items: center; gap: 9px; color: #1f2c3d; font-size: 16px; font-weight: 650; text-decoration: none; }
 .management-brand img { width: 28px; height: 28px; }
 .management-context { padding-left: 16px; border-left: 1px solid #e4e8ef; color: #64748b; font-size: 14px; }
-.management-plaza-link { margin-left: auto; color: #165dff; font-size: 13px; text-decoration: none; }
+.management-plaza-link { margin-left: auto; color: var(--plaza-brand); font-size: 13px; text-decoration: none; }
 @media (max-width: 560px) { .management-topbar { gap: 10px; padding: 10px 14px; } .management-brand { font-size: 14px; } .management-context { padding-left: 10px; font-size: 12px; } .management-plaza-link { font-size: 12px; } }
 </style>

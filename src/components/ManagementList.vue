@@ -160,11 +160,11 @@ onUnmounted(() => { ++sequence; window.removeEventListener('focus', revalidateAc
 .management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .management-heading h1 { margin: 0 0 7px; color: #1f2c3d; font-size: 22px; }
 .management-heading p { margin: 0; color: var(--plaza-muted); font-size: 13px; line-height: 1.6; }
-.local-label { flex: none; padding: 5px 10px; border: 1px solid #dbe7ff; border-radius: 4px; background: #edf3ff; color: #165dff; font-size: 12px; }
+.local-label { flex: none; padding: 5px 10px; border: 1px solid #dbe7ff; border-radius: 4px; background: #edf3ff; color: var(--plaza-brand); font-size: 12px; }
 .management-heading-actions { display: flex; align-items: center; gap: 12px; }
 .management-tabs { display: flex; gap: 24px; margin-bottom: 16px; border-bottom: 1px solid #e2e7ee; }
 .management-tabs button { padding: 9px 0 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #667386; font-size: 14px; cursor: pointer; }
-.management-tabs button.active { border-bottom-color: #165dff; color: #165dff; font-weight: 600; }
+.management-tabs button.active { border-bottom-color: var(--plaza-brand); color: var(--plaza-brand); font-weight: 600; }
 .management-toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
 .management-toolbar :deep(.el-input) { width: 340px; max-width: 100%; }
 .management-toolbar :deep(.el-select) { width: 160px; }
@@ -178,7 +178,7 @@ onUnmounted(() => { ++sequence; window.removeEventListener('focus', revalidateAc
 .record-app { display: grid; gap: 3px; line-height: 20px; }
 .record-app strong, .record-name { color: #273449; font-size: 13px; font-weight: 600; }
 .record-name { width: fit-content; padding: 0; border: 0; background: transparent; line-height: 20px; text-align: left; cursor: pointer; }
-.record-name:hover { color: #165dff; }
+.record-name:hover { color: var(--plaza-brand); }
 .record-app span { color: var(--plaza-muted); font-size: 12px; }
 .management-actions { display: flex; gap: 12px; align-items: center; }
 .management-actions :deep(.el-button + .el-button) { margin-left: 0; }
