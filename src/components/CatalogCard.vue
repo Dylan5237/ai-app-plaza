@@ -114,7 +114,7 @@ function detail(event) {
 .card-detail:hover{color:#334ab4}
 .card-primary:disabled { color: #798595; cursor: not-allowed; }
 .card-entry-reason { margin: 16px auto 0; max-width:280px; padding:8px 10px; border-radius:8px; background:rgb(255 255 255 / 92%); color:#26364e; font-size: 11px; line-height: 1.5; text-align: center; }
-.app-title:focus-visible, button:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
+.app-title:focus-visible, button:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 @media (hover: none), (pointer: coarse) {
   .app-card { height: auto; min-height: var(--catalog-card-height); }
   .card-actions,.actions-open .card-actions { position: static; display: block; margin-top: 6px; padding-top: 4px; background: transparent; opacity: 1; transition:none; }

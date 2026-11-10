@@ -200,7 +200,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .wheel-hint { margin: 8px 0 0; color: var(--plaza-muted,#657085); font-size: 11px; text-align: center; }
 .random-state { padding: 80px 0; }
 .random-error { padding: 12px; color: #9b4d4d; background: #fff8f8; border-radius: 6px; font-size: 13px; }
-button:focus-visible, .wheel:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
+button:focus-visible, .wheel:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 @media (max-width: 620px) { .random-heading { align-items: flex-start; flex-direction: column; } .wheel-card { width: 86%; } }
 @media (hover: none), (pointer: coarse) { .wheel { height: 410px; }.wheel-hint{display:none} }
 @media (prefers-reduced-motion: reduce) { .wheel-card { will-change: auto; } }

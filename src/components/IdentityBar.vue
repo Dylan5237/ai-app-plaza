@@ -33,7 +33,7 @@ onMounted(initializeIdentity)
 .identity-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 14px; align-items: center; }
 small { color: var(--plaza-muted); margin-left: 6px; }
 button,a { min-height: 36px; box-sizing: border-box; display: inline-flex; align-items: center; border: 0; background: transparent; color: var(--plaza-brand); cursor: pointer; padding: 5px; font: inherit; text-decoration: none; }
-button:focus-visible { outline: 3px solid #c0cbff; outline-offset: 2px; }
+button:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 button:disabled { opacity: .5; cursor: default; }
 .identity-error { color: var(--plaza-danger); margin: 6px 0 0; text-align: right; }
 @media(pointer:coarse) { button,a { min-height: 44px; } }

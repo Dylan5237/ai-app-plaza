@@ -20,6 +20,6 @@ async function toggle() {
 .favorite-button { display: inline-flex; width: 44px; height: 44px; flex: none; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--plaza-line); border-radius: var(--plaza-control-radius); background: var(--plaza-surface); color: var(--plaza-muted); cursor: pointer; }
 .favorite-button:hover, .favorite-button.saved { color: var(--plaza-brand); background: var(--plaza-brand-soft); }
 .favorite-button.saved :deep(svg) { fill: currentColor; }
-.favorite-button:focus-visible { outline: 3px solid #c0cbff; outline-offset: 2px; }
+.favorite-button:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 .favorite-button:disabled { opacity: .55; cursor: wait; }
 </style>

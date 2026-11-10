@@ -81,7 +81,7 @@ function copySelectedExample() {
 .example-tabs { display: flex; min-width: 0; gap: 4px; margin-bottom: 10px; padding: 3px; overflow-x: auto; border-radius: 6px; background: #f0f3f7; scrollbar-width: thin; }
 .example-tabs button { min-width: 0; flex: 1 0 auto; max-width: 100%; padding: 6px 8px; overflow: hidden; border: 0; border-radius: 4px; background: transparent; color: #6b778a; font: inherit; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .example-tabs button[aria-selected="true"] { background: #fff; color: #355b9a; box-shadow: 0 1px 3px rgb(38 59 73 / 7%); }
-.example-tabs button:focus-visible, .copy-example-button:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
+.example-tabs button:focus-visible, .copy-example-button:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 .example-card { min-width: 0; padding: 12px 13px; border: 1px solid #e4e9f0; border-radius: 7px; background: #fff; overflow-wrap: anywhere; }
 .example-card + .example-card { margin-top: 8px; }
 .example-card h4 { margin: 0 0 8px; color: #47566a; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
