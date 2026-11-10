@@ -446,7 +446,7 @@ function appPath(id) { return `${props.management && props.managementEnabled ? '
 
 async function openApp(id, { fromHistory = false, entryContext = null, revalidating = false } = {}) {
   if (!id) return
-  primaryRequestSequence += 1
+  if (!revalidating) primaryRequestSequence += 1
   if (!props.management) {
     if (!detailVisible.value) {
       scrollPositions[discoveryTab.value] = shell()?.scrollTop || 0
@@ -460,19 +460,21 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
     }
   }
   const requestSequence = ++detailRequestSequence
-  instructionRequestSequence += 1
-  detailVisible.value = true
+  if (!revalidating) detailVisible.value = true
   clearExposureObserver()
-  detailDocumentsVisible.value = false
-  detailSourceVisible.value = false
-  instructionDialogVisible.value = false
   detailLoading.value = true
   detailError.value = ''
-  selectedApp.value = null
-  instruction.value = null
-  instructionLoading.value = false
-  instructionEntry.value = null
-  instructionError.value = ''
+  if (!revalidating) {
+    instructionRequestSequence += 1
+    detailDocumentsVisible.value = false
+    detailSourceVisible.value = false
+    instructionDialogVisible.value = false
+    selectedApp.value = null
+    instruction.value = null
+    instructionLoading.value = false
+    instructionEntry.value = null
+    instructionError.value = ''
+  }
   await nextTick()
   if (!props.management && !revalidating) { if (shell()) shell().scrollTop = 0; detailHeading.value?.focus() }
   try {
@@ -485,7 +487,15 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
       if (context) track('app_detail_viewed', eventAttributes({ entryContext: entryContext || (detailOriginUrl ? (query.value.trim() ? 'search_result' : 'card') : 'deep_link') }), { ...context, ...resultContext() })
     }
   } catch (error) {
-    if (requestSequence === detailRequestSequence) { detailError.value = errorText(error); if (!props.management) recordFailure('detail', error) }
+    if (requestSequence === detailRequestSequence) {
+      if ([401, 403, 404].includes(error.status)) {
+        selectedApp.value = null; detailDocumentsVisible.value = false; detailSourceVisible.value = false
+        closeAgentInstructions(); copyFallbackVisible.value = false; copyFallbackText.value = ''
+        if (shareAppId.value === id) { shareVisible.value = false; closeShareDialog() }
+      }
+      detailError.value = errorText(error)
+      if (!props.management) recordFailure('detail', error)
+    }
   } finally {
     if (requestSequence === detailRequestSequence) detailLoading.value = false
   }
@@ -552,12 +562,10 @@ function closeAgentInstructions() {
 
 function refreshVisibleAccess() {
   if (!identity.user || !identity.enabled) return
-  copyFallbackVisible.value = false; copyFallbackText.value = ''
-  if (shareVisible.value && shareAppId.value) closeShareDialog()
+  if (shareVisible.value && shareAppId.value) void openShareDialog(shareAppId.value, { revalidating: true })
   if (publicationId.value) { if (!publicationBusy.value) void loadPublication(); return }
   const appId = selectedApp.value?.id
-  if (detailVisible.value && appId) void openApp(appId, { fromHistory: true, revalidating: true })
-  else { closeAgentInstructions(); selectedApp.value = null }
+  if ((detailVisible.value || instructionDialogVisible.value) && appId) void openApp(appId, { fromHistory: true, revalidating: true })
   if (props.management) return
   void loadCatalog()
   if (discoveryTab.value === 'random') void loadRandom()
@@ -656,24 +664,27 @@ function closeShareDialog() {
   publicationFlowId = null
 }
 
-async function openShareDialog(appId = '') {
+async function openShareDialog(appId = '', { revalidating = false } = {}) {
   const sequence = ++contractRequestSequence
   shareAppId.value = appId
-  publicationFlowId = uuid()
+  if (!revalidating) publicationFlowId = uuid()
   shareVisible.value = true
   contractLoading.value = true
   contractError.value = ''
-  publishContract.value = null
+  if (!revalidating) publishContract.value = null
   try {
     const result = await apiRequest(appId ? `${appPath(appId)}/publish-contract` : '/api/publish-contract')
     if (sequence === contractRequestSequence) {
       publishContract.value = result
       await nextTick()
       const context = appId ? appEvent(selectedApp.value) : null
-      if (!props.management && publicationFlowId && (!appId || context)) track('publish_panel_viewed', eventAttributes({ publishKind: appId ? 'update' : 'new', placement: appId ? 'detail' : 'header' }), { flowId: publicationFlowId, ...(context || {}) })
+      if (!revalidating && !props.management && publicationFlowId && (!appId || context)) track('publish_panel_viewed', eventAttributes({ publishKind: appId ? 'update' : 'new', placement: appId ? 'detail' : 'header' }), { flowId: publicationFlowId, ...(context || {}) })
     }
   } catch (error) {
-    if (sequence === contractRequestSequence) contractError.value = errorText(error)
+    if (sequence === contractRequestSequence) {
+      contractError.value = errorText(error)
+      if (revalidating && [401, 403, 404].includes(error.status)) { shareVisible.value = false; closeShareDialog(); copyFallbackVisible.value = false; copyFallbackText.value = '' }
+    }
   } finally {
     if (sequence === contractRequestSequence) contractLoading.value = false
   }
@@ -1086,12 +1097,13 @@ onUnmounted(() => {
           <button v-if="props.management && selectedApp && !detailLoading && selectedApp.lifecycle?.status !== 'deleted'" type="button" class="detail-update-link" data-testid="publish-update" :disabled="!props.managementEnabled" @click="openShareDialog(selectedApp.id)">发布新版本</button>
         </div>
       </template>
-      <div v-if="detailLoading" class="dialog-state" role="status">正在读取应用详情…</div>
-      <div v-else-if="detailError" class="dialog-state is-error" role="alert">
-        <strong>应用详情暂时无法加载</strong>
+      <div v-if="detailLoading" class="dialog-state" role="status">{{ selectedApp ? '正在更新应用详情…' : '正在读取应用详情…' }}</div>
+      <div v-if="detailError" class="dialog-state is-error" role="alert">
+        <strong>{{ selectedApp ? '应用详情更新未完成' : '应用详情暂时无法加载' }}</strong>
         <p>{{ detailError }} 请返回刷新，查看当前可用的应用。</p>
+        <button v-if="selectedApp" class="secondary-button" @click="openApp(selectedApp.id, { fromHistory: true, revalidating: true })">重试</button>
       </div>
-      <div v-else-if="selectedApp" class="detail-layout" data-testid="app-detail">
+      <div v-if="selectedApp" class="detail-layout" data-testid="app-detail">
         <div class="detail-content-scroll">
           <AppDetailOverview
             :app="selectedApp"
@@ -1215,13 +1227,13 @@ onUnmounted(() => {
     </el-dialog>
 
     <el-dialog v-model="shareVisible" :title="shareAppId ? '发布新版本' : '分享我的AI应用'" width="min(720px, 92vw)" top="8vh" append-to-body data-testid="publish-contract-dialog" @close="closeShareDialog">
-      <div v-if="contractLoading" class="dialog-state" role="status">正在读取发布说明…</div>
-      <div v-else-if="contractError" class="dialog-state is-error" role="alert">
+      <div v-if="contractLoading" class="dialog-state" role="status">{{ publishContract ? '正在更新发布说明…' : '正在读取发布说明…' }}</div>
+      <div v-if="contractError" class="dialog-state is-error" role="alert">
         <strong>发布说明暂时无法加载</strong>
         <p>{{ contractError }}</p>
         <button class="secondary-button" @click="openShareDialog(shareAppId)">重试</button>
       </div>
-      <div v-else-if="publishContract" class="share-flow">
+      <div v-if="publishContract" class="share-flow">
         <p v-if="publishContract.updateTarget" class="share-intro" data-testid="update-target">
           {{ publishContract.updateTarget.name }} · 当前 {{ formatVersion(publishContract.updateTarget.version) }}<br>
           让项目 Agent 准备新版本，再由你预览确认。应用链接保持不变。

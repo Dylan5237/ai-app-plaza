@@ -30,22 +30,23 @@ const effect = computed(() => section.value === 'sharing'
       : `${scope.value === 'members' ? members.value.length + ' 位成员' : groups.value.length + ' 个小组的当前成员'}可浏览；分享不授予维护或转授权。收紧后旧链接与收藏重新核权。`
   : section.value === 'maintainers' ? '所选人员可维护此应用，不能继续委派或更改分享。移除后停止维护权限，独立的分享可见权限按原设置判断。'
     : '接收人接受前，负责人保持不变。接受后保留版本与分享；原负责人不自动保留维护权限，发布凭据需重新核对。')
-async function load() {
+async function load(revalidating = false) {
   const version = ++generation, id = props.appId
   if (!id) { current.value = null; return }
-  current.value = null
+  if (!revalidating) current.value = null
   loading.value = true
   try {
     const data = await apiRequest(`/api/access/apps/${id}`)
     const options = data.canShare ? await apiRequest(`/api/access/candidates?appId=${id}`) : { users: data.people, groups: data.groups }
     if (version !== generation || id !== props.appId) return
-    current.value = data; choices.value = options
-    scope.value = data.scope; members.value = [...data.member_ids]; groups.value = [...data.group_ids]; maintainers.value = [...data.maintainer_ids]; receiver.value = ''
-  } catch (err) { if (version === generation) { current.value = null; error.value = err.message } }
+    const preserveDraft = revalidating && current.value && changed.value && data.canShare
+    current.value = preserveDraft ? { ...data, revision: current.value.revision } : data; choices.value = options
+    if (!preserveDraft) { scope.value = data.scope; members.value = [...data.member_ids]; groups.value = [...data.group_ids]; maintainers.value = [...data.maintainer_ids]; receiver.value = '' }
+  } catch (err) { if (version === generation) { if ([401, 403, 404].includes(err.status)) current.value = null; error.value = err.message } }
   finally { if (version === generation) loading.value = false }
 }
 watch(() => props.appId, () => { pending = null; uncertain.value = false; error.value = ''; notice.value = ''; section.value = 'sharing'; load() }, { immediate: true })
-function revalidate() { if (props.appId && !busy.value && !uncertain.value) void load() }
+function revalidate() { if (props.appId && !busy.value && !uncertain.value) void load(true) }
 onMounted(() => window.addEventListener('focus', revalidate))
 onUnmounted(() => { generation++; window.removeEventListener('focus', revalidate) })
 async function save() {

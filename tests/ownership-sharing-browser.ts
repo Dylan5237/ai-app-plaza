@@ -59,6 +59,11 @@ try {
   await page.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor();
   await select(page, '分享范围', '指定小组');
   await select(page, '指定小组', '浏览器分享小组');
+  const focusSharing = page.waitForResponse(response => response.url().endsWith(`/api/access/apps/${target.appId}`));
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await focusSharing;
+  await page.locator('.application-access-dialog .el-loading-mask').waitFor({ state: 'hidden' });
+  assert.equal(await page.getByRole('combobox', { name: '分享范围', exact: true }).inputValue(), '指定小组', 'focus preserves the unsaved sharing choice');
   const sharingBodies: string[] = [];
   await page.route('**/api/access/apps/*/sharing', async route => {
     sharingBodies.push(route.request().postData()!);
