@@ -14,6 +14,8 @@ const documents = [
   'docs/integration/publishing.md',
   'docs/integration/tiangong-identity.md',
   'docs/integration/application-access.md',
+  'ops/tiangong/README.md',
+  'ops/trial/README.md',
   'docs/architecture/architecture.md',
   'docs/architecture/data-contract.md',
   'docs/architecture/decisions-2026-10-10.md',
