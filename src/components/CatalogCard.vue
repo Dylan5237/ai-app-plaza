@@ -95,7 +95,7 @@ function detail(event) {
 .app-author { max-width: 150px; overflow: hidden; color: var(--plaza-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap;;line-height:18px;}
 .app-dates { display: grid; gap: 2px; color: var(--plaza-muted); font-size: 11px; line-height:18px; text-align: right; white-space: nowrap; }
 @media (min-width: 761px) and (max-height: 800px) {
-  .app-card { padding: 8px 20px; }
+  .app-card { padding: 8px 20px 4px; }
   .app-summary { height: 22px; min-height: 22px; margin: 4px 0; -webkit-line-clamp: 1; }
   .app-card-footer { padding-top: 4px; margin-top: 4px; }
   .app-dates { gap: 0; }
