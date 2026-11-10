@@ -104,6 +104,16 @@ try {
   await page.unroute('**/api/apps?*');
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '目录服务暂不可用' }).waitFor({ state: 'hidden' });
+  await page.getByTestId('tab-random').click();
+  await page.getByTestId('wheel-current').waitFor();
+  await page.route('**/api/apps/random?*', route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'LOGIN_REQUIRED', message: '轮盘身份核验已失效' } }) }));
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '轮盘身份核验已失效' }).waitFor();
+  assert.equal(await page.getByTestId('catalog-wheel').count(), 0, 'confirmed authorization loss removes the previous random batch');
+  await page.unroute('**/api/apps/random?*');
+  await page.getByTestId('random-refresh').click();
+  await page.getByTestId('wheel-current').waitFor();
+  await page.getByTestId('tab-catalog').click();
   await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
   assert.equal(page.context().pages().length, 1, 'a favorite never opens a primary-entry window');
   await page.reload();

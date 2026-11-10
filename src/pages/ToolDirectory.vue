@@ -132,7 +132,10 @@ async function loadRandom() {
     randomLoaded = true
     void observeCards()
   } catch (error) {
-    if (sequence === randomRequestSequence) { randomError.value = errorText(error); recordFailure('random', error) }
+    if (sequence === randomRequestSequence) {
+      if ([401, 403].includes(error.status)) { randomItems.value = []; randomLoaded = false; randomAllShown.value = false; randomIndex.value = 0 }
+      randomError.value = errorText(error); recordFailure('random', error)
+    }
   } finally {
     if (sequence === randomRequestSequence) randomLoading.value = false
   }
