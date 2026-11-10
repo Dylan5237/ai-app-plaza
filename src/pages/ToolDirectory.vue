@@ -20,6 +20,7 @@ import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false } })
 const emit = defineEmits(['return'])
+let disposed = false
 defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel })
 
 const discoveryTab = ref('catalog')
@@ -603,9 +604,11 @@ async function copyAgentInstructions() {
   const entry = instructionEntry.value
   if (!entry || instructionLoading.value) return
   if (!props.management) await loadAgentInstructions(entry)
+  if (disposed) return
   if (instruction.value && instruction.value.distribution?.status !== 'disabled') {
     const app = selectedApp.value
     const copied = await copyText(instruction.value.text, '接入说明已复制')
+    if (disposed) return
     const context = appEvent(app), interactionId = uuid()
     if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'usage', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
   }
@@ -694,12 +697,14 @@ async function openShareDialog(appId = '', { revalidating = false } = {}) {
 async function copyPublishPrompt() {
   if (!publishContract.value?.prompt) return
   const copied = await copyText(publishContract.value.prompt, shareAppId.value ? '更新任务已复制' : '发布任务已复制')
+  if (disposed) return
   const interactionId = uuid()
   if (!props.management && publicationFlowId && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: shareAppId.value ? 'update' : 'publish', result: copied ? 'success' : 'failure' }), { flowId: publicationFlowId, interactionId })
 }
 async function copyExample(text) {
   const app = selectedApp.value
   const copied = await copyText(text, '示例任务已复制')
+  if (disposed) return
   const context = appEvent(app), interactionId = uuid()
   if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'example', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
 }
@@ -879,6 +884,11 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  catalogRequestSequence += 1
+  detailRequestSequence += 1
+  instructionRequestSequence += 1
+  contractRequestSequence += 1
   publicationRequestSequence += 1
   primaryRequestSequence += 1
   randomRequestSequence += 1
@@ -890,7 +900,9 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   clearExposureObserver()
   layoutObserver?.disconnect()
+  tagObserver?.disconnect()
   cancelAnimationFrame(layoutFrame)
+  cancelAnimationFrame(tagFrame)
 })
 </script>
 
