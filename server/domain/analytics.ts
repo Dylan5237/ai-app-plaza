@@ -3,6 +3,7 @@ import type { Database } from './database.js';
 import type { Config } from '../config.js';
 import { DomainError } from './errors.js';
 import { catalogTags, EFFECTIVE_TAGS, TAG_OVERRIDE_JOIN } from './tags.js';
+import { appAccessPredicate } from './app-access.js';
 import { randomUUID } from 'node:crypto';
 
 const id = z.string().uuid();
@@ -80,7 +81,8 @@ export async function recordBrowserEvent(db: Database, config: Config, input: un
       JOIN published_snapshots s ON s.id=$2 AND s.app_id=a.id
       LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id
       ${TAG_OVERRIDE_JOIN}
-      WHERE a.id=$1 AND s.audience=$3 AND COALESCE(l.status,'published')='published'`, [event.appId, event.snapshotId, config.audience]);
+      WHERE a.id=$1 AND s.audience=$3 AND COALESCE(l.status,'published')='published'
+        AND ${appAccessPredicate('$4::uuid')}`, [event.appId, event.snapshotId, config.audience, viewerId ?? null]);
     const row = result.rows[0];
     if (!row) throw new DomainError(404, 'NOT_FOUND', '未找到请求的资源');
     const manifest = typeof row.manifest === 'string' ? JSON.parse(row.manifest) : row.manifest;
