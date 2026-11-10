@@ -48,6 +48,9 @@ try {
   assert.equal(await page.getByText('测试公开应用').count(),1,'transient failure keeps the last successful result');
   fail=false;
   await page.setViewportSize({width:390,height:844});
+  assert.equal(await page.locator('.legend').isVisible(),true,'mobile retains the named trend series');
+  assert.ok((await page.locator('.legend').boundingBox())!.height <= 36,'legend labels remain readable instead of wrapping one character per line');
+  assert.ok(await page.locator('.chart polyline').nth(1).getAttribute('stroke-dasharray'),'the second series has a non-color distinction');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'mobile page must not overflow horizontally');
   await page.screenshot({path:'artifacts/operations-dashboard-mobile.png',fullPage:true});
   deny=true;
