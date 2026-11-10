@@ -63,7 +63,7 @@ try {
   await page.evaluate(() => dispatchEvent(new Event('focus')));
   await focusSharing;
   await page.locator('.application-access-dialog .el-loading-mask').waitFor({ state: 'hidden' });
-  assert.equal(await page.getByRole('combobox', { name: '分享范围', exact: true }).inputValue(), '指定小组', 'focus preserves the unsaved sharing choice');
+  await page.locator('.application-access-dialog .el-form-item').filter({ hasText: '谁可以浏览' }).getByText('指定小组', { exact: true }).waitFor();
   const sharingBodies: string[] = [];
   await page.route('**/api/access/apps/*/sharing', async route => {
     sharingBodies.push(route.request().postData()!);
@@ -109,6 +109,12 @@ try {
   await page.getByText('交接请求已发送，等待接收人接受。', { exact: true }).waitFor();
   await page.getByRole('dialog', { name: '应用归属与权限' }).getByRole('button', { name: '关闭', exact: true }).click();
   await receiver.getByRole('link', { name: '负责人交接', exact: true }).click();
+  await page.getByRole('link', { name: '负责人交接', exact: true }).click();
+  await page.getByRole('button', { name: '取消交接', exact: true }).click();
+  const cancelConfirmation = page.getByRole('dialog', { name: '取消负责人交接', exact: true });
+  await cancelConfirmation.waitFor();
+  assert.match(await cancelConfirmation.innerText(), /取消后负责人.*保持不变.*重新发起/);
+  await cancelConfirmation.getByRole('button', { name: '返回', exact: true }).click();
   await receiver.getByRole('button', { name: '接受负责人职责', exact: true }).click();
   const transferConfirmation = receiver.getByRole('dialog', { name: '接受负责人职责', exact: true });
   await transferConfirmation.waitFor();
