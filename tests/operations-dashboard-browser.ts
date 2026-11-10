@@ -51,6 +51,7 @@ try {
   assert.equal(await page.locator('.legend').isVisible(),true,'mobile retains the named trend series');
   assert.ok((await page.locator('.legend').boundingBox())!.height <= 36,'legend labels remain readable instead of wrapping one character per line');
   assert.ok(await page.locator('.chart polyline').nth(1).getAttribute('stroke-dasharray'),'the second series has a non-color distinction');
+  assert.equal(new Set(await page.locator('.legend i').evaluateAll((marks: Element[]) => marks.map(mark => getComputedStyle(mark).borderTopStyle))).size,2,'legend markers map each series through a distinct line pattern');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'mobile page must not overflow horizontally');
   await page.screenshot({path:'artifacts/operations-dashboard-mobile.png',fullPage:true});
   deny=true;
