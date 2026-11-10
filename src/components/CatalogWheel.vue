@@ -194,12 +194,12 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .wheel-card :deep(.app-card) { --catalog-card-height: 290px; }
 .side-select { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
 .wheel-controls, .wheel-dots { display: flex; justify-content: center; align-items: center; gap: 12px; }
-.wheel-dots button { width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 50%; background: #d3dce9; border-color: transparent; }
+.wheel-dots button { width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 50%; background: var(--plaza-line); border-color: transparent; }
 .wheel-dots button[aria-pressed=true] { background: var(--plaza-brand); }
 .wheel-status, .random-state { color: var(--plaza-muted); font-size: 13px; text-align: center; }
 .wheel-hint { margin: 8px 0 0; color: var(--plaza-muted,#657085); font-size: 11px; text-align: center; }
 .random-state { padding: 80px 0; }
-.random-error { padding: 12px; color: #9b4d4d; background: #fff8f8; border-radius: 6px; font-size: 13px; }
+.random-error { padding: 12px; color: var(--plaza-danger); background: #fff8f8; border-radius: 6px; font-size: 13px; }
 button:focus-visible, .wheel:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 @media (max-width: 620px) { .random-heading { align-items: flex-start; flex-direction: column; } .wheel-card { width: 86%; } }
 @media (hover: none), (pointer: coarse) { .wheel { height: 410px; }.wheel-hint{display:none} }

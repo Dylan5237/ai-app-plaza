@@ -156,13 +156,13 @@ async function save() {
 
 <style scoped>
 .metadata-content { min-height: 160px; max-height: 64vh; overflow-y: auto; padding: 0 4px; }
-.editor-context { margin: 0 0 8px; color: #39485b; font-weight: 600; }
-.editor-note { margin: 0 0 16px; color: #69788a; font-size: 13px; line-height: 1.7; }
+.editor-context { margin: 0 0 8px; color: var(--plaza-ink); font-weight: 600; }
+.editor-note { margin: 0 0 16px; color: var(--plaza-muted); font-size: 13px; line-height: 1.7; }
 .editor-alert { margin-bottom: 14px; }
 .editor-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
 .editor-author { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end; }
 .editor-author > .el-button { margin-bottom: 18px; }
-.editor-example { margin-bottom: 18px; padding: 14px; border: 1px solid #e4e8ef; border-radius: 4px; }
+.editor-example { margin-bottom: 18px; padding: 14px; border: 1px solid var(--plaza-line); border-radius: 4px; }
 .metadata-content :deep(.el-select) { width: 100%; }
 @media (max-width: 650px) { .editor-grid, .editor-author { grid-template-columns: 1fr; gap: 0; } }
 </style>
