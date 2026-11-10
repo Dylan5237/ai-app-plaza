@@ -480,7 +480,13 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
   try {
     const result = await apiRequest(appPath(id))
     if (requestSequence !== detailRequestSequence) return
+    const snapshotChanged = selectedApp.value?.snapshotId !== result.snapshotId
     selectedApp.value = result
+    if (revalidating && snapshotChanged && instructionDialogVisible.value && instructionEntry.value) {
+      const entry = result.manifest.entries.find(item => item.id === instructionEntry.value.id && item.kind === 'agent')
+      if (entry) void loadAgentInstructions(entry, { revalidating: true })
+      else closeAgentInstructions()
+    }
     await nextTick()
     if (!props.management && !revalidating && requestSequence === detailRequestSequence && detailVisible.value) {
       const context = appEvent(result)
@@ -571,14 +577,14 @@ function refreshVisibleAccess() {
   if (discoveryTab.value === 'random') void loadRandom()
 }
 
-async function loadAgentInstructions(entry) {
+async function loadAgentInstructions(entry, { revalidating = false } = {}) {
   if (!selectedApp.value?.id || !entry?.id) return
   const requestSequence = ++instructionRequestSequence
   const appId = selectedApp.value.id
   const entryId = entry.id
   instructionEntry.value = entry
   instructionDialogVisible.value = true
-  instruction.value = null
+  if (!revalidating) instruction.value = null
   instructionError.value = ''
   instructionLoading.value = true
   try {
@@ -1165,9 +1171,9 @@ onUnmounted(() => {
       <div class="agent-instruction-dialog-body" data-testid="agent-instruction-content">
         <p class="agent-upgrade-intro">交给 Agent 检查本地版本：未安装则安装，已有旧版则按指引升级，并保留配置与本地修改。</p>
         <p v-if="instructionEntry?.compatibility" class="instruction-compatibility">兼容信息：{{ instructionEntry.compatibility }}</p>
-        <p v-if="instructionLoading" class="instruction-state" role="status">正在读取作者接入说明…</p>
-        <p v-else-if="instructionError" class="instruction-state is-error" role="alert">{{ instructionError }}</p>
-        <template v-else-if="instruction">
+        <p v-if="instructionLoading" class="instruction-state" role="status">{{ instruction ? '正在更新作者接入说明…' : '正在读取作者接入说明…' }}</p>
+        <p v-if="instructionError" class="instruction-state is-error" role="alert">{{ instructionError }}</p>
+        <template v-if="instruction">
           <p v-if="instruction.compatibility && instruction.compatibility !== instructionEntry?.compatibility" class="instruction-compatibility">
             兼容信息：{{ typeof instruction.compatibility === 'string' ? instruction.compatibility : JSON.stringify(instruction.compatibility) }}
           </p>

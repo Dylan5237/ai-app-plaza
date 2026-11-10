@@ -73,6 +73,7 @@ try {
   await page.getByRole('button', { name: '← 返回我的收藏', exact: true }).waitFor();
   await page.getByTestId('use-agent').click();
   await page.getByTestId('agent-instruction-content').waitFor();
+  await page.locator('.instruction-markdown').waitFor();
   const beforeFocus = await page.getByTestId('agent-instruction-content').innerText();
   let releaseDetail: (() => void) | undefined;
   const detailGate = new Promise<void>(resolve => { releaseDetail = resolve; });
