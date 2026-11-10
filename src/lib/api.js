@@ -58,7 +58,7 @@ export async function apiRequest(path, { method = 'GET', body, token, idempotenc
 
   if (!response.ok) {
     if (payload?.error?.code === 'ADMINISTRATOR_REQUIRED') window.dispatchEvent(new Event('plaza-capabilities-changed'))
-    if (identityEpoch === portalRequestEpoch && portalToken === readPortalToken() && path !== '/api/auth/me' && protectedPath && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED', 'IDENTITY_UNAVAILABLE'].includes(payload?.error?.code)) {
+    if (identityEpoch === portalRequestEpoch && portalToken === readPortalToken() && path !== '/api/auth/me' && protectedPath && response.status < 500 && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED'].includes(payload?.error?.code)) {
       window.dispatchEvent(new CustomEvent('plaza-identity-invalid', { detail: { message: payload?.error?.message || '身份核验未完成，请重试。', code: payload?.error?.code } }))
     }
     throw new ApiError(

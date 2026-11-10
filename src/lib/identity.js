@@ -83,8 +83,13 @@ async function refreshIdentity() {
     if (current === generation && token === readPortalToken()) {
       if (['administrator','superAdministrator','identityAdmin'].some(key => identity.user[key] !== result.user[key])) { advanceIdentityRequests(); identity.epoch++ }
       identity.user = result.user
+      identity.error = ''
     }
-  } catch (error) { if (current === generation) failed(error) }
+  } catch (error) {
+    if (current !== generation || token !== readPortalToken()) return
+    if (error.status === 401 || error.status === 403 || error.code === 'ACCOUNT_SWITCH_REQUIRED') failed(error)
+    else identity.error = error.message
+  }
 }
 window.addEventListener('focus', refreshIdentity)
 window.addEventListener('plaza-capabilities-changed', refreshIdentity)

@@ -28,6 +28,18 @@ try {
   await page.goto(`${h.origin}/plaza/fixture/portal`);
   await page.getByRole('button', { name: '以测试名册管理员进入' }).click();
   await page.getByRole('button', { name: '成员与小组' }).waitFor();
+  await page.route('**/api/auth/me', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'IDENTITY_UNAVAILABLE', message: '身份服务暂不可用' } }) }));
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '身份服务暂不可用' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '退出广场', exact: true }).count(), 1, 'upstream outage does not sign the user out');
+  await page.unroute('**/api/auth/me');
+  await page.route('**/api/auth/me', route => route.abort('failed'));
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '暂时无法连接应用广场服务' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '退出广场', exact: true }).count(), 1, 'network failure preserves the verified session');
+  await page.unroute('**/api/auth/me');
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '暂时无法连接应用广场服务' }).waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
   assert.equal(page.context().pages().length, 1, 'a favorite never opens a primary-entry window');
   await page.reload();
