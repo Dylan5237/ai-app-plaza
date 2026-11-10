@@ -91,14 +91,15 @@ try {
   const beforeFocus = await page.getByTestId('agent-instruction-content').innerText();
   let releaseDetail: (() => void) | undefined;
   const detailGate = new Promise<void>(resolve => { releaseDetail = resolve; });
-  await page.route(`**/api/apps/${registered.appId}`, async route => { await detailGate; await route.continue(); });
+  await page.route(`**/api/apps/${registered.appId}`, async route => { await detailGate; await route.continue(); }, { times: 1 });
   const refreshingDetail = page.waitForRequest(`**/api/apps/${registered.appId}`);
   await page.evaluate(() => dispatchEvent(new Event('focus')));
   await refreshingDetail;
   assert.equal(await page.getByTestId('app-detail').count(), 1, 'background permission check keeps the detail');
   assert.equal(await page.getByTestId('agent-instruction-content').innerText(), beforeFocus, 'focus preserves the active Agent instructions');
+  const refreshedDetail = page.waitForResponse(`**/api/apps/${registered.appId}`);
   releaseDetail!();
-  await page.unroute(`**/api/apps/${registered.appId}`);
+  await refreshedDetail;
   await page.keyboard.press('Escape');
   await page.getByTestId('agent-instruction-dialog').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '← 返回我的收藏', exact: true }).click();
