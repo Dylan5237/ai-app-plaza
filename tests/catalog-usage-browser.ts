@@ -518,10 +518,12 @@ try {
   await page.getByTestId('wheel-current').waitFor();
   await page.waitForLoadState('networkidle');
   const wheel = page.getByTestId('catalog-wheel');
-  assert.equal(await wheel.locator('.wheel-dots button').evaluateAll(buttons => buttons.every(button => {
+  const wheelDots = page.getByTestId('random-discovery').locator('.wheel-dots button');
+  assert.equal(await wheelDots.count(), 6);
+  assert.equal(await wheelDots.evaluateAll(buttons => buttons.every(button => {
     const box = button.getBoundingClientRect(); return box.width >= 24 && box.height >= 24;
   })), true, 'wheel selectors have at least a 24px target');
-  assert.ok(await wheel.locator('.wheel-dots button[aria-pressed="true"]').evaluate(button => parseFloat(getComputedStyle(button).outlineWidth) >= 2), 'the current wheel item has a shape cue beyond color');
+  assert.ok(await page.getByTestId('random-discovery').locator('.wheel-dots button[aria-pressed="true"]').evaluate(button => parseFloat(getComputedStyle(button).outlineWidth) >= 2), 'the current wheel item has a shape cue beyond color');
   const batchIds = () => wheel.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
   const refreshRandom = async () => {
     const response = page.waitForResponse((res: any) => new URL(res.url()).pathname === '/api/apps/random');
