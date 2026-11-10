@@ -172,6 +172,7 @@ async function usePrimary(app) {
     }
   } catch (error) {
     tab?.close()
+    if (disposed || sequence !== primaryRequestSequence) return
     ElMessage.error(errorText(error))
     if (error?.status === 404) await openApp(app.id)
   }
@@ -615,15 +616,17 @@ async function copyAgentInstructions() {
 }
 
 async function copyText(text, successMessage) {
-  if (!text) return false
+  if (!text || disposed) return false
   try {
     if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
     await navigator.clipboard.writeText(text)
+    if (disposed) return false
     ElMessage.success(successMessage)
     return true
   } catch {
     // Continue to the legacy copy path for HTTP intranet pages without Clipboard API access.
   }
+  if (disposed) return false
 
   let copied = false
   const temporary = document.createElement('textarea')
@@ -643,6 +646,7 @@ async function copyText(text, successMessage) {
     temporary.remove()
   }
 
+  if (disposed) return false
   if (copied) {
     ElMessage.success(successMessage)
     return true
@@ -650,6 +654,7 @@ async function copyText(text, successMessage) {
     copyFallbackText.value = String(text)
     copyFallbackVisible.value = true
     await nextTick()
+    if (disposed) return false
     selectManualCopyText()
     ElMessage.warning('自动复制不可用，已选中文本，请按 Ctrl+C 复制。')
     return false

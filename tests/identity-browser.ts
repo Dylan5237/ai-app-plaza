@@ -26,10 +26,26 @@ await page.addInitScript({ content: `(() => {
     observe(target, options) { this.audit.directory ||= target.matches('.directory-main,.catalog-section,.tag-filter-row'); this.audit.disconnected = false; super.observe(target, options); }
     disconnect() { this.audit.disconnected = true; super.disconnect(); }
   };
+  const nativeFetch = window.fetch.bind(window);
+  const reads = []; window.__plazaCatalogReads = reads;
+  window.fetch = (input, options) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (!url.pathname.endsWith('/api/apps')) return nativeFetch(input, options);
+    const read = { finished: false }; reads.push(read);
+    return nativeFetch(input, options).then(response => {
+      const json = response.json.bind(response);
+      response.json = (...args) => json(...args).finally(() => { read.finished = true; });
+      return response;
+    }, error => { read.finished = true; throw error; });
+  };
 })();` });
 const analyticsPortalTokens: (string | undefined)[] = [];
+let observedFailureEvents = 0;
 page.on('request', request => {
-  if (new URL(request.url()).pathname.endsWith('/api/analytics/events')) analyticsPortalTokens.push(request.headers()['x-plaza-portal-token']);
+  if (new URL(request.url()).pathname.endsWith('/api/analytics/events')) {
+    analyticsPortalTokens.push(request.headers()['x-plaza-portal-token']);
+    if (request.postDataJSON()?.eventName === 'portal_operation_failed') observedFailureEvents++;
+  }
 });
 page.on('pageerror', error => errors.push(error.message));
 try {
@@ -171,6 +187,8 @@ try {
   await page.screenshot({ path: 'artifacts/identity-groups.png', fullPage: true });
   await page.getByRole('button', { name: '返回应用广场' }).click();
   const oldObserverCount = await page.evaluate(() => (window as any).__plazaResizeAudit.length);
+  const oldReadIndex = await page.evaluate(() => (window as any).__plazaCatalogReads.length);
+  const priorFailureRequests = observedFailureEvents;
   const priorFailures = Number((await h.db.query("SELECT count(*) AS n FROM analytics_events WHERE event_name='portal_operation_failed'")).rows[0].n);
   let releaseOldCatalog: (() => void) | undefined, catalogPrepared: (() => void) | undefined;
   const oldCatalogGate = new Promise<void>(resolve => { releaseOldCatalog = resolve; });
@@ -192,8 +210,9 @@ try {
   assert.equal(activeOldObservers, 0, 'all observers for the old directory disconnect on identity remount');
   const oldCatalogResponse = page.waitForResponse(response => response.url() === heldRequest.url());
   releaseOldCatalog!(); await (await oldCatalogResponse).finished();
-  await page.waitForLoadState('networkidle');
+  await page.waitForFunction((index: number) => (window as any).__plazaCatalogReads[index]?.finished, oldReadIndex);
   await page.unroute('**/api/apps?*');
+  assert.equal(observedFailureEvents, priorFailureRequests, 'the unmounted component sends no stale failure event after consuming its response');
   assert.equal(Number((await h.db.query("SELECT count(*) AS n FROM analytics_events WHERE event_name='portal_operation_failed'")).rows[0].n), priorFailures, 'a response to an unmounted directory produces no failure telemetry');
   await page.reload();
   await page.getByRole('button', { name: '使用天宫身份登录' }).waitFor();
