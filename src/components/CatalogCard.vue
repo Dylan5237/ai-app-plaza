@@ -4,6 +4,7 @@ import AppEmblem from './AppEmblem.vue'
 import FavoriteButton from './FavoriteButton.vue'
 import PlatformOpenButton from './PlatformOpenButton.vue'
 import { appFormats, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
+import { formatDate } from '../lib/date.ts'
 const props = defineProps({ app: { type: Object, required: true }, selectedTags: { type: Array, default: () => [] } })
 const emit = defineEmits(['detail', 'primary', 'tag'])
 const action = computed(() => primaryAction(props.app))
@@ -29,7 +30,7 @@ const author = computed(() => {
 })
 function date(value) {
   const parsed = new Date(value)
-  return !value || Number.isNaN(parsed.getTime()) ? '未登记' : new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed).replaceAll('/', '-')
+  return !value || Number.isNaN(parsed.getTime()) ? '未登记' : formatDate(parsed)
 }
 function detail(event) {
   if (event.target.closest('button, a') && !event.target.closest('.app-title')) return

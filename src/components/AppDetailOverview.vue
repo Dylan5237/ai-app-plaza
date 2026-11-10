@@ -1,4 +1,5 @@
 <script setup>
+import { formatDate } from '../lib/date.ts'
 import { computed } from 'vue'
 
 const props = defineProps({
@@ -70,12 +71,6 @@ function labelOf(value) {
   return value.name || value.displayName || value.label || ''
 }
 
-function formatDate(value) {
-  if (!value) return '未登记'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return String(value)
-  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed)
-}
 
 function formatVersion(value) {
   if (value === null || value === undefined || value === '') return ''

@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, toRefs, watch } from '
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import ListPagination from './ListPagination.vue'
+import { formatDateTime } from '../lib/date.ts'
 
 const emit = defineEmits(['open-app', 'open-update', 'open-publication', 'open-editor', 'open-create', 'open-access'])
 const props = defineProps({ state: { type: Object, required: true }, managementEnabled: { type: Boolean, default: false }, managementMode: { type: String, default: 'disabled' } })
@@ -27,7 +28,7 @@ const description = computed(() => ({
   trash: '删除的应用保留源码与历史版本，恢复后保持下架状态。',
 })[view.value])
 const stageLabels = { prepared: '上传已占位', project_ready: '项目已准备', commit_ready: '源码已上传', tag_ready: '版本已创建', release_ready: '正在生成预览', submitted: '预览已生成' }
-function date(value) { if (!value) return '—'; const d = new Date(value); return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN', { hour12: false }) }
+function date(value) { return formatDateTime(value) }
 function name(row) { return row.manifest?.name || row.name || row.appKey || '待核验应用' }
 function key(row) { return row.manifest?.appKey || row.appKey || '' }
 function authors(row) { const list = row.manifest?.maintainers || row.maintainers || []; return list.map(item => typeof item === 'string' ? item : item.name).filter(Boolean).join('、') || '待资料就绪' }

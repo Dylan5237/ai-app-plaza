@@ -1,4 +1,5 @@
 <script setup>
+import { formatDate } from '../lib/date.ts'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElDialog, ElMessage, ElPopover } from 'element-plus'
 import PlazaIcon from '../components/PlazaIcon.vue'
@@ -300,12 +301,6 @@ function formatVersion(value) {
   return /^\d/.test(version) ? `v${version}` : version
 }
 
-function formatDate(value) {
-  if (!value) return '未登记'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return String(value)
-  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed)
-}
 
 async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' } = {}) {
   const requestSequence = ++catalogRequestSequence
