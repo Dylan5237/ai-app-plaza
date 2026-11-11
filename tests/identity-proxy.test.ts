@@ -7,13 +7,34 @@ test('pending login slots use the trusted client bucket without storing source a
   const h = await startIdentityHarness('/plaza', { trustedProxyIp: '127.0.0.1' }); t.after(h.close);
   const challenge = (client: string) => h.app.inject({ method: 'POST', url: '/plaza/api/auth/tiangong/requests',
     remoteAddress: '127.0.0.1', headers: h.headers({ 'x-real-ip': client }), payload: {} });
-  for (let i = 0; i < 20; i++) assert.equal((await challenge('198.51.100.60')).statusCode, 200);
+  const simultaneous = await Promise.all(Array.from({ length: 25 }, () => challenge('198.51.100.60')));
+  assert.equal(simultaneous.filter(response => response.statusCode === 200).length, 20);
+  assert.equal(simultaneous.filter(response => response.statusCode === 429 && response.json().error.code === 'LOGIN_RATE_LIMITED').length, 5);
   assert.equal((await challenge('198.51.100.60')).statusCode, 429);
   assert.equal((await challenge('198.51.100.61')).statusCode, 200, 'one client cannot consume another client quota');
   const rows = (await h.db.query('SELECT client_hash FROM plaza_login_requests')).rows;
   assert.equal(new Set(rows.map(row => row.client_hash)).size, 2);
   assert.ok(rows.every(row => /^[a-f0-9]{64}$/.test(row.client_hash)));
   assert.equal(JSON.stringify(rows).includes('198.51.100.'), false);
+  const unidentified = await Promise.all(Array.from({ length: 25 }, () => challenge('invalid')));
+  assert.ok(unidentified.every(response => response.statusCode === 200), 'an unusable proxy client address falls back to global capacity');
+});
+
+test('unconfigured proxy or NAT uses only the global pending-login cap, including concurrent reservations', async t => {
+  const h = await startIdentityHarness('/plaza'); t.after(h.close);
+  const challenge = (client: string) => h.app.inject({ method: 'POST', url: '/plaza/api/auth/tiangong/requests',
+    remoteAddress: '127.0.0.1', headers: h.headers({ 'x-real-ip': client }), payload: {} });
+  const burst = await Promise.all(Array.from({ length: 30 }, (_, index) => challenge(`198.51.100.${index + 1}`)));
+  assert.ok(burst.every(response => response.statusCode === 200), 'a shared socket address is not a twenty-request site-wide cap');
+  const rows = (await h.db.query('SELECT client_hash FROM plaza_login_requests')).rows;
+  assert.ok(rows.every(row => row.client_hash === ''), 'untrusted forwarding headers do not identify clients');
+  await h.db.query('DELETE FROM plaza_login_requests');
+  await h.db.query(`INSERT INTO plaza_login_requests(id_hash,browser_hash,expires_at,client_hash)
+    SELECT 'seed-'||n,'browser-'||n,now()+interval '120 seconds','' FROM generate_series(1,999) AS gs(n)`);
+  const final = await Promise.all([challenge('198.51.100.1'), challenge('198.51.100.2')]);
+  assert.equal(final.filter(response => response.statusCode === 200).length, 1);
+  assert.equal(final.find(response => response.statusCode === 429)!.json().error.code, 'LOGIN_BUSY');
+  assert.equal(Number((await h.db.query('SELECT count(*) AS n FROM plaza_login_requests')).rows[0].n), 1000);
 });
 
 test('Tiangong clients behind an explicitly trusted proxy have independent limits for public and protected requests', async t => {

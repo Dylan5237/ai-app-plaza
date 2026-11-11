@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, createHmac } from 'node:crypto';
-import { publicClientRateKey } from './public-origins.js';
+import { trustedProxyClientRateKey } from './public-origins.js';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Database } from './domain/database.js';
@@ -43,7 +43,8 @@ export async function registerIdentity(app: FastifyInstance, config: Config, db:
   app.post('/api/auth/tiangong/requests', async (request, reply) => {
     sameOrigin(request);
     z.object({}).strict().parse(request.body ?? {});
-    const clientHash = createHmac('sha256', config.secret).update('plaza-login-client\0').update(publicClientRateKey(config, request)).digest('hex');
+    const clientKey = trustedProxyClientRateKey(config, request);
+    const clientHash = clientKey ? createHmac('sha256', config.secret).update('plaza-login-client\0').update(clientKey).digest('hex') : undefined;
     const result = await service.challenge(clientHash);
     setCookie(reply, REQUEST, result.browserSecret, 120);
     return { requestId: result.requestId };

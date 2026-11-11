@@ -59,10 +59,19 @@ export function publicOriginForRequest(config: PublicOrigins, request: IngressRe
   return httpsClientIp(config, request) ? config.httpsOrigin : undefined;
 }
 
-/** Keep rate-limit's existing IPv4 / IPv4-mapped and IPv6 /64 bucket semantics. */
-export function publicClientRateKey(config: PublicOrigins, request: IngressRequest): string {
-  const ip = proxyClientIp(config, request) || httpsClientIp(config, request) || request.ip;
+function clientRateKey(ip: string): string {
   if (isIP(ip) !== 6) return ip.toLowerCase();
   const address = new Address6(ip);
   return address.isMapped4() ? address.to4().correctForm() : new Address6(`${ip}/64`).startAddress().correctForm();
+}
+
+/** Login capacity uses a client bucket only when an explicitly trusted peer supplies a valid address. */
+export function trustedProxyClientRateKey(config: PublicOrigins, request: IngressRequest): string | undefined {
+  const ip = proxyClientIp(config, request);
+  return ip ? clientRateKey(ip) : undefined;
+}
+
+/** Keep rate-limit's existing IPv4 / IPv4-mapped and IPv6 /64 bucket semantics. */
+export function publicClientRateKey(config: PublicOrigins, request: IngressRequest): string {
+  return clientRateKey(proxyClientIp(config, request) || httpsClientIp(config, request) || request.ip);
 }
