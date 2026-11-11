@@ -66,10 +66,12 @@ function updatePageSize(reload = true) {
   const header = records.value.querySelector('.el-table__header-wrapper')
   // Reserve the horizontal scrollbar as well as the table heading and pager.
   const available = records.value.clientHeight - footer.value.offsetHeight - (header?.offsetHeight || 40) - 14
+  if (available <= 0) return
   const capacity = Math.max(1, Math.min(20, Math.floor(available / 64)))
   if (capacity === pageSize.value) return
   pageSize.value = capacity
-  page.value = 1
+  // Keep the current page across remounts and layout settling. View, query and
+  // filter changes reset it explicitly; an out-of-range page is clamped after load.
   if (reload) load()
 }
 function scheduleLayout() {

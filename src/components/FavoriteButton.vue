@@ -18,8 +18,9 @@ async function toggle() {
   </button>
 </template>
 <style scoped>
-.favorite-button { display: inline-flex; width: 30px; height: 30px; flex: none; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #8a93a2; cursor: pointer; transition: color .12s, background .12s; }
+.favorite-button { position: relative; display: inline-flex; width: 30px; height: 30px; flex: none; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #8a93a2; cursor: pointer; transition: color .12s, background .12s; }
 .favorite-button :deep(svg) { width: 17px; height: 17px; }
+@media (pointer: coarse) { .favorite-button { width: 44px; height: 44px; margin: -7px -7px -7px 0; } }
 .favorite-button:hover { color: var(--plaza-brand); background: var(--plaza-brand-soft); }
 .favorite-button.saved { color: var(--plaza-brand); }
 .favorite-button.saved :deep(svg) { fill: #d0d9ff; stroke: var(--plaza-brand); }

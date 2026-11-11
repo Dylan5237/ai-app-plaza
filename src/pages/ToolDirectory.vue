@@ -112,12 +112,25 @@ let primaryRequestSequence = 0
 
 function shell() { return directoryMain.value?.closest('.directory-shell') }
 
-async function selectDiscovery(tab) {
+async function selectDiscovery(tab, { syncUrl = true } = {}) {
   if (!['catalog', 'random'].includes(tab)) return
   scrollPositions[discoveryTab.value] = shell()?.scrollTop || 0
+  if (detailVisible.value) closeDetail()
   discoveryTab.value = tab
   emit('discover', tab)
+  if (syncUrl) {
+    const url = new URL(location.href)
+    if (tab === 'random') url.searchParams.set('discover', 'random')
+    else url.searchParams.delete('discover')
+    url.searchParams.delete('app')
+    url.hash = ''
+    history.replaceState(history.state, '', url)
+  }
   await nextTick()
+  if (tab === 'catalog') {
+    updateCatalogPageSize(false)
+    if (!catalogLoaded) await loadCatalog({ trigger: 'initial' })
+  }
   if (shell()) shell().scrollTop = scrollPositions[tab]
   if (tab === 'random' && !randomLoaded) await loadRandom()
   void observeCards()
@@ -161,6 +174,14 @@ async function loadRandom({ revalidating = false } = {}) {
     const previousIndex = randomIndex.value
     randomItems.value = result.items
     if (!revalidating) randomResultSetId = uuid()
+    if (!revalidating && !props.management) {
+      measurementEnabled = result.analyticsEnabled === true
+      enableAnalytics(measurementEnabled)
+      if (measurementEnabled && !portalViewed) {
+        track('portal_viewed', eventAttributes())
+        portalViewed = true
+      }
+    }
     randomAllShown.value = result.allShown
     const keptIndex = result.items.findIndex(app => app.id === currentId)
     randomIndex.value = revalidating ? Math.max(0, keptIndex >= 0 ? keptIndex : Math.min(previousIndex, result.items.length - 1)) : 0
@@ -269,6 +290,7 @@ const paginationRow = ref(null)
 let layoutObserver
 let layoutFrame = 0
 let catalogReady = false
+let catalogLoaded = false
 const catalogLoading = ref(false)
 const catalogError = ref('')
 const catalogNotice = ref('')
@@ -360,6 +382,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
   try {
     const result = await apiRequest(`/api/apps?${params.toString()}`)
     if (requestSequence !== catalogRequestSequence) return
+    catalogLoaded = true
     apps.value = Array.isArray(result.items) ? result.items : []
     authorTags.value = Array.isArray(result.tags) ? result.tags : []
     total.value = Number.isFinite(Number(result.total)) ? Number(result.total) : 0
@@ -928,7 +951,8 @@ onMounted(async () => {
   updateCatalogPageSize(false)
   catalogReady = true
   if (discoveryTab.value === 'random') {
-    await selectDiscovery('random')
+    await selectDiscovery('random', { syncUrl: false })
+    if (appId) await openApp(appId)
   } else {
     await loadCatalog({ trigger: 'initial' })
     if (appId) await openApp(appId)
@@ -1346,7 +1370,7 @@ onUnmounted(() => {
 .share-button{flex:none;margin-top:2px;border-color:transparent;background:var(--plaza-share);color:var(--plaza-share-ink)}.share-button:hover{background:#ffbe88;border-color:transparent}.primary-button:hover{background:#3349b8}.secondary-button{background:var(--plaza-surface);border-color:var(--plaza-line);color:var(--plaza-text)}.secondary-button:hover{border-color:rgb(32 42 59 / .22);background:var(--plaza-surface)}.primary-button:disabled,.secondary-button:disabled,.share-button:disabled{opacity:.55;cursor:not-allowed}
 .plaza-public button:focus-visible,.plaza-public a:focus-visible{outline:2px solid var(--plaza-brand);outline-offset:3px}
 .search-section{flex:none;margin:0 0 18px}.catalog-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px}.catalog-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%}.search-row{display:flex;gap:8px}.search-input{width:300px;--el-input-height:36px}.search-submit{min-height:36px;padding:0 13px}.catalog-usage-filter{display:flex;gap:2px;padding:3px;border-radius:10px;background:#edeae5}.usage-filter-button{min-height:30px;padding:3px 11px;border:0;border-radius:8px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;font-weight:500;white-space:nowrap;cursor:pointer}.usage-filter-button:hover{color:var(--plaza-ink)}.usage-filter-button.active{background:var(--plaza-surface);color:var(--plaza-ink);font-weight:600;box-shadow:0 1px 3px rgb(23 31 44 / .12)}.catalog-sort{display:inline-flex;align-items:center;gap:4px;margin-left:auto;color:var(--plaza-muted);font-size:12px;white-space:nowrap;line-height:18px}.catalog-sort :deep(.plaza-icon){width:13px;height:13px}
-.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted);line-height:18px;}.filter-chip,.tag-more{flex:none;min-height:30px;padding:4px 12px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.filter-chip.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:600}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
+.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none}.tag-filter-row::-webkit-scrollbar{display:none}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted);line-height:18px;}.filter-chip,.tag-more{flex:none;min-height:30px;padding:4px 12px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.filter-chip.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:600}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
 .catalog-section{display:flex;flex:1;flex-direction:column;min-height:0}.catalog-heading-row{height:0;margin:0;flex:none}.catalog-results{flex:1 0 auto;position:relative}.catalog-refreshing{position:absolute;right:0;top:-20px;color:var(--plaza-muted);font-size:11px;line-height:18px;}.app-grid{display:grid;grid-template-columns:repeat(var(--catalog-columns),minmax(0,1fr));gap:var(--catalog-gap)}.pagination-row{display:flex;flex:0 0 48px;align-items:center;justify-content:center;margin-top:auto}
 .catalog-state{display:flex;min-height:200px;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:28px;border:1px solid var(--plaza-line);border-radius:16px;background:var(--plaza-surface);color:var(--plaza-muted);font-size:14px;text-align:center;line-height:22px;}.catalog-state strong{color:var(--plaza-ink);font-size:17px;line-height:26px;}.catalog-state p{margin:0 0 4px}.catalog-state.is-error{color:var(--plaza-danger);margin-bottom:16px}.empty-mark{font-size:27px}.catalog-notice{margin-bottom:12px;padding:9px 12px;border:1px solid var(--plaza-line);border-radius:9px;background:var(--plaza-surface);color:var(--plaza-success);font-size:12px;line-height:18px;}
 .public-detail{display:block;width:100%;min-height:100%;margin:0;padding:26px 32px 32px;border:0;border-radius:0;background:var(--plaza-canvas)}.public-detail-heading{display:flex;align-items:center;gap:18px;margin-bottom:20px}.public-detail-heading h1{margin:0;font-size:24px;line-height:32px;}.public-detail .detail-layout{height:calc(100vh - 170px)}.public-app-version{padding:3px 7px;color:var(--plaza-muted);font-size:11px;line-height:18px;}

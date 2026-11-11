@@ -86,10 +86,11 @@ function detail(event) {
 .app-category { display: inline-flex; height: 22px; flex: none; align-items: center; gap: 5px; color: var(--plaza-text); font-size: 11px; line-height: 22px; white-space: nowrap; }
 .app-category::before { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--plaza-brand); content: ""; }
 .app-category.agent::before { background: #3f9a76; }
-.app-format, .app-tag, .app-tag-more { max-width: calc(50% - 3px); height: 22px; flex: none; overflow: hidden; padding: 0 8px; border: 0; border-radius: 999px; background: #f3f1ec; color: var(--plaza-text); font: inherit; font-size: 11px; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
-.app-tag { cursor: pointer; }
+.app-format, .app-tag, .app-tag-more { max-width: calc(50% - 3px); min-width: 0; height: 22px; flex: 0 1 auto; overflow: hidden; padding: 0 8px; border: 0; border-radius: 999px; background: #f3f1ec; color: var(--plaza-text); font: inherit; font-size: 11px; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
+.app-format { max-width: 110px; }
+.app-tag { max-width: calc((100% - 84px) / 3); cursor: pointer; }
 .app-tag:hover, .app-tag.active { background: var(--plaza-brand-soft); color: var(--plaza-brand); }
-.app-tag-more { max-width: none; padding: 0 2px; background: transparent; color: var(--plaza-muted); }
+.app-tag-more { max-width: none; flex: none; padding: 0 2px; background: transparent; color: var(--plaza-muted); }
 .app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding-top: 10px; margin-top: 10px; border-top: 1px solid rgb(32 42 59 / .06); }
 .app-author { max-width: 150px; overflow: hidden; color: var(--plaza-text); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .app-dates { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; color: #6b7383; font-size: 10.5px; line-height: 1.3; text-align: right; white-space: nowrap; }

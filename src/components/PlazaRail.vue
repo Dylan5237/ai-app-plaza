@@ -109,11 +109,23 @@ const active = computed(() => props.active || fallbackActive)
 .rail-foot { margin-top: auto; padding-top: 18px; }
 .rail-slogan { margin: 0 10px 12px; color: #67707f; font-size: 11px; line-height: 1.6; }
 @media (max-width: 760px) {
-  .plaza-rail { padding: 14px 10px 12px; }
-  .rail-brand { padding-bottom: 12px; }
-  .rail-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+  .plaza-rail { padding: 10px 12px 8px; overflow: visible; min-width: 0; max-width: 100vw; overflow-x: hidden; }
+  .rail-brand { padding: 0 4px 9px; }
+  .rail-brand-copy small { display: none; }
+  .rail-nav { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 4px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; min-width: 0; max-width: 100%; }
+  .rail-nav::-webkit-scrollbar { display: none; }
   .rail-group-label { display: none; }
-  .rail-item { height: 38px; justify-content: center; padding: 0 6px; font-size: 12px; }
+  .rail-item { width: auto; height: 34px; flex: 0 0 auto; justify-content: flex-start; padding: 0 10px; font-size: 12px; gap: 6px; }
+  .rail-item :deep(svg) { width: 15px; height: 15px; }
+  .rail-foot { margin-top: 0; padding-top: 6px; min-width: 0; }
   .rail-slogan { display: none; }
+}
+@media (max-width: 760px) and (max-height: 480px) {
+  .plaza-rail { padding: 6px 10px; }
+  .rail-brand { padding: 0 2px 5px; }
+  .rail-brand-mark { width: 22px; height: 22px; grid-template-columns: repeat(2, 10px); grid-template-rows: repeat(2, 10px); gap: 2px; }
+  .rail-brand-copy strong { font-size: 13px; }
+  .rail-item { height: 30px; font-size: 11.5px; }
+  .rail-foot { display: none; }
 }
 </style>

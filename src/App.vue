@@ -62,12 +62,15 @@ function openGroups() {
 }
 function showDiscovery(tab) {
   discoverView.value = tab
-  if (!showManagement.value && !isCenter) {
-    showGroups.value = false
-    showPersonal.value = false
-    detailFromPersonal.value = false
-    if (directory.value) { void directory.value.selectDiscovery(tab); return }
+  const preview = new URLSearchParams(location.hash.replace(/^#/, '')).has('publish')
+  if (preview || showManagement.value || isCenter) {
+    location.assign(publicPath(tab === 'random' ? '/?discover=random' : '/'))
+    return
   }
+  showGroups.value = false
+  showPersonal.value = false
+  detailFromPersonal.value = false
+  if (directory.value) { void directory.value.selectDiscovery(tab); return }
   location.assign(publicPath(tab === 'random' ? '/?discover=random' : '/'))
 }
 async function usePersonalApp(app) {
@@ -101,5 +104,5 @@ async function usePersonalApp(app) {
 .plaza-content { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; }
 .plaza-content > * { flex: 1; min-height: 0; }
 .center-denied { padding: 32px; color: var(--plaza-ink); }.center-denied p { color: var(--plaza-muted); }.center-denied a { color: var(--plaza-brand); }
-@media (max-width: 760px) { .plaza-app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); } .plaza-content { overflow: auto; } }
+@media (max-width: 760px) { .plaza-app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); width: 100%; max-width: 100vw; } .plaza-content { overflow: auto; min-width: 0; width: 100%; } }
 </style>

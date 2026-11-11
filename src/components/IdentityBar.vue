@@ -46,5 +46,16 @@ button:disabled { opacity: .5; cursor: default; }
 .identity-bar.rail button { min-height: 30px; padding: 4px 6px; color: var(--plaza-text); font-size: 12px; text-align: left; border-radius: 7px; }
 .identity-bar.rail button:hover { background: rgb(32 42 59 / .05); color: var(--plaza-ink); }
 .identity-bar.rail .identity-error { text-align: left; font-size: 11px; line-height: 1.55; }
+@media (max-width: 760px) {
+  .identity-bar.rail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 5px 7px; border-radius: 9px; min-width: 0; max-width: 100%; }
+  .identity-bar.rail .identity-actions { display: flex; flex: 1 1 auto; order: 1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .identity-bar.rail .identity-actions > span { width: auto; min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 600; }
+  .identity-bar.rail .identity-actions > span small { display: inline; margin: 0 0 0 4px; font-size: 10px; white-space: nowrap; }
+  .identity-bar.rail button { min-height: 28px; padding: 2px 6px; font-size: 11.5px; white-space: nowrap; }
+  .identity-bar.rail .identity-error { flex: 0 0 100%; order: 2; margin-top: 2px; }
+}
+@media (max-width: 760px) and (max-height: 480px) {
+  .identity-bar.rail { display: none; }
+}
 @media(pointer:coarse) { button,a { min-height: 44px; } }
 </style>

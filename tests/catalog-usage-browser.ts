@@ -512,6 +512,32 @@ try {
   await page.getByLabel('按作者标签筛选').getByRole('button', { name: '清除筛选', exact: true }).click();
   await waitForCatalog(page);
   await page.screenshot({ path: 'artifacts/catalog-discovery-directory.png' });
+
+  const directRandom = await context.newPage();
+  await directRandom.goto(`${harness.origin}/?discover=random`);
+  await directRandom.getByTestId('wheel-current').waitFor();
+  const directName = (await directRandom.getByTestId('wheel-current').locator('.app-title').innerText()).trim();
+  await directRandom.getByTestId('wheel-current').locator('.app-title').click();
+  await directRandom.getByTestId('app-detail').waitFor();
+  const directDetailUrl = new URL(directRandom.url());
+  assert.equal(directDetailUrl.searchParams.get('discover'), 'random', 'random detail keeps the wheel as its return destination');
+  assert.ok(directDetailUrl.searchParams.get('app'), 'random detail carries a refreshable app id');
+  await directRandom.reload();
+  await directRandom.getByTestId('app-detail').waitFor();
+  assert.ok((await directRandom.getByTestId('app-detail').innerText()).includes(directName), 'refreshing a random detail restores the same app');
+  await directRandom.getByTestId('return-discovery').click();
+  await directRandom.getByTestId('wheel-current').waitFor();
+  const directCatalogRequests: string[] = [];
+  directRandom.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps') directCatalogRequests.push(request.url()); });
+  await directRandom.getByTestId('tab-catalog').click();
+  await directRandom.getByTestId('app-card').first().waitFor();
+  assert.ok(await directRandom.getByTestId('app-card').count() > 0, 'the first switch from a direct wheel loads the catalog');
+  assert.equal(directCatalogRequests.length > 0, true, 'the first catalog view performs a catalog read');
+  assert.equal(new URL(directRandom.url()).searchParams.has('discover'), false, 'switching to the catalog refreshes back into the catalog');
+  await directRandom.reload();
+  await directRandom.getByTestId('app-card').first().waitFor();
+  await directRandom.close();
+
   let randomRequests = 0;
   page.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps/random') randomRequests++; });
   await page.getByTestId('tab-random').click();
