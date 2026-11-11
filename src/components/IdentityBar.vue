@@ -8,7 +8,7 @@ onMounted(initializeIdentity)
 </script>
 
 <template>
-  <div v-if="identity.enabled" class="identity-bar" aria-label="广场身份">
+  <div v-if="identity.enabled || identity.retryable" class="identity-bar" aria-label="广场身份">
     <div class="identity-actions">
       <span v-if="identity.user">{{ identity.user.name }} <small>{{ identity.user.superAdministrator ? '超级管理员 · 天宫身份' : identity.user.administrator ? '管理员 · 天宫身份' : '天宫身份' }}</small></span>
       <span v-else>访客浏览</span>
@@ -21,9 +21,9 @@ onMounted(initializeIdentity)
       <button v-if="identity.user?.identityAdmin" type="button" @click="$emit('groups')">成员与小组</button>
       <button v-if="identity.user" type="button" :disabled="identity.busy" @click="signOut">退出广场</button>
       <button v-else-if="identity.switchRequired" type="button" :disabled="identity.busy" @click="signIn(true)">确认切换为天宫当前账号</button>
-      <button v-else type="button" :disabled="identity.busy" @click="signIn(false)">{{ identity.busy ? '正在核验身份…' : '使用天宫身份登录' }}</button>
+      <button v-else-if="!identity.retryable" type="button" :disabled="identity.busy" @click="signIn(false)">{{ identity.busy ? '正在核验身份…' : '使用天宫身份登录' }}</button>
     </div>
-    <p v-if="identity.error" class="identity-error" role="alert">{{ identity.error }}</p>
+    <p v-if="identity.error" class="identity-error" role="alert">{{ identity.error }} <button v-if="identity.retryable" type="button" :disabled="identity.busy" @click="initializeIdentity">重试身份核验</button></p>
     <p v-else-if="favorites.error" class="identity-error" role="alert">{{ favorites.error }} <button type="button" @click="refreshFavoriteIds">重新读取收藏状态</button></p>
   </div>
 </template>

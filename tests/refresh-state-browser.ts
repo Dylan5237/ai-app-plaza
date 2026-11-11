@@ -14,10 +14,11 @@ await context.addCookies([{ name, value, url: `${h.origin}/plaza/` }]);
 await context.addInitScript(() => localStorage.setItem('fixture-sky-token', 'fixture-admin'));
 const page = await context.newPage();
 const errors: string[] = [];
-let randomRequests = 0;
+let exchanges = 0, randomRequests = 0;
 page.on('pageerror', error => errors.push(error.message));
 page.on('request', request => {
   const path = new URL(request.url()).pathname;
+  if (path.endsWith('/api/auth/tiangong/exchange')) exchanges++;
   if (path.endsWith('/api/apps/random')) randomRequests++;
 });
 const wheel = page.getByTestId('catalog-wheel');
@@ -25,8 +26,16 @@ const batch = () => wheel.getByTestId('app-card').evaluateAll(nodes => nodes.map
 const currentId = () => page.getByTestId('wheel-current').getByTestId('app-card').getAttribute('data-app-id');
 const ready = () => page.waitForFunction(() => { const button = document.querySelector<HTMLButtonElement>('[data-testid="random-refresh"]'); return button && !button.disabled; });
 try {
-  await page.goto(`${h.origin}/plaza/`);
-  await page.getByRole('button', { name: '退出广场', exact: true }).waitFor();
+  for (const failure of ['503', 'network', 'status']) {
+    const path = failure === 'status' ? '**/api/auth/tiangong/status' : '**/api/auth/me';
+    await page.route(path, route => failure === 'network' ? route.abort('failed') : route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'IDENTITY_UNAVAILABLE', message: '初始化核验暂不可用' } }) }));
+    await page.goto(`${h.origin}/plaza/`);
+    await page.getByRole('button', { name: '重试身份核验', exact: true }).waitFor();
+    await page.unroute(path);
+    await page.getByRole('button', { name: '重试身份核验', exact: true }).click();
+    await page.getByRole('button', { name: '退出广场', exact: true }).waitFor();
+  }
+  assert.equal(exchanges, 0, 'manual retry recovers the valid session without another exchange');
   await page.getByTestId('tab-random').click();
   await page.getByTestId('wheel-current').waitFor();
   await page.getByRole('button', { name: '下一个应用', exact: true }).click();
@@ -96,5 +105,5 @@ try {
   await page.getByRole('alert').filter({ hasText: '发布授权已失效' }).waitFor();
   assert.equal(await preview.count(), 0, 'confirmed access loss clears the old publication');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ status: 'PASS', cases: ['wheel batch and index preserved', 'wheel 404/403', 'publication refresh and access loss'], boundary: 'loopback fixtures only' }));
+  console.log(JSON.stringify({ status: 'PASS', cases: ['initial identity retries', 'wheel batch and index preserved', 'wheel 404/403', 'publication refresh and access loss'], boundary: 'loopback fixtures only' }));
 } finally { await browser.close(); await h.close(); }
