@@ -165,6 +165,25 @@ try {
   assert.equal(await page.getByTestId('app-detail').count(), 0, 'super administrator is not a private-content bypass after handoff');
 
   await page.getByRole('link', { name: '管理员配置', exact: true }).click();
+  const memberRow = page.getByRole('row').filter({ hasText: memberLabel });
+  await memberRow.getByRole('button', { name: '调整角色', exact: true }).click();
+  await select(page, '平台角色', '管理员');
+  await page.getByRole('textbox', { name: '核验依据或变更原因' }).fill('结果未知时保留原操作');
+  await page.route('**/api/access/administrators', route => route.request().method() === 'PUT' ? route.abort('failed') : route.continue());
+  await page.getByRole('button', { name: '确认更改角色', exact: true }).click();
+  const roleDialog = page.getByRole('dialog', { name: '调整平台角色', exact: true });
+  await roleDialog.getByRole('alert').filter({ hasText: '操作结果尚未确认' }).waitFor();
+  await roleDialog.getByRole('button', { name: '取消', exact: true }).click();
+  await memberRow.getByRole('button', { name: '调整角色', exact: true }).click();
+  await page.getByRole('button', { name: '继续原操作', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: '核对并重试原操作', exact: true }).count(), 1, 'continuing retains the pending request');
+  await memberRow.getByRole('button', { name: '调整角色', exact: true }).click();
+  await page.getByRole('button', { name: '丢弃并编辑', exact: true }).click();
+  await roleDialog.waitFor();
+  assert.equal(await roleDialog.getByRole('textbox', { name: '核验依据或变更原因' }).inputValue(), '', 'explicit discard starts a fresh form');
+  assert.equal(await page.getByRole('button', { name: '核对并重试原操作', exact: true }).count(), 0);
+  await roleDialog.getByRole('button', { name: '取消', exact: true }).click();
+  await page.unroute('**/api/access/administrators');
   await role('管理员', '授权运营看板与治理职责');
   await receiver.goto(`${h.origin}/plaza/?space=operations`);
   await receiver.getByRole('heading', { name: '看见应用的发现与增长', exact: true }).waitFor();

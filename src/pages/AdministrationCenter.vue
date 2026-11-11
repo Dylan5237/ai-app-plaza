@@ -22,6 +22,14 @@ async function load() {
   finally { if (version === generation) loading.value = false }
 }
 async function edit(row) {
+  if (busy.value) return
+  if (pending || uncertain.value) {
+    try {
+      await ElMessageBox.confirm('有待完成的操作，丢弃还是继续？丢弃后将失去原请求的核对与重试入口。', '待完成操作', {
+        confirmButtonText: '丢弃并编辑', cancelButtonText: '继续原操作', type: 'warning',
+      })
+    } catch { return }
+  }
   error.value = ''; notice.value = ''; pending = null; uncertain.value = false; conflict.value = false; reason.value = ''; verified.value = false; ownerId.value = ''; role.value = row.role || 'member'
   if (props.mode === 'governance') {
     try { choices.value = (await apiRequest('/api/access/candidates')).users } catch (err) { error.value = err.message; return }
