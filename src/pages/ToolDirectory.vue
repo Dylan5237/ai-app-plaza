@@ -27,6 +27,7 @@ const discoveryTab = ref('catalog')
 const randomItems = ref([])
 const randomIndex = ref(0)
 const randomLoading = ref(false)
+const randomRevalidating = ref(false)
 const randomError = ref('')
 const randomAllShown = ref(false)
 let randomLoaded = false
@@ -117,18 +118,31 @@ async function selectDiscovery(tab) {
   void observeCards()
 }
 
-async function loadRandom() {
+async function loadRandom({ revalidating = false } = {}) {
+  if (revalidating && !randomItems.value.length) return
   const sequence = ++randomRequestSequence
   randomLoading.value = true
+  randomRevalidating.value = revalidating
   randomError.value = ''
   const params = new URLSearchParams(randomItems.value.map(app => ['exclude', app.id]))
   try {
-    const result = await apiRequest(`/api/apps/random?${params}`)
+    const batch = randomItems.value
+    let result
+    if (revalidating) {
+      const checked = await Promise.allSettled(batch.map(app => apiRequest(appPath(app.id))))
+      const failure = checked.find(item => item.status === 'rejected' && [401, 403].includes(item.reason.status))
+        || checked.find(item => item.status === 'rejected' && item.reason.status !== 404)
+      if (failure) throw failure.reason
+      result = { items: checked.flatMap((item, index) => item.status === 'fulfilled' ? [{ ...batch[index], ...item.value, documents: {} }] : []), allShown: randomAllShown.value }
+    } else result = await apiRequest(`/api/apps/random?${params}`)
     if (sequence !== randomRequestSequence) return
+    const currentId = randomItems.value[randomIndex.value]?.id
+    const previousIndex = randomIndex.value
     randomItems.value = result.items
-    randomResultSetId = uuid()
+    if (!revalidating) randomResultSetId = uuid()
     randomAllShown.value = result.allShown
-    randomIndex.value = 0
+    const keptIndex = result.items.findIndex(app => app.id === currentId)
+    randomIndex.value = revalidating ? Math.max(0, keptIndex >= 0 ? keptIndex : Math.min(previousIndex, result.items.length - 1)) : 0
     randomLoaded = true
     void observeCards()
   } catch (error) {
@@ -137,7 +151,7 @@ async function loadRandom() {
       randomError.value = errorText(error); recordFailure('random', error)
     }
   } finally {
-    if (sequence === randomRequestSequence) randomLoading.value = false
+    if (sequence === randomRequestSequence) { randomLoading.value = false; randomRevalidating.value = false }
   }
 }
 
@@ -569,12 +583,12 @@ function closeAgentInstructions() {
 function refreshVisibleAccess() {
   if (!identity.user || !identity.enabled) return
   if (shareVisible.value && shareAppId.value) void openShareDialog(shareAppId.value, { revalidating: true })
-  if (publicationId.value) { if (!publicationBusy.value) void loadPublication(); return }
+  if (publicationId.value) { if (!publicationBusy.value) void loadPublication(publicationId.value, { revalidating: true }); return }
   const appId = selectedApp.value?.id
   if ((detailVisible.value || instructionDialogVisible.value) && appId) void openApp(appId, { fromHistory: true, revalidating: true })
   if (props.management) return
   void loadCatalog()
-  if (discoveryTab.value === 'random') void loadRandom()
+  if (discoveryTab.value === 'random') void loadRandom({ revalidating: true })
 }
 
 async function loadAgentInstructions(entry, { revalidating = false } = {}) {
@@ -779,15 +793,16 @@ function openPublication(id) {
   window.history.replaceState({ ...window.history.state, plazaManagementPreview: true }, '', window.location.href)
 }
 
-async function loadPublication(id = publicationId.value) {
+async function loadPublication(id = publicationId.value, { revalidating = publication.value?.id === id } = {}) {
   if (!id) return
   const sequence = ++publicationRequestSequence
   const current = () => sequence === publicationRequestSequence && publicationId.value === id
   publicationLoading.value = true
   publicationError.value = ''
-  publication.value = null
+  if (!revalidating) publication.value = null
   const token = props.management ? '' : publicationToken(id)
   if (!props.management && !token) {
+    publication.value = null
     publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
     publicationLoading.value = false
     return
@@ -806,7 +821,10 @@ async function loadPublication(id = publicationId.value) {
       }
     }
   } catch (error) {
-    if (current()) publicationError.value = errorText(error)
+    if (current()) {
+      if ([401, 403, 404, 410].includes(error.status)) publication.value = null
+      publicationError.value = errorText(error)
+    }
   } finally {
     if (current()) publicationLoading.value = false
   }
@@ -815,7 +833,7 @@ async function loadPublication(id = publicationId.value) {
 async function mutatePublication(action) {
   const current = publication.value
   const id = publicationId.value
-  if (!id || !current || publicationBusy.value) return
+  if (!id || !current || publicationBusy.value || publicationLoading.value) return
   if (props.management && !props.managementEnabled) { publicationError.value = '管理写入尚未启用。'; return }
   const token = props.management ? '' : publicationToken(id)
   if (!props.management && !token) {
@@ -936,7 +954,7 @@ onUnmounted(() => {
         <el-alert v-if="publication?.requiresIdentity" title="请先使用天宫身份登录，再核对本次发布资料。发布票据不代替应用维护授权。" type="info" :closable="false" />
         <p v-if="publication?.expiresAt" class="publication-expiry">预览有效期至 {{ formatDate(publication.expiresAt) }}</p>
         <p v-if="publicationExpired" class="publication-action-error" role="alert">此预览已过期，不能确认或重试；当前仅展示已保存的资料。</p>
-        <div v-if="publicationLoading" class="publication-message" role="status">正在读取服务端发布状态…</div>
+        <div v-if="publicationLoading" class="publication-message" role="status">{{ publication ? '正在更新发布状态…' : '正在读取服务端发布状态…' }}</div>
         <div v-else-if="publicationError && !publication" class="publication-message is-error" role="alert">{{ publicationError }}</div>
         <div v-else-if="publication?.status === 'checking'" class="publication-message" role="status">
           服务正在检查提交内容，状态更新后请重新加载此页面。
@@ -967,7 +985,7 @@ onUnmounted(() => {
             v-if="publication?.status === 'preview_ready'"
             class="primary-button"
             data-testid="confirm-publication"
-            :disabled="publicationBusy || publicationExpired || !publication.digest || (props.management && !props.managementEnabled)"
+            :disabled="publicationBusy || publicationLoading || publicationExpired || !publication.digest || (props.management && !props.managementEnabled)"
             @click="mutatePublication('confirm')"
           >
             {{ publicationBusy ? '正在确认…' : isUpdate ? '确认更新' : '确认收录' }}
@@ -976,7 +994,7 @@ onUnmounted(() => {
             v-if="publication?.status === 'failed' && publication.nextAction !== 'submit_again'"
             class="primary-button"
             data-testid="retry-publication"
-            :disabled="publicationBusy || publicationExpired || (props.management && !props.managementEnabled)"
+            :disabled="publicationBusy || publicationLoading || publicationExpired || (props.management && !props.managementEnabled)"
             @click="mutatePublication('retry')"
           >
             {{ publicationBusy ? '正在重试…' : isUpdate ? '重试更新' : '重试收录' }}
@@ -1041,7 +1059,7 @@ onUnmounted(() => {
       <p class="sidebar-note">让好用的应用<br>被更多人发现</p>
     </aside>
     <main v-if="!props.management" v-show="!detailVisible" ref="directoryMain" class="directory-main">
-      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
+      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
           <div class="catalog-intro"><div class="catalog-heading-main"><h1 id="catalog-heading">发现好用的 AI 应用</h1><span class="catalog-total" aria-label="应用数量">{{ total }}</span></div></div>

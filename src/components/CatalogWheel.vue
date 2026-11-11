@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch, onUnmounted } from 'vue'
 import CatalogCard from './CatalogCard.vue'
-const props = defineProps({ items: { type: Array, required: true }, index: { type: Number, default: 0 }, loading: Boolean, error: String, allShown: Boolean })
+const props = defineProps({ items: { type: Array, required: true }, index: { type: Number, default: 0 }, loading: Boolean, revalidating: Boolean, error: String, allShown: Boolean })
 const emit = defineEmits(['update:index', 'refresh', 'return', 'detail', 'primary', 'tag'])
 const wheel = ref(null)
 let touchStart = null
@@ -147,7 +147,7 @@ function click(event) {
       <div><h2>随便看看</h2><p>随机遇见一个好用的应用</p></div>
       <div class="random-actions">
         <button @click="emit('return')">返回应用目录</button>
-        <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? '正在抽取…' : '换一批' }}</button>
+        <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? revalidating ? '正在核验…' : '正在抽取…' : '换一批' }}</button>
       </div>
     </div>
     <p v-if="error" role="alert" class="random-error">{{ error }}{{ items.length ? ' 当前批次已保留。' : '' }}</p>
