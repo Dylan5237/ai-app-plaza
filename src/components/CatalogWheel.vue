@@ -150,7 +150,7 @@ function click(event) {
         <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? revalidating ? '正在核验…' : '正在抽取…' : '换一批' }}</button>
       </div>
     </div>
-    <p v-if="error" role="alert" class="random-error">{{ error }}{{ items.length ? ' 当前批次已保留。' : '' }}</p>
+    <p v-if="error" role="alert" class="random-error">{{ error }}</p>
     <p v-if="loading && !items.length" class="random-state" role="status">正在读取随机应用…</p>
     <p v-else-if="!error && !items.length" class="random-state">目录中还没有可展示的应用。</p>
     <template v-if="items.length">

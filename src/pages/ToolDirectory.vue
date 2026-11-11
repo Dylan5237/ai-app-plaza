@@ -118,6 +118,24 @@ async function selectDiscovery(tab) {
   void observeCards()
 }
 
+async function revalidateRandomBatch(batch) {
+  const checked = await Promise.allSettled(batch.map(app => apiRequest(appPath(app.id))))
+  const items = []
+  let error
+  for (const [index, item] of checked.entries()) {
+    const previous = batch[index]
+    if (item.status === 'fulfilled') {
+      items.push({ ...previous, ...item.value, documents: {} })
+    } else if ([401, 403].includes(item.reason.status)) {
+      throw item.reason
+    } else if (item.reason.status !== 404) {
+      items.push(previous)
+      error ??= item.reason
+    }
+  }
+  return { items, allShown: randomAllShown.value, error }
+}
+
 async function loadRandom({ revalidating = false } = {}) {
   if (revalidating && !randomItems.value.length) return
   const sequence = ++randomRequestSequence
@@ -126,16 +144,14 @@ async function loadRandom({ revalidating = false } = {}) {
   randomError.value = ''
   const params = new URLSearchParams(randomItems.value.map(app => ['exclude', app.id]))
   try {
-    const batch = randomItems.value
-    let result
-    if (revalidating) {
-      const checked = await Promise.allSettled(batch.map(app => apiRequest(appPath(app.id))))
-      const failure = checked.find(item => item.status === 'rejected' && [401, 403].includes(item.reason.status))
-        || checked.find(item => item.status === 'rejected' && item.reason.status !== 404)
-      if (failure) throw failure.reason
-      result = { items: checked.flatMap((item, index) => item.status === 'fulfilled' ? [{ ...batch[index], ...item.value, documents: {} }] : []), allShown: randomAllShown.value }
-    } else result = await apiRequest(`/api/apps/random?${params}`)
+    const result = revalidating
+      ? await revalidateRandomBatch(randomItems.value)
+      : await apiRequest(`/api/apps/random?${params}`)
     if (sequence !== randomRequestSequence) return
+    if (result.error) {
+      randomError.value = errorText(result.error)
+      recordFailure('random', result.error)
+    }
     const currentId = randomItems.value[randomIndex.value]?.id
     const previousIndex = randomIndex.value
     randomItems.value = result.items
@@ -148,7 +164,8 @@ async function loadRandom({ revalidating = false } = {}) {
   } catch (error) {
     if (sequence === randomRequestSequence) {
       if ([401, 403].includes(error.status)) { randomItems.value = []; randomLoaded = false; randomAllShown.value = false; randomIndex.value = 0 }
-      randomError.value = errorText(error); recordFailure('random', error)
+      randomError.value = errorText(error) + (randomItems.value.length ? ' 当前批次已保留。' : '')
+      recordFailure('random', error)
     }
   } finally {
     if (sequence === randomRequestSequence) { randomLoading.value = false; randomRevalidating.value = false }

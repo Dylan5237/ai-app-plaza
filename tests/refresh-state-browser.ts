@@ -70,6 +70,20 @@ try {
   assert.deepEqual(await batch(), before.filter(id => id !== active), 'revoked item is removed without sampling replacements');
   assert.equal(randomRequests, 1);
   await page.unroute(appRoute);
+  const mixedBefore = await batch(), mixedActive = await currentId();
+  const mixedIndex = mixedBefore.indexOf(mixedActive);
+  const mixedKept = mixedBefore.filter(id => id !== mixedActive);
+  const goneRoute = `**/api/apps/${mixedActive}`, unavailableRoute = `**/api/apps/${mixedKept[0]}`;
+  await page.route(goneRoute, route => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'APP_NOT_FOUND', message: '当前应用已不可访问' } }) }));
+  await page.route(unavailableRoute, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '部分应用核验暂不可用' } }) }));
+  const mixedResponses = Promise.all([page.waitForResponse(goneRoute), page.waitForResponse(unavailableRoute)]);
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await mixedResponses; await ready();
+  await page.getByRole('alert').filter({ hasText: '部分应用核验暂不可用' }).waitFor();
+  assert.equal(randomRequests, 1, 'mixed revalidation does not sample replacements');
+  assert.deepEqual(await batch(), mixedKept, 'mixed 404/503 removes the revoked card and preserves all other cards in order');
+  assert.equal(await currentId(), mixedKept[Math.min(mixedIndex, mixedKept.length - 1)], 'removing the current card selects the next available position');
+  await page.unroute(goneRoute); await page.unroute(unavailableRoute);
   await page.getByTestId('random-refresh').click(); await ready();
   assert.equal(randomRequests, 2, 'the user can explicitly request a new batch');
   const forbiddenRoute = `**/api/apps/${await currentId()}`;
@@ -105,5 +119,5 @@ try {
   await page.getByRole('alert').filter({ hasText: '发布授权已失效' }).waitFor();
   assert.equal(await preview.count(), 0, 'confirmed access loss clears the old publication');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ status: 'PASS', cases: ['initial identity retries', 'wheel batch and index preserved', 'wheel 404/403', 'publication refresh and access loss'], boundary: 'loopback fixtures only' }));
+  console.log(JSON.stringify({ status: 'PASS', cases: ['initial identity retries', 'wheel batch and index preserved', 'wheel 404/403', 'wheel mixed 404/503', 'publication refresh and access loss'], boundary: 'loopback fixtures only' }));
 } finally { await browser.close(); await h.close(); }
