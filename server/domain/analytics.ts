@@ -64,15 +64,15 @@ export const browserEvent = z.object({
   if (value.eventName === 'prompt_copy_result' && ['publish', 'update'].includes(value.attributes.promptPurpose || '') && !value.flowId) context.addIssue({ code: 'custom', message: 'missing flow' });
 });
 
-export async function recordBrowserEvent(db: Database, config: Config, input: unknown, viewerId?: string) {
+export async function recordBrowserEvent(db: Database, config: Config, input: unknown, viewerId?: string, anonymousFallback = false) {
   if (!config.analytics) throw new DomainError(404, 'NOT_FOUND', '未找到请求的资源');
   const settings = config.analytics;
   const event = browserEvent.parse(input);
   if (event.attributes.selectedTags?.length) {
     const allowed = new Map<string, string>((await catalogTags(db, config.audience, undefined, viewerId)).map(tag => [tag.toLowerCase(), tag]));
     const selected = event.attributes.selectedTags.map(tag => allowed.get(tag.toLowerCase()));
-    if (selected.some(tag => tag === undefined)) throw new DomainError(400, 'INVALID_REQUEST', '标签无效');
-    event.attributes.selectedTags = selected as string[];
+    if (!anonymousFallback && selected.some(tag => tag === undefined)) throw new DomainError(400, 'INVALID_REQUEST', '标签无效');
+    event.attributes.selectedTags = selected.filter((tag): tag is string => tag !== undefined);
   }
   let snapshot: { version: string; tags: string[]; appType: 'platform' | 'agent' } | undefined;
   if (event.appId) {
@@ -84,18 +84,25 @@ export async function recordBrowserEvent(db: Database, config: Config, input: un
       WHERE a.id=$1 AND s.audience=$3 AND COALESCE(l.status,'published')='published'
         AND ${appAccessPredicate('$4::uuid')}`, [event.appId, event.snapshotId, config.audience, viewerId ?? null]);
     const row = result.rows[0];
-    if (!row) throw new DomainError(404, 'NOT_FOUND', '未找到请求的资源');
-    const manifest = typeof row.manifest === 'string' ? JSON.parse(row.manifest) : row.manifest;
-    if (event.attributes.entryId) {
-      const entry = manifest.entries?.find((item: any) => item.id === event.attributes.entryId && item.kind === event.attributes.entryKind);
-      if (!entry) throw new DomainError(400, 'INVALID_REQUEST', '应用入口无效');
-      if (entry.kind === 'web') {
-        try { const url = new URL(entry.url); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error(); }
-        catch { throw new DomainError(400, 'INVALID_REQUEST', '应用入口无效'); }
+    if (!row && !anonymousFallback) throw new DomainError(404, 'NOT_FOUND', '未找到请求的资源');
+    if (!row) {
+      // Preserve the anonymous event, without attributing private application metadata or heat.
+      delete event.appId;
+      delete event.snapshotId;
+      delete event.attributes.entryId;
+    } else {
+      const manifest = typeof row.manifest === 'string' ? JSON.parse(row.manifest) : row.manifest;
+      if (event.attributes.entryId) {
+        const entry = manifest.entries?.find((item: any) => item.id === event.attributes.entryId && item.kind === event.attributes.entryKind);
+        if (!entry) throw new DomainError(400, 'INVALID_REQUEST', '应用入口无效');
+        if (entry.kind === 'web') {
+          try { const url = new URL(entry.url); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error(); }
+          catch { throw new DomainError(400, 'INVALID_REQUEST', '应用入口无效'); }
+        }
       }
+      const tags = typeof row.effective_tags === 'string' ? JSON.parse(row.effective_tags) : row.effective_tags;
+      snapshot = { version: row.version, tags: Array.isArray(tags) ? tags : [], appType: manifest.entries?.some((entry: any) => entry.kind === 'web') ? 'platform' : 'agent' };
     }
-    const tags = typeof row.effective_tags === 'string' ? JSON.parse(row.effective_tags) : row.effective_tags;
-    snapshot = { version: row.version, tags: Array.isArray(tags) ? tags : [], appType: manifest.entries?.some((entry: any) => entry.kind === 'web') ? 'platform' : 'agent' };
   }
   const received = new Date();
   const occurred = new Date(event.occurredAt);

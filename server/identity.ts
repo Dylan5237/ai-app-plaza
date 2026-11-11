@@ -107,7 +107,9 @@ export async function registerIdentity(app: FastifyInstance, config: Config, db:
     await service.saveFavorite(actor, id, saved, config.audience);
     return { id, saved };
   });
-  return { service, authenticate, sameOrigin };
+  const analyticsViewer = (request: FastifyRequest) => service.analyticsViewer(cookie(request, SESSION),
+    typeof request.headers['x-plaza-portal-token'] === 'string' ? request.headers['x-plaza-portal-token'] : undefined);
+  return { service, authenticate, analyticsViewer, sameOrigin };
 }
 
 export type IdentityHttp = NonNullable<Awaited<ReturnType<typeof registerIdentity>>>;
