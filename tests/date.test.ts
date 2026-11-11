@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { formatDate, formatDateTime } from '../src/lib/date.js';
 
 test('formatDate renders calendar dates with hyphens and preserves missing/invalid fallbacks', () => {
-  assert.equal(formatDate('2026-11-09'), '2026-11-09');
+  assert.equal(formatDate(new Date(2026, 10, 9)), '2026-11-09');
   assert.equal(formatDate('not-a-date'), 'not-a-date');
   assert.equal(formatDate(''), '未登记');
 });
