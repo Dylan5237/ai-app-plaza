@@ -210,17 +210,22 @@ const HAS_WEB_ENTRY = `EXISTS (
     ) AS entry(value)
    WHERE entry.value->>'kind' = 'web'
 )`;
-const APP_SELECT = `
+export function catalogAppSelect(documentMode: 'full' | 'omit'): string {
+  const documents = documentMode === 'full' ? 's.documents' : documentMode === 'omit' ? "'{}'::jsonb AS documents" : undefined;
+  if (!documents) throw new Error('Unknown catalog document selection');
+  return `
   SELECT a.id, a.instance_id, a.project_id, a.app_key, a.current_snapshot_id, a.revision,
          a.created_at, a.updated_at, s.id AS snap_id, s.created_at AS snapshot_created_at, s.commit_sha, s.manifest_path, s.tag,
-         s.digest, s.audience, s.version, s.manifest, s.documents, s.project_url, s.source_created_at,
+         s.digest, s.audience, s.version, s.manifest, ${documents}, s.project_url, s.source_created_at,
          ${EFFECTIVE_TAGS} AS effective_tags,
          l.status AS lifecycle_status, l.revision AS lifecycle_revision, l.updated_at AS lifecycle_updated_at
     FROM catalog_apps a
     LEFT JOIN published_snapshots s ON s.id = a.current_snapshot_id
     LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
     ${TAG_OVERRIDE_JOIN}`;
-const RANDOM_APP_SELECT = APP_SELECT.replace('s.manifest, s.documents,', "s.manifest, '{}'::jsonb AS documents,");
+}
+const APP_SELECT = catalogAppSelect('full');
+const RANDOM_APP_SELECT = catalogAppSelect('omit');
 
 /** Partial Fisher–Yates: every remaining candidate has the same chance at each draw. */
 export function sampleCatalog<T extends { id: string }>(items: T[], exclude: string[] = [], draw: (max: number) => number = randomInt): T[] {

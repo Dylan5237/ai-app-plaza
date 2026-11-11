@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { sampleCatalog } from '../server/domain/service.js';
+import { catalogAppSelect, sampleCatalog } from '../server/domain/service.js';
 import { startHarness } from './helpers/harness.js';
 import { seedTagCatalog } from './helpers/tag-catalog.js';
 
@@ -142,6 +142,12 @@ test('directory reads leave expired publication credentials to the scheduled cle
   await h.service.cleanupExpiredTokens();
   assert.equal((await h.db.query('SELECT token_ciphertext FROM publications WHERE id=$1', [publicationId])).rows[0].token_ciphertext, null,
     'the scheduled cleanup still removes expired credentials');
+});
+
+test('catalog document selection fails closed on an unrecognized projection', () => {
+  assert.throws(() => catalogAppSelect('mismatched' as any), /Unknown catalog document selection/);
+  assert.match(catalogAppSelect('full'), /s\.documents/);
+  assert.doesNotMatch(catalogAppSelect('omit'), /s\.documents/);
 });
 
 test('random sampling returns at most six card rows without transferring catalog documents', async t => {
