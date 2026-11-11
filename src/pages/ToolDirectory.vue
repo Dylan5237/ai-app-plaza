@@ -1325,8 +1325,8 @@ onUnmounted(() => {
 .agent-upgrade-intro { color: var(--plaza-muted); line-height:22px; font-size: 14px; margin: 0 0 14px; }
 .publication-change { padding: 14px 16px; margin: 14px 0; border: 1px solid var(--plaza-line); border-radius: 8px; background: var(--plaza-brand-soft); }
 .publication-change strong { color: var(--plaza-ink); font-size:17px;;line-height:26px;}
-.publication-change span { margin: 0 10px; color: var(--plaza-muted); }
-.publication-change p { color: var(--plaza-muted); font-size: 14px; margin: 8px 0 0;;line-height:22px;}
+.publication-change span { margin: 0 10px; color: var(--plaza-text); }
+.publication-change p { color: var(--plaza-text); font-size: 14px; margin: 8px 0 0;;line-height:22px;}
 .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 330px); gap: 24px; height: min(570px, calc(100vh - 144px)); min-height: 0; }
 .detail-content-scroll { min-width: 0; min-height: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
 .detail-actions { align-self: start; min-width: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid var(--plaza-line); border-radius: 8px; background: var(--plaza-surface); }
