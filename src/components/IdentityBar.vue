@@ -55,7 +55,11 @@ button:disabled { opacity: .5; cursor: default; }
   .identity-bar.rail .identity-error { flex: 0 0 100%; order: 2; margin-top: 2px; }
 }
 @media (max-width: 760px) and (max-height: 480px) {
-  .identity-bar.rail { display: none; }
+  .identity-bar.rail { padding: 3px 6px; gap: 2px 4px; }
+  .identity-bar.rail .identity-actions { gap: 4px; }
+  .identity-bar.rail .identity-actions > span small { display: none; }
+  .identity-bar.rail button { min-height: 26px; padding: 1px 5px; font-size: 11px; }
+  .identity-bar.rail .identity-error { max-height: 28px; overflow-y: auto; font-size: 10px; line-height: 1.4; }
 }
 @media(pointer:coarse) { button,a { min-height: 44px; } }
 </style>

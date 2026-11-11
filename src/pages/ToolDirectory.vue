@@ -123,13 +123,16 @@ async function selectDiscovery(tab, { syncUrl = true } = {}) {
     if (tab === 'random') url.searchParams.set('discover', 'random')
     else url.searchParams.delete('discover')
     url.searchParams.delete('app')
+    url.searchParams.delete('space')
     url.hash = ''
     history.replaceState(history.state, '', url)
   }
   await nextTick()
   if (tab === 'catalog') {
+    const previousPageSize = pageSize.value
     updateCatalogPageSize(false)
     if (!catalogLoaded) await loadCatalog({ trigger: 'initial' })
+    else if (pageSize.value !== previousPageSize) await loadCatalog({ trigger: 'layout_refresh' })
   }
   if (shell()) shell().scrollTop = scrollPositions[tab]
   if (tab === 'random' && !randomLoaded) await loadRandom()
@@ -591,11 +594,29 @@ function returnFromDetail() {
   }
 }
 
-function handlePopState() {
+async function applyDiscoveryFromUrl() {
+  const tab = new URLSearchParams(location.search).get('discover') === 'random' ? 'random' : 'catalog'
+  if (tab === discoveryTab.value) return
+  discoveryTab.value = tab
+  emit('discover', tab)
+  await nextTick()
+  if (tab === 'catalog') {
+    const previousPageSize = pageSize.value
+    updateCatalogPageSize(false)
+    if (!catalogLoaded) await loadCatalog({ trigger: 'initial' })
+    else if (pageSize.value !== previousPageSize) await loadCatalog({ trigger: 'layout_refresh' })
+  } else if (!randomLoaded) {
+    await loadRandom()
+  }
+  void observeCards()
+}
+
+async function handlePopState() {
   if (props.management || publicationId.value) return
   const id = new URLSearchParams(location.search).get('app')
-  if (id) void openApp(id, { fromHistory: true })
-  else if (detailVisible.value) void restoreDiscovery()
+  await applyDiscoveryFromUrl()
+  if (id) await openApp(id, { fromHistory: true })
+  else if (detailVisible.value) await restoreDiscovery()
 }
 
 function handleDetailKey(event) {
@@ -952,10 +973,10 @@ onMounted(async () => {
   catalogReady = true
   if (discoveryTab.value === 'random') {
     await selectDiscovery('random', { syncUrl: false })
-    if (appId) await openApp(appId)
+    if (appId && discoveryTab.value === 'random' && new URLSearchParams(location.search).get('app') === appId) await openApp(appId)
   } else {
     await loadCatalog({ trigger: 'initial' })
-    if (appId) await openApp(appId)
+    if (appId && discoveryTab.value === 'catalog' && new URLSearchParams(location.search).get('app') === appId) await openApp(appId)
   }
 })
 

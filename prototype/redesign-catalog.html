@@ -2277,14 +2277,21 @@
     return $('.group-detail')?.dataset.group || '平台组';
   }
 
+  let groupDraft = null;
+
+  function currentMembers(name) {
+    return groupDraft && groupDraft.name === name ? groupDraft.members : GROUP_DATA[name]?.members || [];
+  }
+
   function renderGroup(name) {
     const group = GROUP_DATA[name];
     if (!group) return;
+    const members = currentMembers(name);
     const detail = $('.group-detail');
     detail.dataset.group = name;
     $('h2', detail).innerHTML = `${name} <span class="state-chip ${group.enabled ? 'ok' : 'plain'}" id="groupStateChip">${group.enabled ? '已启用' : '已停用'}</span>`;
-    $('.member-chips', detail).innerHTML = group.members.length
-      ? group.members.map(member => `<span class="member-chip">${member} <button type="button" aria-label="移除 ${member}">×</button></span>`).join('')
+    $('.member-chips', detail).innerHTML = members.length
+      ? members.map(member => `<span class="member-chip">${member} <button type="button" aria-label="移除 ${member}">×</button></span>`).join('')
       : '<span class="panel-note">暂无成员</span>';
     $$('.group-row').forEach(row => {
       if (row.dataset.group === name) row.querySelector('.muted').textContent = `${group.members.length} 人`;
@@ -2292,6 +2299,7 @@
   }
 
   function selectGroup(row) {
+    if (row.dataset.group !== activeGroupName()) groupDraft = null;
     $$('.group-row').forEach(item => item.classList.toggle('on', item === row));
     renderGroup(row.dataset.group);
   }
@@ -2299,10 +2307,11 @@
   function openGroupDialog(name = '') {
     const editing = Boolean(name);
     const group = editing ? GROUP_DATA[name] : { enabled: true, members: [] };
+    const members = editing ? currentMembers(name) : group.members;
     const body = `
       <label class="field"><span>小组名称</span><input class="input" id="newGroupName" value="${name}" placeholder="例如：数据组" autocomplete="off"></label>
       <p class="field-label" style="margin:14px 0 6px">成员</p>
-      <div class="check-list">${GROUP_USERS.map(user => `<label class="check"><input type="checkbox"${group.members.includes(user) ? ' checked' : ''}><span>${user}</span></label>`).join('')}</div>
+      <div class="check-list">${GROUP_USERS.map(user => `<label class="check"><input type="checkbox"${members.includes(user) ? ' checked' : ''}><span>${user}</span></label>`).join('')}</div>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="groupEnabled"${group.enabled ? ' checked' : ''}><span>启用此小组</span></label>
       <p class="impact">移出成员或停用小组后，该小组不再提供相应的分享访问资格；独立授权不随之撤销，也不改变应用归属。</p>`;
     openFormDialog({
@@ -2315,9 +2324,11 @@
     $('#groupCreate').addEventListener('click', () => {
       const nextName = $('#newGroupName').value.trim();
       if (!nextName) { toast('请填写小组名称'); return; }
+      if (nextName !== name && GROUP_DATA[nextName]) { toast('该小组名称已存在，请换一个名称'); return; }
       const members = $$('.check-list .check input:checked', formDialog)
         .map(input => $('span', input.closest('.check')).textContent.trim());
       const enabled = $('#groupEnabled').checked;
+      members.forEach(member => { if (!GROUP_USERS.includes(member)) GROUP_USERS.push(member); });
       if (editing) {
         const activeRow = $('.group-row.on');
         if (nextName !== name) {
@@ -2327,6 +2338,7 @@
         } else {
           GROUP_DATA[name] = { enabled, members };
         }
+        groupDraft = null;
         renderGroup(nextName);
       } else {
         GROUP_DATA[nextName] = { enabled, members };
@@ -2355,15 +2367,25 @@
     }
     if (e.target.closest('#groupNew')) { openGroupDialog(); return; }
     if (e.target.closest('#groupEdit')) { openGroupDialog(activeGroupName()); return; }
-    if (e.target.closest('#groupSave')) { renderGroup(activeGroupName()); toast('小组已保存（概念稿）'); return; }
+    if (e.target.closest('#groupSave')) {
+      const groupName = activeGroupName();
+      if (groupDraft && groupDraft.name === groupName) {
+        GROUP_DATA[groupName].members = [...groupDraft.members];
+        groupDraft.members.forEach(member => { if (!GROUP_USERS.includes(member)) GROUP_USERS.push(member); });
+        groupDraft = null;
+        renderGroup(groupName);
+      }
+      toast('小组已保存（概念稿）');
+      return;
+    }
     if (e.target.closest('#adminAppoint')) { openRoleDialog(); return; }
     const remove = e.target.closest('.member-chip button');
     if (remove) {
       const groupName = activeGroupName();
       const name = remove.closest('.member-chip').textContent.replace('×', '').trim();
-      GROUP_DATA[groupName].members = GROUP_DATA[groupName].members.filter(member => member !== name);
+      groupDraft = { name: groupName, members: currentMembers(groupName).filter(member => member !== name) };
       renderGroup(groupName);
-      toast(`已移除 ${name}，保存后生效（概念稿）`);
+      toast(`已移除 ${name}，点击“确认保存小组”后生效（概念稿）`);
       return;
     }
     if (e.target.closest('#memberAdd')) {
@@ -2371,11 +2393,12 @@
       const name = input.value.trim();
       if (!name) { toast('请输入成员姓名或账号'); return; }
       const groupName = activeGroupName();
-      if (!GROUP_DATA[groupName].members.includes(name)) GROUP_DATA[groupName].members.push(name);
-      if (!GROUP_USERS.includes(name)) GROUP_USERS.push(name);
+      const members = currentMembers(groupName);
+      if (members.includes(name)) { toast('该成员已在小组中'); return; }
+      groupDraft = { name: groupName, members: [...members, name] };
       renderGroup(groupName);
       input.value = '';
-      toast(`已添加 ${name}，保存后生效（概念稿）`);
+      toast(`已添加 ${name}，点击“确认保存小组”后生效（概念稿）`);
       return;
     }
     const groupRow = e.target.closest('.group-row');

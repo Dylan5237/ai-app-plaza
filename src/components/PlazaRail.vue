@@ -126,6 +126,6 @@ const active = computed(() => props.active || fallbackActive)
   .rail-brand-mark { width: 22px; height: 22px; grid-template-columns: repeat(2, 10px); grid-template-rows: repeat(2, 10px); gap: 2px; }
   .rail-brand-copy strong { font-size: 13px; }
   .rail-item { height: 30px; font-size: 11.5px; }
-  .rail-foot { display: none; }
+  .rail-foot { display: block; padding-top: 3px; }
 }
 </style>

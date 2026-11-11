@@ -538,6 +538,97 @@ try {
   await directRandom.getByTestId('app-card').first().waitFor();
   await directRandom.close();
 
+  // A slow wheel response must not reopen its detail after the user has already returned to the catalog.
+  const slowRandom = await context.newPage();
+  slowRandom.setDefaultTimeout(10000);
+  slowRandom.on('pageerror', (error: Error) => report.errors.push(error.message));
+  let releaseWheel: (() => void) | undefined;
+  let noteWheelRequest: (() => void) | undefined;
+  const wheelGate = new Promise<void>(resolve => { releaseWheel = resolve; });
+  const wheelRequested = new Promise<void>(resolve => { noteWheelRequest = resolve; });
+  await slowRandom.route('**/api/apps/random**', async (route: any) => {
+    noteWheelRequest!();
+    await wheelGate;
+    await route.continue();
+  });
+  await slowRandom.goto(`${harness.origin}/?discover=random&app=${encodeURIComponent(webApps[0].id)}`);
+  await wheelRequested;
+  await slowRandom.getByTestId('tab-catalog').click();
+  await slowRandom.getByTestId('app-card').first().waitFor();
+  releaseWheel!();
+  await slowRandom.waitForTimeout(600);
+  assert.equal(await slowRandom.getByTestId('app-detail').count(), 0, 'a slow wheel response does not reopen a stale detail after navigating away');
+  assert.equal(new URL(slowRandom.url()).searchParams.has('app'), false, 'the abandoned wheel detail does not write its app id back to the URL');
+  await slowRandom.close();
+
+  // Returning from the wheel after a viewport change refetches with the new capacity.
+  const capacityPage = await context.newPage();
+  capacityPage.setDefaultTimeout(10000);
+  capacityPage.on('pageerror', (error: Error) => report.errors.push(error.message));
+  await capacityPage.setViewportSize({ width: 1440, height: 900 });
+  const capacityRequests: string[] = [];
+  capacityPage.on('request', (request: any) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/apps') capacityRequests.push(url.search);
+  });
+  await capacityPage.goto(harness.origin);
+  await capacityPage.getByTestId('app-card').first().waitFor();
+  await capacityPage.waitForLoadState('networkidle');
+  const initialPageSize = Number(new URLSearchParams(capacityRequests.at(-1)!).get('pageSize'));
+  assert.equal(await capacityPage.getByTestId('app-card').count(), initialPageSize, 'the initial catalog page fills the measured capacity');
+  await capacityPage.getByTestId('tab-random').click();
+  await capacityPage.getByTestId('wheel-current').waitFor();
+  await capacityPage.setViewportSize({ width: 1024, height: 720 });
+  const resizedResponsePromise = capacityPage.waitForResponse((response: any) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/apps' && Number(url.searchParams.get('pageSize')) !== initialPageSize;
+  });
+  await capacityPage.getByTestId('tab-catalog').click();
+  const resizedResponse = await resizedResponsePromise;
+  const resizedPageSize = Number(new URL(resizedResponse.url()).searchParams.get('pageSize'));
+  assert.ok(resizedPageSize < initialPageSize, `a smaller viewport lowers the page capacity: ${initialPageSize} -> ${resizedPageSize}`);
+  const expectedFirstPage = Math.min(resizedPageSize, 14);
+  await capacityPage.waitForFunction((size: number) => {
+    const results = document.querySelector('.catalog-results');
+    return results?.getAttribute('aria-busy') === 'false' && results.querySelectorAll('[data-testid="app-card"]').length === size;
+  }, expectedFirstPage);
+  const firstPageIds = await capacityPage.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
+  assert.equal(new Set(firstPageIds).size, firstPageIds.length, 'the refetched first page has no duplicate rows');
+  const secondPageResponse = capacityPage.waitForResponse((response: any) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/apps' && url.searchParams.get('page') === '2';
+  });
+  await capacityPage.getByTestId('pagination').locator('button.btn-next').click();
+  await secondPageResponse;
+  await capacityPage.waitForFunction((size: number) => {
+    const results = document.querySelector('.catalog-results');
+    return results?.getAttribute('aria-busy') === 'false' && results.querySelectorAll('[data-testid="app-card"]').length === size;
+  }, expectedFirstPage);
+  const secondPageIds = await capacityPage.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
+  assert.equal(secondPageIds.filter((id: string | undefined) => firstPageIds.includes(id)).length, 0, 'paging after a capacity change does not repeat rows from the refetched first page');
+  await capacityPage.close();
+
+  // Browser Back from a detail opened through the rail restores the catalog body, highlight and URL together.
+  const historyPage = await context.newPage();
+  historyPage.setDefaultTimeout(10000);
+  historyPage.on('pageerror', (error: Error) => report.errors.push(error.message));
+  await historyPage.setViewportSize({ width: 1280, height: 720 });
+  await historyPage.goto(harness.origin);
+  await historyPage.getByTestId('app-card').first().waitFor();
+  await historyPage.getByTestId('app-card').first().locator('.app-title').click();
+  await historyPage.getByTestId('app-detail').waitFor();
+  await historyPage.getByTestId('tab-random').click();
+  await historyPage.getByTestId('wheel-current').waitFor();
+  assert.equal(new URL(historyPage.url()).searchParams.get('discover'), 'random');
+  await historyPage.goBack();
+  await historyPage.getByTestId('app-card').first().waitFor();
+  assert.equal(await historyPage.getByTestId('random-discovery').count(), 0, 'Back from the wheel shows the catalog body again');
+  assert.equal(await historyPage.getByTestId('tab-catalog').getAttribute('aria-current'), 'page', 'Back moves the rail highlight to the catalog');
+  const restoredUrl = new URL(historyPage.url());
+  assert.equal(restoredUrl.searchParams.has('discover'), false, 'Back restores a catalog URL without the wheel parameter');
+  assert.equal(restoredUrl.searchParams.has('app'), false, 'Back does not leave a stale detail id in the URL');
+  await historyPage.close();
+
   let randomRequests = 0;
   page.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps/random') randomRequests++; });
   await page.getByTestId('tab-random').click();
