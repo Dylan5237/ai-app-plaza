@@ -78,7 +78,7 @@ export async function recordBrowserEvent(db: Database, config: Config, input: un
   if (event.appId) {
     if (!event.snapshotId) throw new DomainError(400, 'INVALID_REQUEST', '应用事件缺少版本');
     const result = await db.query<{ version: string; manifest: any; effective_tags: unknown }>(`SELECT s.version,s.manifest,${EFFECTIVE_TAGS} AS effective_tags FROM catalog_apps a
-      JOIN published_snapshots s ON s.id=$2 AND s.app_id=a.id
+      JOIN published_snapshots s ON s.id=$2 AND s.id=a.current_snapshot_id AND s.app_id=a.id
       LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id
       ${TAG_OVERRIDE_JOIN}
       WHERE a.id=$1 AND s.audience=$3 AND COALESCE(l.status,'published')='published'

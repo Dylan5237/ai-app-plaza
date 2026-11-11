@@ -42,6 +42,32 @@ test('application analytics require the current public or authorized browsing sc
   assert.deepEqual(await counts(), [4, 4]);
 });
 
+test('application event versions come only from the current snapshot', async t => {
+  const { startIdentityHarness } = await import('./helpers/identity-fixture.js');
+  const h = await startIdentityHarness('', { analytics: true }); t.after(h.close);
+  const target = await seedTagCatalog(h.db, h.config.audience, ['当前版本']);
+  const current = randomUUID();
+  await h.db.query(`INSERT INTO published_snapshots(id,app_id,commit_sha,manifest_path,tag,digest,audience,version,manifest,documents,search_text,project_url,source_created_at,created_at)
+    SELECT $1,app_id,commit_sha,manifest_path,tag,$2,audience,'1.1.0',jsonb_set(manifest,'{projectVersion}','"1.1.0"'),documents,search_text,project_url,source_created_at,now()
+    FROM published_snapshots WHERE id=$3`, [current, 'e'.repeat(64), target.snapshotId]);
+  await h.db.query('UPDATE catalog_apps SET current_snapshot_id=$2 WHERE id=$1', [target.appId, current]);
+  const send = (snapshotId: string, fallback = false) => h.app.inject({ method: 'POST', url: '/api/analytics/events',
+    headers: h.headers(fallback ? { 'x-plaza-analytics-fallback': 'anonymous' } : {}), payload: {
+      eventId: randomUUID(), eventName: 'app_detail_viewed', occurredAt: new Date().toISOString(), identityScope: 'session_only', visitorId: null,
+      sessionId: randomUUID(), viewId: randomUUID(), appId: target.appId, snapshotId,
+      attributes: { pageContext: 'detail', entryMode: 'detail_link', entryContext: 'deep_link' },
+    } });
+  assert.equal((await send(target.snapshotId)).statusCode, 404, 'historically published snapshots are not current event versions');
+  assert.equal((await send(current)).statusCode, 200);
+  assert.equal((await send(target.snapshotId, true)).statusCode, 200);
+  const rows = (await h.db.query('SELECT app_id,snapshot_id,attributes FROM analytics_events ORDER BY received_at')).rows;
+  assert.equal(rows.length, 2);
+  const attributed = rows.find(row => row.snapshot_id === current)!, fallback = rows.find(row => row.app_id === null)!;
+  assert.equal(attributed.attributes.appVersion, '1.1.0');
+  assert.equal(fallback.snapshot_id, null);
+  assert.equal(fallback.attributes.appVersion, undefined, 'fallback cannot revive historical attribution');
+});
+
 test('analytics shares short portal verification per session/token without identity writes or cached application grants', async t => {
   const { startIdentityHarness } = await import('./helpers/identity-fixture.js');
   const h = await startIdentityHarness('', { analytics: true }); t.after(h.close);
