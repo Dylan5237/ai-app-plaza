@@ -18,22 +18,126 @@ if (process.argv.includes('--serve')) {
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 const errors: string[] = [];
 const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+await page.addInitScript({ content: `(() => {
+  const NativeObserver = window.ResizeObserver;
+  const records = []; window.__plazaResizeAudit = records;
+  window.ResizeObserver = class extends NativeObserver {
+    constructor(callback) { super(callback); this.audit = { directory: false, disconnected: false }; records.push(this.audit); }
+    observe(target, options) { this.audit.directory ||= target.matches('.directory-main,.catalog-section,.tag-filter-row'); this.audit.disconnected = false; super.observe(target, options); }
+    disconnect() { this.audit.disconnected = true; super.disconnect(); }
+  };
+  const nativeFetch = window.fetch.bind(window);
+  const reads = []; window.__plazaCatalogReads = reads;
+  window.fetch = (input, options) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (!url.pathname.endsWith('/api/apps')) return nativeFetch(input, options);
+    const read = { finished: false }; reads.push(read);
+    return nativeFetch(input, options).then(response => {
+      const json = response.json.bind(response);
+      response.json = (...args) => json(...args).finally(() => { read.finished = true; });
+      return response;
+    }, error => { read.finished = true; throw error; });
+  };
+})();` });
+const analyticsPortalTokens: (string | undefined)[] = [];
+let observedFailureEvents = 0;
+page.on('request', request => {
+  if (new URL(request.url()).pathname.endsWith('/api/analytics/events')) {
+    analyticsPortalTokens.push(request.headers()['x-plaza-portal-token']);
+    if (request.postDataJSON()?.eventName === 'portal_operation_failed') observedFailureEvents++;
+  }
+});
 page.on('pageerror', error => errors.push(error.message));
 try {
   await page.goto(`${h.origin}/plaza/fixture/portal`);
+  const anonymousAnalytics = page.waitForRequest(request => new URL(request.url()).pathname.endsWith('/api/analytics/events'));
   await page.getByRole('button', { name: '以访客进入' }).click();
   await page.getByText('访客浏览', { exact: true }).waitFor();
+  await anonymousAnalytics;
+  assert.ok(analyticsPortalTokens.length > 0 && analyticsPortalTokens.filter(token => token !== undefined).length === 0, 'anonymous analytics omits the portal token');
   await page.getByRole('button', { name: '登录后收藏', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '未检测到天宫登录状态' }).waitFor();
   await page.goto(`${h.origin}/plaza/fixture/portal`);
+  let failedFavoriteRead = false;
+  const favoriteReadSteps: string[] = [];
+  page.on('request', request => { if (request.method() === 'PUT' && new URL(request.url()).pathname.includes('/api/personal/favorites/')) favoriteReadSteps.push('save'); });
+  await page.route('**/api/personal/favorite-ids', route => {
+    favoriteReadSteps.push('ids');
+    if (!failedFavoriteRead) { failedFavoriteRead = true; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '收藏状态暂不可用' } }) }); }
+    return route.continue();
+  });
   await page.getByRole('button', { name: '以测试名册管理员进入' }).click();
   await page.getByRole('button', { name: '成员与小组' }).waitFor();
+  const retryFavorite = page.getByRole('button', { name: '收藏状态读取失败，点击重试', exact: true });
+  await retryFavorite.waitFor();
+  assert.equal(await retryFavorite.isEnabled(), true, 'the star offers a local retry after a failed read');
+  assert.deepEqual(favoriteReadSteps, ['ids'], 'the guest intent remains pending until favorite status is known');
+  await retryFavorite.click();
+  await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
+  assert.deepEqual(favoriteReadSteps, ['ids', 'ids', 'save'], 'successful status retry precedes the single favorite write');
+  await page.unroute('**/api/personal/favorite-ids');
+  for (let attempt = 0; attempt < 30 && !analyticsPortalTokens.includes('fixture-admin'); attempt++) await page.waitForTimeout(100);
+  assert.ok(analyticsPortalTokens.includes('fixture-admin'), 'verified identity analytics carries the portal token');
+  await page.route('**/api/auth/me', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'IDENTITY_UNAVAILABLE', message: '身份服务暂不可用' } }) }));
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '身份服务暂不可用' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '退出广场', exact: true }).count(), 1, 'upstream outage does not sign the user out');
+  await page.unroute('**/api/auth/me');
+  await page.route('**/api/auth/me', route => route.abort('failed'));
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '暂时无法连接应用广场服务' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '退出广场', exact: true }).count(), 1, 'network failure preserves the verified session');
+  await page.unroute('**/api/auth/me');
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '暂时无法连接应用广场服务' }).waitFor({ state: 'hidden' });
+  await page.getByTestId('app-card').waitFor();
+  let releaseCatalog: (() => void) | undefined;
+  const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve; });
+  await page.route('**/api/apps?*', async route => { await catalogGate; await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '目录服务暂不可用' } }) }); });
+  const refreshingCatalog = page.waitForRequest('**/api/apps?*');
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await refreshingCatalog;
+  assert.equal(await page.getByTestId('app-card').count(), 1, 'focus refresh retains the catalog cards');
+  releaseCatalog!();
+  await page.getByRole('alert').filter({ hasText: '目录服务暂不可用' }).waitFor();
+  assert.equal(await page.getByTestId('app-card').count(), 1, 'catalog service failure retains the last successful results');
+  await page.unroute('**/api/apps?*');
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '目录服务暂不可用' }).waitFor({ state: 'hidden' });
+  await page.getByTestId('tab-random').click();
+  await page.getByTestId('wheel-current').waitFor();
+  await page.route(`**/api/apps/${registered.appId}`, route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'LOGIN_REQUIRED', message: '轮盘身份核验已失效' } }) }));
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: '轮盘身份核验已失效' }).waitFor();
+  assert.equal(await page.getByTestId('catalog-wheel').count(), 0, 'confirmed authorization loss removes the previous random batch');
+  await page.unroute(`**/api/apps/${registered.appId}`);
+  await page.getByTestId('random-refresh').click();
+  await page.getByTestId('wheel-current').waitFor();
+  await page.getByTestId('tab-catalog').click();
   await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
   assert.equal(page.context().pages().length, 1, 'a favorite never opens a primary-entry window');
   await page.reload();
   await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
   await page.getByRole('button', { name: '我的收藏', exact: true }).click();
   await page.getByRole('heading', { name: '我的收藏', exact: true }).waitFor();
+  await page.locator('.personal-grid [data-testid="app-card"]').waitFor();
+  let releaseFavorites: (() => void) | undefined;
+  const favoritesGate = new Promise<void>(resolve => { releaseFavorites = resolve; });
+  await page.route('**/api/personal/favorites?*', async route => {
+    await favoritesGate;
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '收藏服务暂不可用' } }) });
+  });
+  const refreshingFavorites = page.waitForRequest('**/api/personal/favorites?*');
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await refreshingFavorites;
+  assert.equal(await page.locator('.personal-grid [data-testid="app-card"]').count(), 1, 'focus refresh retains the saved grid');
+  await page.getByText('正在更新收藏…', { exact: true }).waitFor();
+  releaseFavorites!();
+  await page.getByRole('alert').filter({ hasText: '收藏服务暂不可用' }).waitFor();
+  assert.equal(await page.locator('.personal-grid [data-testid="app-card"]').count(), 1, 'failed refresh retains the saved grid');
+  await page.unroute('**/api/personal/favorites?*');
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '收藏服务暂不可用' }).waitFor({ state: 'hidden' });
   await page.screenshot({ path: 'artifacts/personal-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'personal page does not overflow horizontally');
@@ -41,6 +145,23 @@ try {
   await page.setViewportSize({ width: 1366, height: 900 });
   await page.getByRole('button', { name: /查看 .* 详情/ }).click();
   await page.getByRole('button', { name: '← 返回我的收藏', exact: true }).waitFor();
+  await page.getByTestId('use-agent').click();
+  await page.getByTestId('agent-instruction-content').waitFor();
+  await page.locator('.instruction-markdown').waitFor();
+  const beforeFocus = await page.getByTestId('agent-instruction-content').innerText();
+  let releaseDetail: (() => void) | undefined;
+  const detailGate = new Promise<void>(resolve => { releaseDetail = resolve; });
+  await page.route(`**/api/apps/${registered.appId}`, async route => { await detailGate; await route.continue(); }, { times: 1 });
+  const refreshingDetail = page.waitForRequest(`**/api/apps/${registered.appId}`);
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  await refreshingDetail;
+  assert.equal(await page.getByTestId('app-detail').count(), 1, 'background permission check keeps the detail');
+  assert.equal(await page.getByTestId('agent-instruction-content').innerText(), beforeFocus, 'focus preserves the active Agent instructions');
+  const refreshedDetail = page.waitForResponse(`**/api/apps/${registered.appId}`);
+  releaseDetail!();
+  await refreshedDetail;
+  await page.keyboard.press('Escape');
+  await page.getByTestId('agent-instruction-dialog').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '← 返回我的收藏', exact: true }).click();
   await page.getByRole('heading', { name: '我的收藏', exact: true }).waitFor();
   await page.getByRole('button', { name: '返回应用广场', exact: true }).click();
@@ -75,8 +196,34 @@ try {
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await page.screenshot({ path: 'artifacts/identity-groups.png', fullPage: true });
   await page.getByRole('button', { name: '返回应用广场' }).click();
+  const oldObserverCount = await page.evaluate(() => (window as any).__plazaResizeAudit.length);
+  const oldReadIndex = await page.evaluate(() => (window as any).__plazaCatalogReads.length);
+  const priorFailureRequests = observedFailureEvents;
+  const priorFailures = Number((await h.db.query("SELECT count(*) AS n FROM analytics_events WHERE event_name='portal_operation_failed'")).rows[0].n);
+  let releaseOldCatalog: (() => void) | undefined, catalogPrepared: (() => void) | undefined;
+  const oldCatalogGate = new Promise<void>(resolve => { releaseOldCatalog = resolve; });
+  const preparedCatalog = new Promise<void>(resolve => { catalogPrepared = resolve; });
+  let heldCatalog = false;
+  await page.route('**/api/apps?*', async route => {
+    if (heldCatalog) return route.continue();
+    heldCatalog = true;
+    const response = await route.fetch(); catalogPrepared!();
+    await oldCatalogGate; await route.fulfill({ response });
+  });
+  const oldCatalogRequest = page.waitForRequest('**/api/apps?*');
+  await page.evaluate(() => dispatchEvent(new Event('focus')));
+  const heldRequest = await oldCatalogRequest; await preparedCatalog;
   await page.getByRole('button', { name: '退出广场' }).click();
   await page.getByText('访客浏览', { exact: true }).waitFor();
+  await page.getByTestId('app-card').waitFor();
+  const activeOldObservers = await page.evaluate(count => (window as any).__plazaResizeAudit.slice(0, count).filter((item: any) => item.directory && !item.disconnected).length, oldObserverCount);
+  assert.equal(activeOldObservers, 0, 'all observers for the old directory disconnect on identity remount');
+  const oldCatalogResponse = page.waitForResponse(response => response.url() === heldRequest.url());
+  releaseOldCatalog!(); await (await oldCatalogResponse).finished();
+  await page.waitForFunction((index: number) => (window as any).__plazaCatalogReads[index]?.finished, oldReadIndex);
+  await page.unroute('**/api/apps?*');
+  assert.equal(observedFailureEvents, priorFailureRequests, 'the unmounted component sends no stale failure event after consuming its response');
+  assert.equal(Number((await h.db.query("SELECT count(*) AS n FROM analytics_events WHERE event_name='portal_operation_failed'")).rows[0].n), priorFailures, 'a response to an unmounted directory produces no failure telemetry');
   await page.reload();
   await page.getByRole('button', { name: '使用天宫身份登录' }).waitFor();
   assert.equal(await page.getByRole('button', { name: '成员与小组' }).count(), 0, 'explicit logout survives reload');
@@ -97,6 +244,13 @@ try {
   });
   assert.equal(forbidden, 403);
   await page.getByRole('button', { name: '退出广场' }).click();
+  await page.getByText('访客浏览', { exact: true }).waitFor();
+  const analyticsCountAfterLogout = analyticsPortalTokens.length;
+  await page.reload();
+  await page.getByRole('button', { name: '使用天宫身份登录' }).waitFor();
+  for (let attempt = 0; attempt < 30 && analyticsPortalTokens.length === analyticsCountAfterLogout; attempt++) await page.waitForTimeout(100);
+  assert.ok(analyticsPortalTokens.length > analyticsCountAfterLogout, 'the post-logout page still emits anonymous analytics');
+  assert.ok(analyticsPortalTokens.slice(analyticsCountAfterLogout).every(token => token === undefined), 'explicit logout stops identity headers even while the portal token remains in storage');
   await page.evaluate(() => localStorage.setItem('fixture-sky-token', 'fixture-admin'));
   await page.getByRole('button', { name: '使用天宫身份登录' }).click();
   await page.getByRole('button', { name: '成员与小组' }).click();
@@ -113,7 +267,7 @@ try {
   await page.screenshot({ path: 'artifacts/identity-mobile.png', fullPage: true });
   assert.deepEqual(errors, []);
   const usage = (await h.db.query("SELECT count(*) AS n FROM analytics_events WHERE event_name='app_entry_clicked'")).rows[0].n;
-  assert.equal(usage, 0, 'favorite interactions never count as entry usage');
+  assert.equal(usage, 1, 'only the deliberate Agent-entry click counts; favorite interactions add no usage');
   await writeFile('artifacts/identity-browser.json', JSON.stringify({ status: 'PASS', checks: ['prefixed anonymous directory and analytics', 'Tiangong sign-in', 'guest favorite intent', 'persisted personal favorites', 'favorite detail return', 'account isolation', 'inline group impact and uncertain-result retry', 'logout suppression', 'explicit account switch', 'direct authorization denial', 'disabled identity removes private content', 'mobile layout'], errors }, null, 2));
   console.log('PASS: Tiangong identity, personal favorites and local groups browser flow (synthetic portal).');
 } catch (error) {

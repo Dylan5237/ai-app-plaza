@@ -3,11 +3,12 @@ import { apiRequest } from './api.js'
 import { identity, signIn } from './identity.js'
 import { publicBasePath } from './public-path.js'
 
-export const favorites = reactive({ ids: [], busy: [], error: '', loaded: false })
+export const favorites = reactive({ ids: [], busy: [], error: '', loaded: false, loading: false })
 const intentKey = `plaza-favorite-intent:${publicBasePath()}`
 let pending = null
 let completing = false
 let revision = 0
+let refreshSequence = 0
 let previousUserId = null
 try {
   const value = JSON.parse(sessionStorage.getItem(intentKey) || 'null')
@@ -20,12 +21,16 @@ function remember(value) {
 export async function refreshFavoriteIds() {
   if (!identity.user) return
   const epoch = identity.epoch
-  const current = revision
+  const request = ++refreshSequence
+  const revisionAtStart = revision
+  favorites.loading = true; favorites.error = ''
   try {
     const result = await apiRequest('/api/personal/favorite-ids')
-    if (epoch !== identity.epoch || current !== revision) return
+    if (epoch !== identity.epoch || request !== refreshSequence || revision !== revisionAtStart) return
     favorites.ids = result.ids; favorites.loaded = true; favorites.error = ''
-  } catch (error) { if (epoch === identity.epoch) favorites.error = error.message }
+    await completeIntent()
+  } catch (error) { if (epoch === identity.epoch && request === refreshSequence) favorites.error = error.message }
+  finally { if (request === refreshSequence) favorites.loading = false }
 }
 export async function saveFavorite(appId, saved) {
   if (!identity.user || favorites.busy.includes(appId)) return
@@ -43,7 +48,7 @@ export async function saveFavorite(appId, saved) {
   finally { if (epoch === identity.epoch) favorites.busy = favorites.busy.filter(id => id !== appId) }
 }
 async function completeIntent() {
-  if (!pending || !identity.user || completing) return
+  if (!pending || !identity.user || !favorites.loaded || completing) return
   completing = true
   const intent = pending
   try {
@@ -64,6 +69,6 @@ watch(() => identity.epoch, async () => {
   const userId = identity.user?.id || null
   if (previousUserId && previousUserId !== userId) remember(null)
   previousUserId = userId
-  favorites.ids = []; favorites.busy = []; favorites.error = ''; favorites.loaded = false
+  refreshSequence++; favorites.ids = []; favorites.busy = []; favorites.error = ''; favorites.loaded = false; favorites.loading = false
   if (identity.user) { await refreshFavoriteIds(); await completeIntent() }
 }, { flush: 'sync' })

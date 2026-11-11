@@ -304,6 +304,9 @@ try {
   });
   assertNoViewportOverflow(await overflowMetrics(), '1280x720');
 
+  // Paging above ends on the last page; an equal-capacity resize preserves that page.
+  await page.getByTestId('pagination').getByText('1', { exact: true }).click();
+  await waitForCatalog(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await waitForCatalog(page);
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
@@ -475,6 +478,7 @@ try {
   // S4: preserve the exact filtered page and scroll position, without re-querying on return.
   await page.setViewportSize({ width: 390, height: 500 });
   await search(page, 'needle', 'all');
+  if (!await page.getByTestId('tag-chip').filter({ hasText: '组合筛选' }).isVisible()) await page.getByTestId('tag-more').click();
   await page.getByTestId('tag-chip').filter({ hasText: '组合筛选' }).click();
   await waitForCatalog(page);
   await page.getByTestId('pagination').locator('button.btn-next').click();
@@ -514,6 +518,12 @@ try {
   await page.getByTestId('wheel-current').waitFor();
   await page.waitForLoadState('networkidle');
   const wheel = page.getByTestId('catalog-wheel');
+  const wheelDots = page.getByTestId('random-discovery').locator('.wheel-dots button');
+  assert.equal(await wheelDots.count(), 6);
+  assert.equal(await wheelDots.evaluateAll((buttons: HTMLElement[]) => buttons.every(button => {
+    const box = button.getBoundingClientRect(); return box.width >= 24 && box.height >= 24;
+  })), true, 'wheel selectors have at least a 24px target');
+  assert.ok(await page.getByTestId('random-discovery').locator('.wheel-dots button[aria-pressed="true"]').evaluate((button: HTMLElement) => parseFloat(getComputedStyle(button).outlineWidth) >= 2), 'the current wheel item has a shape cue beyond color');
   const batchIds = () => wheel.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
   const refreshRandom = async () => {
     const response = page.waitForResponse((res: any) => new URL(res.url()).pathname === '/api/apps/random');
@@ -556,7 +566,13 @@ try {
   assert.equal(randomRequests, 1);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const selected = await currentId();
+  await page.keyboard.press('Tab');
   await page.getByTestId('wheel-current').getByTestId('card-detail').focus();
+  assert.equal(await page.getByTestId('wheel-current').getByTestId('card-detail').evaluate((button: HTMLElement) => {
+    const sample = document.createElement('i'); sample.style.color = 'var(--plaza-brand)'; document.body.append(sample);
+    const brand = getComputedStyle(sample).color; sample.remove();
+    const style = getComputedStyle(button); return style.outlineColor === brand && parseFloat(style.outlineWidth) >= 2;
+  }), true, 'keyboard focus uses the accessible brand ring');
   await assertCardOverlay(page.getByTestId('wheel-current').getByTestId('app-card'));
   await page.screenshot({ path: 'artifacts/catalog-wheel-card-focus.png' });
   await page.keyboard.press('Enter');

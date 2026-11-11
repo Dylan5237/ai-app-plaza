@@ -8,7 +8,7 @@ import type { IdentityHttp } from './identity.js';
 import Fastify, { type FastifyRequest } from 'fastify';
 import staticPlugin from '@fastify/static';
 import rateLimit from '@fastify/rate-limit';
-import { access, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { createService } from './domain/service.js';
@@ -216,7 +216,12 @@ export async function createApp(config: Config, db: Database) {
     const result = await service.list({ query: search.query, tags, page: search.page, pageSize: search.pageSize, usage: search.usage, sort: search.sort, viewerId: await viewerId(request) });
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
-  app.post('/api/analytics/events', { config: { rateLimit: { groupId: ':analytics', max: 240, timeWindow: '1 minute' } } }, async request => recordBrowserEvent(db, config, request.body));
+  app.post('/api/analytics/events', { config: { rateLimit: { groupId: ':analytics', max: 240, timeWindow: '1 minute' } } }, async request => {
+    const hasToken = typeof request.headers['x-plaza-portal-token'] === 'string';
+    const viewer = identity && hasToken ? await identity.analyticsViewer(request) : undefined;
+    return recordBrowserEvent(db, config, request.body, viewer,
+      !hasToken && request.headers['x-plaza-analytics-fallback'] === 'anonymous');
+  });
   app.get('/api/apps/random', async (request) => {
     const search = z.object({ exclude: z.union([z.string().uuid(), z.array(z.string().uuid()).max(6)]).optional() }).parse(request.query);
     return service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude, await viewerId(request));
@@ -297,18 +302,25 @@ export async function createApp(config: Config, db: Database) {
       },
       visibleAppIds: () => publicCatalogAppIds(db, config.audience) });
   }
-  try {
-    await access(config.staticDir);
-    const index = async (_request: FastifyRequest, reply: any) => reply.type('text/html').header('Cache-Control', 'no-store')
-      .send((await readFile(resolve(config.staticDir, 'index.html'), 'utf8')).replace('<head>', `<head><meta name="plaza-base-path" content="${basePath}">`));
-    app.get('/', index);
-    app.get('/index.html', index);
-    if (basePath) app.get('/__plaza_mount', (request, reply) => reply.redirect(`${basePath}/${request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''}`));
-    await app.register(staticPlugin, { root: config.staticDir, index: false, dotfiles: 'deny' });
-    app.get('/admin', (request, reply) => { reply.header('X-Robots-Tag', 'noindex, nofollow'); return index(request, reply); });
-    app.get('/admin/', (_request, reply) => reply.redirect(`${basePath}/admin`));
-    app.get('/private-previews', (_request, reply) => reply.redirect(`${basePath}/admin`));
-    app.get('/private-previews/', (_request, reply) => reply.redirect(`${basePath}/admin`));
-  } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+  // API-only tests and local development must not depend on a prior frontend build.
+  // Keep mounting/redirect routes registered and report missing assets at their entry point.
+  const index = async (_request: FastifyRequest, reply: any) => {
+    let html: string;
+    try { html = await readFile(resolve(config.staticDir, 'index.html'), 'utf8'); }
+    catch (error: any) {
+      if (error.code !== 'ENOENT') throw error;
+      throw new DomainError(503, 'FRONTEND_NOT_BUILT', '前端构建产物缺失，请先运行 npm run build');
+    }
+    return reply.type('text/html').header('Cache-Control', 'no-store')
+      .send(html.replace('<head>', `<head><meta name="plaza-base-path" content="${basePath}">`));
+  };
+  app.get('/', index);
+  app.get('/index.html', index);
+  if (basePath) app.get('/__plaza_mount', (request, reply) => reply.redirect(`${basePath}/${request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''}`));
+  await app.register(staticPlugin, { root: config.staticDir, index: false, dotfiles: 'deny' });
+  app.get('/admin', (request, reply) => { reply.header('X-Robots-Tag', 'noindex, nofollow'); return index(request, reply); });
+  app.get('/admin/', (_request, reply) => reply.redirect(`${basePath}/admin`));
+  app.get('/private-previews', (_request, reply) => reply.redirect(`${basePath}/admin`));
+  app.get('/private-previews/', (_request, reply) => reply.redirect(`${basePath}/admin`));
   return { app, service, managed, identity };
 }

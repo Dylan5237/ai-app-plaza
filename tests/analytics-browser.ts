@@ -8,7 +8,7 @@ import { DEFAULT_TAG, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 const h = await startHarness(1, 'memory://', { localManagement:true, analytics:{ environment:'test', siteInstanceId:'browser-fixture' } });
 const seeded = [];
 for (let index = 1; index <= 8; index++) seeded.push(await seedTagCatalog(h.db, h.config.audience, ['文档处理'], index));
-const browser = await chromium.launch({ headless:true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH } : {}) });
+const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 const context = await browser.newContext({ viewport:{ width:1280, height:720 } });
 const page = await context.newPage();
 await page.addInitScript("Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => {} }, configurable: true })");

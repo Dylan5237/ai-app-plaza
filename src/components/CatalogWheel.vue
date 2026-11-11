@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch, onUnmounted } from 'vue'
 import CatalogCard from './CatalogCard.vue'
-const props = defineProps({ items: { type: Array, required: true }, index: { type: Number, default: 0 }, loading: Boolean, error: String, allShown: Boolean })
+const props = defineProps({ items: { type: Array, required: true }, index: { type: Number, default: 0 }, loading: Boolean, revalidating: Boolean, error: String, allShown: Boolean })
 const emit = defineEmits(['update:index', 'refresh', 'return', 'detail', 'primary', 'tag'])
 const wheel = ref(null)
 let touchStart = null
@@ -147,10 +147,10 @@ function click(event) {
       <div><h2>随便看看</h2><p>随机遇见一个好用的应用</p></div>
       <div class="random-actions">
         <button @click="emit('return')">返回应用目录</button>
-        <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? '正在抽取…' : '换一批' }}</button>
+        <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? revalidating ? '正在核验…' : '正在抽取…' : '换一批' }}</button>
       </div>
     </div>
-    <p v-if="error" role="alert" class="random-error">{{ error }}{{ items.length ? ' 当前批次已保留。' : '' }}</p>
+    <p v-if="error" role="alert" class="random-error">{{ error }}</p>
     <p v-if="loading && !items.length" class="random-state" role="status">正在读取随机应用…</p>
     <p v-else-if="!error && !items.length" class="random-state">目录中还没有可展示的应用。</p>
     <template v-if="items.length">
@@ -183,24 +183,27 @@ function click(event) {
 <style scoped>
 .random-section { min-height: 400px; }
 .random-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 18px 0; }
-h2 { margin: 0; font-size: 18px; }
-.random-heading p { margin: 7px 0 0; color: #7b8798; font-size: 13px; }
+h2 { margin: 0; font-size: 17px;;line-height:26px;}
+.random-heading p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 14px;;line-height:22px;}
 .random-actions { display: flex; gap: 8px; }
-button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--plaza-line); border-radius: var(--plaza-control-radius); background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 13px; cursor: pointer; }
+button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--plaza-line); border-radius: var(--plaza-control-radius); background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 14px; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
-.refresh-button { background: var(--plaza-brand); border-color: var(--plaza-brand); color: #fff; }
+.refresh-button { background: var(--plaza-brand); border-color: var(--plaza-brand); color: var(--plaza-surface); }
 .wheel { position: relative; height: 370px; overflow: hidden; touch-action: pan-y; }
 .wheel-card { position: absolute; width: min(390px, 76%); left: 50%; top: 24px; transform: translate3d(calc(-50% + var(--offset) * 51%),calc(var(--distance) * 14px),0) scale(calc(1 - var(--distance) * .12)); opacity: var(--wheel-opacity); will-change: transform,opacity; }
 .wheel-card :deep(.app-card) { --catalog-card-height: 290px; }
 .side-select { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
 .wheel-controls, .wheel-dots { display: flex; justify-content: center; align-items: center; gap: 12px; }
-.wheel-dots button { width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 50%; background: #d3dce9; border-color: transparent; }
-.wheel-dots button[aria-pressed=true] { background: var(--plaza-brand); }
-.wheel-status, .random-state { color: #7b8798; font-size: 13px; text-align: center; }
-.wheel-hint { margin: 8px 0 0; color: var(--plaza-muted,#657085); font-size: 11px; text-align: center; }
+.wheel-dots button { position: relative; display: grid; width: 24px; height: 24px; min-height: 24px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; }
+.wheel-dots button::before { width: 10px; height: 10px; border-radius: 50%; background: var(--plaza-line); content: ""; }
+.wheel-dots button[aria-pressed="true"] { outline: 2px solid var(--plaza-brand); outline-offset: 1px; }
+.wheel-dots button[aria-pressed="true"]::before { background: var(--plaza-brand); }
+
+.wheel-status, .random-state { color: var(--plaza-muted); font-size: 14px; text-align: center;;line-height:22px;}
+.wheel-hint { margin: 8px 0 0; color: var(--plaza-muted); font-size: 11px; text-align: center;;line-height:18px;}
 .random-state { padding: 80px 0; }
-.random-error { padding: 12px; color: #9b4d4d; background: #fff8f8; border-radius: 6px; font-size: 13px; }
-button:focus-visible, .wheel:focus-visible { outline: 3px solid #bfd3f5; outline-offset: 2px; }
+.random-error { padding: 12px; color: var(--plaza-danger); background: var(--plaza-surface); border-radius: 6px; font-size: 14px;;line-height:22px;}
+button:focus-visible, .wheel:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
 @media (max-width: 620px) { .random-heading { align-items: flex-start; flex-direction: column; } .wheel-card { width: 86%; } }
 @media (hover: none), (pointer: coarse) { .wheel { height: 410px; }.wheel-hint{display:none} }
 @media (prefers-reduced-motion: reduce) { .wheel-card { will-change: auto; } }

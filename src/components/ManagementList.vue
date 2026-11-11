@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, toRefs, watch } from '
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import ListPagination from './ListPagination.vue'
+import { formatDateTime } from '../lib/date.ts'
 
 const emit = defineEmits(['open-app', 'open-update', 'open-publication', 'open-editor', 'open-create', 'open-access'])
 const props = defineProps({ state: { type: Object, required: true }, managementEnabled: { type: Boolean, default: false }, managementMode: { type: String, default: 'disabled' } })
@@ -27,7 +28,7 @@ const description = computed(() => ({
   trash: '删除的应用保留源码与历史版本，恢复后保持下架状态。',
 })[view.value])
 const stageLabels = { prepared: '上传已占位', project_ready: '项目已准备', commit_ready: '源码已上传', tag_ready: '版本已创建', release_ready: '正在生成预览', submitted: '预览已生成' }
-function date(value) { if (!value) return '—'; const d = new Date(value); return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN', { hour12: false }) }
+function date(value) { return formatDateTime(value) }
 function name(row) { return row.manifest?.name || row.name || row.appKey || '待核验应用' }
 function key(row) { return row.manifest?.appKey || row.appKey || '' }
 function authors(row) { const list = row.manifest?.maintainers || row.maintainers || []; return list.map(item => typeof item === 'string' ? item : item.name).filter(Boolean).join('、') || '待资料就绪' }
@@ -49,7 +50,12 @@ async function load() {
     if (page.value > lastPage) { page.value = lastPage; await load(); return }
     rows.value = response.items || []
     table.value?.setScrollTop(0)
-  } catch (e) { if (current === sequence) { rows.value = []; total.value = 0; error.value = e.message || '暂时无法读取记录。' } }
+  } catch (e) {
+    if (current === sequence) {
+      if ([401, 403, 404].includes(e.status)) { rows.value = []; total.value = 0 }
+      error.value = e.message || '暂时无法读取记录。'
+    }
+  }
   finally { if (current === sequence) loading.value = false }
 }
 function changeView(value) { view.value = value; query.value = ''; status.value = 'all'; page.value = 1; load() }
@@ -89,7 +95,7 @@ async function changeLifecycle(row, action) {
   finally { mutating.value = '' }
 }
 defineExpose({ reload: load })
-function revalidateAccess() { if (props.managementMode === 'identity' && !mutating.value) { rows.value = []; total.value = 0; void load() } }
+function revalidateAccess() { if (props.managementMode === 'identity' && !mutating.value) void load() }
 watch(() => props.managementEnabled, load)
 onMounted(async () => {
   window.addEventListener('focus', revalidateAccess)
@@ -150,36 +156,36 @@ onUnmounted(() => { ++sequence; window.removeEventListener('focus', revalidateAc
 </template>
 
 <style scoped>
-.management-main { box-sizing: border-box; display: flex; flex-direction: column; width: min(1480px, 100%); height: 100%; min-height: 360px; margin: 0 auto; padding: 28px 24px; color: #273449; }
+.management-main { box-sizing: border-box; display: flex; flex-direction: column; width: min(1480px, 100%); height: 100%; min-height: 360px; margin: 0 auto; padding: 28px 24px; color: var(--plaza-ink); }
 .management-heading, .management-tabs, .management-toolbar, .management-alert, .management-note { flex-shrink: 0; }
 .management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.management-heading h1 { margin: 0 0 7px; color: #1f2c3d; font-size: 22px; }
-.management-heading p { margin: 0; color: #7b8798; font-size: 13px; line-height: 1.6; }
-.local-label { flex: none; padding: 5px 10px; border: 1px solid #dbe7ff; border-radius: 4px; background: #edf3ff; color: #165dff; font-size: 12px; }
+.management-heading h1 { margin: 0 0 7px; color: var(--plaza-ink); font-size: 24px;;line-height:32px;}
+.management-heading p { margin: 0; color: var(--plaza-muted); font-size: 14px; line-height:22px; }
+.local-label { flex: none; padding: 5px 10px; border: 1px solid var(--plaza-brand-soft); border-radius: 4px; background: var(--plaza-brand-soft); color: var(--plaza-brand); font-size: 12px;;line-height:18px;}
 .management-heading-actions { display: flex; align-items: center; gap: 12px; }
-.management-tabs { display: flex; gap: 24px; margin-bottom: 16px; border-bottom: 1px solid #e2e7ee; }
-.management-tabs button { padding: 9px 0 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #667386; font-size: 14px; cursor: pointer; }
-.management-tabs button.active { border-bottom-color: #165dff; color: #165dff; font-weight: 600; }
+.management-tabs { display: flex; gap: 24px; margin-bottom: 16px; border-bottom: 1px solid var(--plaza-line); }
+.management-tabs button { padding: 9px 0 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--plaza-muted); font-size: 14px; cursor: pointer;;line-height:22px;}
+.management-tabs button.active { border-bottom-color: var(--plaza-brand); color: var(--plaza-brand); font-weight: 600; }
 .management-toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
 .management-toolbar :deep(.el-input) { width: 340px; max-width: 100%; }
 .management-toolbar :deep(.el-select) { width: 160px; }
 .management-toolbar :deep(.el-button + .el-button) { margin-left: 0; }
 .management-alert { margin-bottom: 16px; }
-.management-records { display: flex; flex: 1; flex-direction: column; min-height: 118px; overflow: hidden; border: 1px solid #e3e8ef; border-radius: 7px; background: white; }
+.management-records { display: flex; flex: 1; flex-direction: column; min-height: 118px; overflow: hidden; border: 1px solid var(--plaza-line); border-radius: 7px; background: var(--plaza-surface); }
 .management-records :deep(.el-table) { flex: 1; min-height: 0; }
 .management-records :deep(.el-table__row) { height: 64px; }
 .management-records :deep(.cell) { white-space: nowrap; }
 .record-app > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .record-app { display: grid; gap: 3px; line-height: 20px; }
-.record-app strong, .record-name { color: #273449; font-size: 13px; font-weight: 600; }
+.record-app strong, .record-name { color: var(--plaza-ink); font-size: 14px; font-weight: 600;;line-height:22px;}
 .record-name { width: fit-content; padding: 0; border: 0; background: transparent; line-height: 20px; text-align: left; cursor: pointer; }
-.record-name:hover { color: #165dff; }
-.record-app span { color: #8a96a8; font-size: 12px; }
+.record-name:hover { color: var(--plaza-brand); }
+.record-app span { color: var(--plaza-muted); font-size: 12px;;line-height:18px;}
 .management-actions { display: flex; gap: 12px; align-items: center; }
 .management-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.management-footer { position: relative; display: flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid #edf0f5; color: #7b8798; font-size: 12px; }
+.management-footer { position: relative; display: flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid var(--plaza-line); color: var(--plaza-muted); font-size: 12px;;line-height:18px;}
 .management-pager { display: flex; min-height: 32px; align-items: center; justify-content: center; }
 .management-footer > span { position: absolute; left: 16px; }
-.management-note { color: #7b8798; font-size: 12px; line-height: 1.7; }
-@media (max-width: 650px) { .management-footer { flex-direction: column; gap: 8px; padding: 10px 16px; } .management-footer > span { position: static; align-self: flex-start; } .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 20px; } .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px; } }
+.management-note { color: var(--plaza-muted); font-size: 12px; line-height:18px; }
+@media (max-width: 650px) { .management-footer { flex-direction: column; gap: 8px; padding: 10px 16px; } .management-footer > span { position: static; align-self: flex-start; } .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 24px;;line-height:32px;} .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px;;line-height:18px;} }
 </style>

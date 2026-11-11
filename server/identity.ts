@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
+import { trustedProxyClientRateKey } from './public-origins.js';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Database } from './domain/database.js';
@@ -42,7 +43,9 @@ export async function registerIdentity(app: FastifyInstance, config: Config, db:
   app.post('/api/auth/tiangong/requests', async (request, reply) => {
     sameOrigin(request);
     z.object({}).strict().parse(request.body ?? {});
-    const result = await service.challenge();
+    const clientKey = trustedProxyClientRateKey(config, request);
+    const clientHash = clientKey ? createHmac('sha256', config.secret).update('plaza-login-client\0').update(clientKey).digest('hex') : undefined;
+    const result = await service.challenge(clientHash);
     setCookie(reply, REQUEST, result.browserSecret, 120);
     return { requestId: result.requestId };
   });
@@ -105,7 +108,9 @@ export async function registerIdentity(app: FastifyInstance, config: Config, db:
     await service.saveFavorite(actor, id, saved, config.audience);
     return { id, saved };
   });
-  return { service, authenticate, sameOrigin };
+  const analyticsViewer = (request: FastifyRequest) => service.analyticsViewer(cookie(request, SESSION),
+    typeof request.headers['x-plaza-portal-token'] === 'string' ? request.headers['x-plaza-portal-token'] : undefined);
+  return { service, authenticate, analyticsViewer, sameOrigin };
 }
 
 export type IdentityHttp = NonNullable<Awaited<ReturnType<typeof registerIdentity>>>;

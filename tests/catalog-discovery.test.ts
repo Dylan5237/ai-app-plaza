@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { sampleCatalog } from '../server/domain/service.js';
+import { catalogAppSelect, sampleCatalog } from '../server/domain/service.js';
 import { startHarness } from './helpers/harness.js';
 import { seedTagCatalog } from './helpers/tag-catalog.js';
 
@@ -119,4 +120,61 @@ test('random API covers 0/1/6/7/13, visibility, exclusions and public entry avai
     assert.deepEqual(result.items.find(x => x.id === blocked.appId)!.entryAvailability, detail.entryAvailability);
   }
   assert.equal((await h.service.list()).items.find(x => x.id === blocked.appId)!.entryAvailability, undefined, 'legacy response stays unchanged');
+});
+
+test('directory reads leave expired publication credentials to the scheduled cleanup', async t => {
+  const h = await startHarness();
+  t.after(() => h.close());
+  const app = await seedTagCatalog(h.db, h.config.audience, ['MCP']);
+  const entry = app.source.entries.find((item: any) => item.kind === 'agent');
+  assert.ok(entry, 'fixture includes an Agent entry');
+  const publicationId = randomUUID();
+  await h.db.query(`INSERT INTO publications(id,actor_id,idempotency_digest,request_hash,submission,status,candidate_app_id,
+    token_ciphertext,token_iv,token_auth_tag,next_action,expires_at,created_at,updated_at)
+    VALUES($1,'fixture',$2,'request','{}'::jsonb,'failed',$3,'ciphertext','iv','auth-tag','none',now()-interval '1 minute',now(),now())`,
+  [publicationId, randomUUID(), randomUUID()]);
+
+  await h.service.list();
+  await h.service.app(app.appId);
+  await h.service.instructions(app.appId, entry.id);
+  assert.equal((await h.db.query('SELECT token_ciphertext FROM publications WHERE id=$1', [publicationId])).rows[0].token_ciphertext, 'ciphertext',
+    'list, detail and instructions reads do not perform the periodic token cleanup');
+  await h.service.cleanupExpiredTokens();
+  assert.equal((await h.db.query('SELECT token_ciphertext FROM publications WHERE id=$1', [publicationId])).rows[0].token_ciphertext, null,
+    'the scheduled cleanup still removes expired credentials');
+});
+
+test('catalog document selection fails closed on an unrecognized projection', () => {
+  assert.throws(() => catalogAppSelect('mismatched' as any), /Unknown catalog document selection/);
+  assert.match(catalogAppSelect('full'), /s\.documents/);
+  assert.doesNotMatch(catalogAppSelect('omit'), /s\.documents/);
+});
+
+test('random sampling returns at most six card rows without transferring catalog documents', async t => {
+  const h = await startHarness();
+  t.after(() => h.close());
+  const ids: string[] = [];
+  for (let i = 1; i <= 7; i++) {
+    const seeded = await seedTagCatalog(h.db, h.config.audience, ['MCP'], i);
+    ids.push(seeded.appId);
+    await h.db.query('UPDATE published_snapshots SET documents=$2::jsonb WHERE id=$1', [seeded.snapshotId, JSON.stringify({ 'large.md': 'x'.repeat(80 * 1024) })]);
+  }
+
+  let returnedBytes = 0;
+  const db = h.db as any;
+  const query = db.query.bind(db);
+  db.query = async (sql: string, params?: readonly unknown[]) => {
+    const result = await query(sql, params);
+    returnedBytes += Buffer.byteLength(JSON.stringify(result.rows));
+    return result;
+  };
+  const previous = ids.slice(0, 6);
+  const batch = await h.service.random(previous);
+  assert.equal(batch.items.length, 6);
+  assert.equal(batch.allShown, false);
+  assert.equal(new Set(batch.items.map(item => item.id)).size, 6);
+  assert.equal(batch.items[0]?.id, ids[6], 'the sole never-shown app is selected before the previous batch');
+  assert.ok(batch.items.slice(1).every(item => previous.includes(item.id)), 'the previous batch fills the remaining slots without duplicates');
+  assert.ok(batch.items.every(item => Object.keys(item.documents).length === 0));
+  assert.ok(returnedBytes < 256 * 1024, `small card selection transferred ${returnedBytes} bytes instead of catalog documents`);
 });

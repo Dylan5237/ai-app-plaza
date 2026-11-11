@@ -31,22 +31,31 @@ const missing = () => new DomainError(401, 'LOGIN_REQUIRED', '请使用天宫身
 /** Only application identity and opaque credential hashes are persisted, never portal tokens. */
 export async function createIdentityService(db: Database, config: TiangongConfig) {
   for (const statement of IDENTITY_SCHEMA) await db.query(statement);
+  // Analytics shares only portal verification, never application permissions or roles.
+  const analyticsVerifications = new Map<string, { expiresAt: number; result: ReturnType<typeof verifyPortalIdentity> }>();
 
   async function user(row: any, queryable: Queryable = db): Promise<IdentityUser> {
     const capabilities = await platformCapabilities(queryable, row.id);
     return { id: row.id, subject: row.subject, name: row.name, account: row.account,
       identityAdmin: config.identityAdmins.includes(row.subject) || capabilities.superAdministrator, ...capabilities };
   }
-  async function cleanup() {
-    await db.query('DELETE FROM plaza_login_requests WHERE expires_at <= now()');
-    await db.query('DELETE FROM plaza_sessions WHERE expires_at <= now()');
+  async function cleanup(queryable: Queryable = db) {
+    await queryable.query('DELETE FROM plaza_login_requests WHERE expires_at <= now()');
+    await queryable.query('DELETE FROM plaza_sessions WHERE expires_at <= now()');
   }
-  async function challenge() {
-    await cleanup();
+  async function challenge(clientHash?: string) {
     const requestId = random(), browserSecret = random();
-    const inserted = await db.query(`INSERT INTO plaza_login_requests(id_hash,browser_hash,expires_at)
-      SELECT $1,$2,now()+interval '120 seconds' WHERE (SELECT count(*) FROM plaza_login_requests)<1000 RETURNING id_hash`, [hash(requestId), hash(browserSecret)]);
-    if (!inserted.rowCount) throw new DomainError(429, 'LOGIN_BUSY', '登录请求较多，请稍后重试。');
+    await db.transaction(async tx => {
+      // Serialize capacity checks across processes/instances, not only this Node runtime.
+      await tx.query('LOCK TABLE plaza_login_requests IN SHARE ROW EXCLUSIVE MODE');
+      await cleanup(tx);
+      const counts = (await tx.query<{ total: number | string; client: number | string }>(
+        'SELECT count(*) AS total, count(*) FILTER (WHERE client_hash=$1) AS client FROM plaza_login_requests', [clientHash ?? ''])).rows[0]!;
+      if (clientHash && Number(counts.client) >= 20) throw new DomainError(429, 'LOGIN_RATE_LIMITED', '当前访问端的待登录请求较多，请等待两分钟后重试。');
+      if (Number(counts.total) >= 1000) throw new DomainError(429, 'LOGIN_BUSY', '登录请求较多，请稍后重试。');
+      await tx.query(`INSERT INTO plaza_login_requests(id_hash,browser_hash,expires_at,client_hash)
+        VALUES($1,$2,now()+interval '120 seconds',$3)`, [hash(requestId), hash(browserSecret), clientHash ?? '']);
+    });
     return { requestId, browserSecret };
   }
   async function sessionUser(session?: string) {
@@ -95,6 +104,29 @@ export async function createIdentityService(db: Database, config: TiangongConfig
   }
   async function logout(session?: string) {
     if (session) await db.query('DELETE FROM plaza_sessions WHERE token_hash=$1', [hash(session)]);
+  }
+  async function analyticsViewer(session?: string, portalToken?: string): Promise<string> {
+    const row = await sessionUser(session);
+    if (!row) throw missing();
+    if (!portalToken) throw new DomainError(401, 'PORTAL_TOKEN_REQUIRED', '请从已登录天宫的同源入口访问。');
+    const key = hash(`${session}\0${portalToken}`);
+    const now = Date.now();
+    let verification = analyticsVerifications.get(key);
+    if (!verification || verification.expiresAt <= now) {
+      for (const [cachedKey, cached] of analyticsVerifications) if (cached.expiresAt <= now) analyticsVerifications.delete(cachedKey);
+      if (analyticsVerifications.size >= 1000) analyticsVerifications.delete(analyticsVerifications.keys().next().value!);
+      verification = { expiresAt: now + 5000, result: verifyPortalIdentity(portalToken, config) };
+      analyticsVerifications.set(key, verification);
+    }
+    let portal;
+    try { portal = await verification.result; }
+    catch (error) {
+      if (analyticsVerifications.get(key) === verification) analyticsVerifications.delete(key);
+      throw error;
+    }
+    if (!await sessionUser(session)) throw missing();
+    if (portal.subject !== row.subject) throw new DomainError(409, 'ACCOUNT_SWITCH_REQUIRED', '天宫当前账号已变化，请确认切换广场账号。');
+    return row.id;
   }
   function requireIdentityAdmin(actor: IdentityUser) {
     if (!actor.identityAdmin) throw new DomainError(403, 'IDENTITY_ADMIN_REQUIRED', '当前身份没有成员与小组管理权限。');
@@ -161,7 +193,7 @@ export async function createIdentityService(db: Database, config: TiangongConfig
       return { ...row, members: memberIds };
     });
   }
-  return { challenge, login, authenticate, logout, groups, users, saveGroup, favoriteIds, favorites, saveFavorite, cleanup };
+  return { challenge, login, authenticate, analyticsViewer, logout, groups, users, saveGroup, favoriteIds, favorites, saveFavorite, cleanup };
 }
 
 export type IdentityService = Awaited<ReturnType<typeof createIdentityService>>;

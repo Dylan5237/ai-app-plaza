@@ -59,6 +59,16 @@ try {
       assert.match(preview, /v1\.0\.0\s*→\s*v1\.1\.0/);
       assert.ok(preview.includes('应用简介') && preview.includes('使用文档'));
       assert.equal(await page.getByTestId('confirm-publication').innerText(), '确认更新');
+      const colors = await page.locator('.publication-change p,.publication-change span').evaluateAll(nodes => nodes.map(node => [getComputedStyle(node).color, getComputedStyle(node.closest('.publication-change')!).backgroundColor]));
+      const luminance = (color: string) => color.match(/[0-9.]+/g)!.slice(0, 3).map(Number).map(value => {
+          const channel = value / 255; return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+      }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+      const contrasts = colors.map(([foreground, surface]) => {
+          const text = luminance(foreground), background = luminance(surface);
+          return (Math.max(text, background) + .05) / (Math.min(text, background) + .05);
+      });
+      assert.ok(contrasts.length >= 2 && contrasts.every(ratio => ratio >= 4.5), `publication change text contrast: ${contrasts}`);
+      report.contrasts = [...(report.contrasts || []), { viewport: viewport.width, ratios: contrasts }];
       await page.reload();
       await page.getByTestId('confirm-publication').waitFor();
       assert.equal((await h.service.app(saved.appId!)).version, '1.0.0');

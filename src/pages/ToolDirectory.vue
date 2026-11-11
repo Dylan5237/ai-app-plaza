@@ -1,4 +1,5 @@
 <script setup>
+import { formatDate } from '../lib/date.ts'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElDialog, ElMessage, ElPopover } from 'element-plus'
 import PlazaIcon from '../components/PlazaIcon.vue'
@@ -19,12 +20,14 @@ import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false } })
 const emit = defineEmits(['return'])
+let disposed = false
 defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel })
 
 const discoveryTab = ref('catalog')
 const randomItems = ref([])
 const randomIndex = ref(0)
 const randomLoading = ref(false)
+const randomRevalidating = ref(false)
 const randomError = ref('')
 const randomAllShown = ref(false)
 let randomLoaded = false
@@ -115,24 +118,57 @@ async function selectDiscovery(tab) {
   void observeCards()
 }
 
-async function loadRandom() {
+async function revalidateRandomBatch(batch) {
+  const checked = await Promise.allSettled(batch.map(app => apiRequest(appPath(app.id))))
+  const items = []
+  let error
+  for (const [index, item] of checked.entries()) {
+    const previous = batch[index]
+    if (item.status === 'fulfilled') {
+      items.push({ ...previous, ...item.value, documents: {} })
+    } else if ([401, 403].includes(item.reason.status)) {
+      throw item.reason
+    } else if (item.reason.status !== 404) {
+      items.push(previous)
+      error ??= item.reason
+    }
+  }
+  return { items, allShown: randomAllShown.value, error }
+}
+
+async function loadRandom({ revalidating = false } = {}) {
+  if (revalidating && !randomItems.value.length) return
   const sequence = ++randomRequestSequence
   randomLoading.value = true
+  randomRevalidating.value = revalidating
   randomError.value = ''
   const params = new URLSearchParams(randomItems.value.map(app => ['exclude', app.id]))
   try {
-    const result = await apiRequest(`/api/apps/random?${params}`)
+    const result = revalidating
+      ? await revalidateRandomBatch(randomItems.value)
+      : await apiRequest(`/api/apps/random?${params}`)
     if (sequence !== randomRequestSequence) return
+    if (result.error) {
+      randomError.value = errorText(result.error)
+      recordFailure('random', result.error)
+    }
+    const currentId = randomItems.value[randomIndex.value]?.id
+    const previousIndex = randomIndex.value
     randomItems.value = result.items
-    randomResultSetId = uuid()
+    if (!revalidating) randomResultSetId = uuid()
     randomAllShown.value = result.allShown
-    randomIndex.value = 0
+    const keptIndex = result.items.findIndex(app => app.id === currentId)
+    randomIndex.value = revalidating ? Math.max(0, keptIndex >= 0 ? keptIndex : Math.min(previousIndex, result.items.length - 1)) : 0
     randomLoaded = true
     void observeCards()
   } catch (error) {
-    if (sequence === randomRequestSequence) { randomError.value = errorText(error); recordFailure('random', error) }
+    if (sequence === randomRequestSequence) {
+      if ([401, 403].includes(error.status)) { randomItems.value = []; randomLoaded = false; randomAllShown.value = false; randomIndex.value = 0 }
+      randomError.value = errorText(error) + (randomItems.value.length ? ' 当前批次已保留。' : '')
+      recordFailure('random', error)
+    }
   } finally {
-    if (sequence === randomRequestSequence) randomLoading.value = false
+    if (sequence === randomRequestSequence) { randomLoading.value = false; randomRevalidating.value = false }
   }
 }
 
@@ -170,6 +206,7 @@ async function usePrimary(app) {
     }
   } catch (error) {
     tab?.close()
+    if (disposed || sequence !== primaryRequestSequence) return
     ElMessage.error(errorText(error))
     if (error?.status === 404) await openApp(app.id)
   }
@@ -300,12 +337,6 @@ function formatVersion(value) {
   return /^\d/.test(version) ? `v${version}` : version
 }
 
-function formatDate(value) {
-  if (!value) return '未登记'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return String(value)
-  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed)
-}
 
 async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' } = {}) {
   const requestSequence = ++catalogRequestSequence
@@ -342,6 +373,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
     }
   } catch (error) {
     if (requestSequence !== catalogRequestSequence) return
+    if ([401, 403].includes(error.status)) { apps.value = []; authorTags.value = []; total.value = 0; usageCounts.value = { platform: 0, agent: 0 } }
     catalogError.value = errorText(error)
     if (!props.management) recordFailure(trigger === 'search' ? 'search' : trigger === 'filter' ? 'filter' : 'catalog', error)
   } finally {
@@ -445,7 +477,7 @@ function appPath(id) { return `${props.management && props.managementEnabled ? '
 
 async function openApp(id, { fromHistory = false, entryContext = null, revalidating = false } = {}) {
   if (!id) return
-  primaryRequestSequence += 1
+  if (!revalidating) primaryRequestSequence += 1
   if (!props.management) {
     if (!detailVisible.value) {
       scrollPositions[discoveryTab.value] = shell()?.scrollTop || 0
@@ -459,32 +491,48 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
     }
   }
   const requestSequence = ++detailRequestSequence
-  instructionRequestSequence += 1
-  detailVisible.value = true
+  if (!revalidating) detailVisible.value = true
   clearExposureObserver()
-  detailDocumentsVisible.value = false
-  detailSourceVisible.value = false
-  instructionDialogVisible.value = false
   detailLoading.value = true
   detailError.value = ''
-  selectedApp.value = null
-  instruction.value = null
-  instructionLoading.value = false
-  instructionEntry.value = null
-  instructionError.value = ''
+  if (!revalidating) {
+    instructionRequestSequence += 1
+    detailDocumentsVisible.value = false
+    detailSourceVisible.value = false
+    instructionDialogVisible.value = false
+    selectedApp.value = null
+    instruction.value = null
+    instructionLoading.value = false
+    instructionEntry.value = null
+    instructionError.value = ''
+  }
   await nextTick()
   if (!props.management && !revalidating) { if (shell()) shell().scrollTop = 0; detailHeading.value?.focus() }
   try {
     const result = await apiRequest(appPath(id))
     if (requestSequence !== detailRequestSequence) return
+    const snapshotChanged = selectedApp.value?.snapshotId !== result.snapshotId
     selectedApp.value = result
+    if (revalidating && snapshotChanged && instructionDialogVisible.value && instructionEntry.value) {
+      const entry = result.manifest.entries.find(item => item.id === instructionEntry.value.id && item.kind === 'agent')
+      if (entry) void loadAgentInstructions(entry, { revalidating: true })
+      else closeAgentInstructions()
+    }
     await nextTick()
     if (!props.management && !revalidating && requestSequence === detailRequestSequence && detailVisible.value) {
       const context = appEvent(result)
       if (context) track('app_detail_viewed', eventAttributes({ entryContext: entryContext || (detailOriginUrl ? (query.value.trim() ? 'search_result' : 'card') : 'deep_link') }), { ...context, ...resultContext() })
     }
   } catch (error) {
-    if (requestSequence === detailRequestSequence) { detailError.value = errorText(error); if (!props.management) recordFailure('detail', error) }
+    if (requestSequence === detailRequestSequence) {
+      if ([401, 403, 404].includes(error.status)) {
+        selectedApp.value = null; detailDocumentsVisible.value = false; detailSourceVisible.value = false
+        closeAgentInstructions(); copyFallbackVisible.value = false; copyFallbackText.value = ''
+        if (shareAppId.value === id) { shareVisible.value = false; closeShareDialog() }
+      }
+      detailError.value = errorText(error)
+      if (!props.management) recordFailure('detail', error)
+    }
   } finally {
     if (requestSequence === detailRequestSequence) detailLoading.value = false
   }
@@ -551,28 +599,23 @@ function closeAgentInstructions() {
 
 function refreshVisibleAccess() {
   if (!identity.user || !identity.enabled) return
-  copyFallbackVisible.value = false; copyFallbackText.value = ''
-  if (shareVisible.value && shareAppId.value) closeShareDialog()
-  if (publicationId.value) { if (!publicationBusy.value) void loadPublication(); return }
+  if (shareVisible.value && shareAppId.value) void openShareDialog(shareAppId.value, { revalidating: true })
+  if (publicationId.value) { if (!publicationBusy.value) void loadPublication(publicationId.value, { revalidating: true }); return }
   const appId = selectedApp.value?.id
-  if (detailVisible.value && appId) void openApp(appId, { fromHistory: true, revalidating: true })
-  else { closeAgentInstructions(); selectedApp.value = null }
+  if ((detailVisible.value || instructionDialogVisible.value) && appId) void openApp(appId, { fromHistory: true, revalidating: true })
   if (props.management) return
-  apps.value = []; authorTags.value = []; total.value = 0
-  usageCounts.value = { platform: 0, agent: 0 }
-  randomRequestSequence++; randomItems.value = []; randomLoaded = false
   void loadCatalog()
-  if (discoveryTab.value === 'random') void loadRandom()
+  if (discoveryTab.value === 'random') void loadRandom({ revalidating: true })
 }
 
-async function loadAgentInstructions(entry) {
+async function loadAgentInstructions(entry, { revalidating = false } = {}) {
   if (!selectedApp.value?.id || !entry?.id) return
   const requestSequence = ++instructionRequestSequence
   const appId = selectedApp.value.id
   const entryId = entry.id
   instructionEntry.value = entry
   instructionDialogVisible.value = true
-  instruction.value = null
+  if (!revalidating) instruction.value = null
   instructionError.value = ''
   instructionLoading.value = true
   try {
@@ -596,24 +639,28 @@ async function copyAgentInstructions() {
   const entry = instructionEntry.value
   if (!entry || instructionLoading.value) return
   if (!props.management) await loadAgentInstructions(entry)
+  if (disposed) return
   if (instruction.value && instruction.value.distribution?.status !== 'disabled') {
     const app = selectedApp.value
     const copied = await copyText(instruction.value.text, '接入说明已复制')
+    if (disposed) return
     const context = appEvent(app), interactionId = uuid()
     if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'usage', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
   }
 }
 
 async function copyText(text, successMessage) {
-  if (!text) return false
+  if (!text || disposed) return false
   try {
     if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
     await navigator.clipboard.writeText(text)
+    if (disposed) return false
     ElMessage.success(successMessage)
     return true
   } catch {
     // Continue to the legacy copy path for HTTP intranet pages without Clipboard API access.
   }
+  if (disposed) return false
 
   let copied = false
   const temporary = document.createElement('textarea')
@@ -633,6 +680,7 @@ async function copyText(text, successMessage) {
     temporary.remove()
   }
 
+  if (disposed) return false
   if (copied) {
     ElMessage.success(successMessage)
     return true
@@ -640,6 +688,7 @@ async function copyText(text, successMessage) {
     copyFallbackText.value = String(text)
     copyFallbackVisible.value = true
     await nextTick()
+    if (disposed) return false
     selectManualCopyText()
     ElMessage.warning('自动复制不可用，已选中文本，请按 Ctrl+C 复制。')
     return false
@@ -658,24 +707,27 @@ function closeShareDialog() {
   publicationFlowId = null
 }
 
-async function openShareDialog(appId = '') {
+async function openShareDialog(appId = '', { revalidating = false } = {}) {
   const sequence = ++contractRequestSequence
   shareAppId.value = appId
-  publicationFlowId = uuid()
+  if (!revalidating) publicationFlowId = uuid()
   shareVisible.value = true
   contractLoading.value = true
   contractError.value = ''
-  publishContract.value = null
+  if (!revalidating) publishContract.value = null
   try {
     const result = await apiRequest(appId ? `${appPath(appId)}/publish-contract` : '/api/publish-contract')
     if (sequence === contractRequestSequence) {
       publishContract.value = result
       await nextTick()
       const context = appId ? appEvent(selectedApp.value) : null
-      if (!props.management && publicationFlowId && (!appId || context)) track('publish_panel_viewed', eventAttributes({ publishKind: appId ? 'update' : 'new', placement: appId ? 'detail' : 'header' }), { flowId: publicationFlowId, ...(context || {}) })
+      if (!revalidating && !props.management && publicationFlowId && (!appId || context)) track('publish_panel_viewed', eventAttributes({ publishKind: appId ? 'update' : 'new', placement: appId ? 'detail' : 'header' }), { flowId: publicationFlowId, ...(context || {}) })
     }
   } catch (error) {
-    if (sequence === contractRequestSequence) contractError.value = errorText(error)
+    if (sequence === contractRequestSequence) {
+      contractError.value = errorText(error)
+      if (revalidating && [401, 403, 404].includes(error.status)) { shareVisible.value = false; closeShareDialog(); copyFallbackVisible.value = false; copyFallbackText.value = '' }
+    }
   } finally {
     if (sequence === contractRequestSequence) contractLoading.value = false
   }
@@ -684,12 +736,14 @@ async function openShareDialog(appId = '') {
 async function copyPublishPrompt() {
   if (!publishContract.value?.prompt) return
   const copied = await copyText(publishContract.value.prompt, shareAppId.value ? '更新任务已复制' : '发布任务已复制')
+  if (disposed) return
   const interactionId = uuid()
   if (!props.management && publicationFlowId && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: shareAppId.value ? 'update' : 'publish', result: copied ? 'success' : 'failure' }), { flowId: publicationFlowId, interactionId })
 }
 async function copyExample(text) {
   const app = selectedApp.value
   const copied = await copyText(text, '示例任务已复制')
+  if (disposed) return
   const context = appEvent(app), interactionId = uuid()
   if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'example', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
 }
@@ -756,15 +810,16 @@ function openPublication(id) {
   window.history.replaceState({ ...window.history.state, plazaManagementPreview: true }, '', window.location.href)
 }
 
-async function loadPublication(id = publicationId.value) {
+async function loadPublication(id = publicationId.value, { revalidating = publication.value?.id === id } = {}) {
   if (!id) return
   const sequence = ++publicationRequestSequence
   const current = () => sequence === publicationRequestSequence && publicationId.value === id
   publicationLoading.value = true
   publicationError.value = ''
-  publication.value = null
+  if (!revalidating) publication.value = null
   const token = props.management ? '' : publicationToken(id)
   if (!props.management && !token) {
+    publication.value = null
     publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
     publicationLoading.value = false
     return
@@ -783,7 +838,10 @@ async function loadPublication(id = publicationId.value) {
       }
     }
   } catch (error) {
-    if (current()) publicationError.value = errorText(error)
+    if (current()) {
+      if ([401, 403, 404, 410].includes(error.status)) publication.value = null
+      publicationError.value = errorText(error)
+    }
   } finally {
     if (current()) publicationLoading.value = false
   }
@@ -792,7 +850,7 @@ async function loadPublication(id = publicationId.value) {
 async function mutatePublication(action) {
   const current = publication.value
   const id = publicationId.value
-  if (!id || !current || publicationBusy.value) return
+  if (!id || !current || publicationBusy.value || publicationLoading.value) return
   if (props.management && !props.managementEnabled) { publicationError.value = '管理写入尚未启用。'; return }
   const token = props.management ? '' : publicationToken(id)
   if (!props.management && !token) {
@@ -869,6 +927,11 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  catalogRequestSequence += 1
+  detailRequestSequence += 1
+  instructionRequestSequence += 1
+  contractRequestSequence += 1
   publicationRequestSequence += 1
   primaryRequestSequence += 1
   randomRequestSequence += 1
@@ -880,7 +943,9 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   clearExposureObserver()
   layoutObserver?.disconnect()
+  tagObserver?.disconnect()
   cancelAnimationFrame(layoutFrame)
+  cancelAnimationFrame(tagFrame)
 })
 </script>
 
@@ -906,7 +971,7 @@ onUnmounted(() => {
         <el-alert v-if="publication?.requiresIdentity" title="请先使用天宫身份登录，再核对本次发布资料。发布票据不代替应用维护授权。" type="info" :closable="false" />
         <p v-if="publication?.expiresAt" class="publication-expiry">预览有效期至 {{ formatDate(publication.expiresAt) }}</p>
         <p v-if="publicationExpired" class="publication-action-error" role="alert">此预览已过期，不能确认或重试；当前仅展示已保存的资料。</p>
-        <div v-if="publicationLoading" class="publication-message" role="status">正在读取服务端发布状态…</div>
+        <div v-if="publicationLoading" class="publication-message" role="status">{{ publication ? '正在更新发布状态…' : '正在读取服务端发布状态…' }}</div>
         <div v-else-if="publicationError && !publication" class="publication-message is-error" role="alert">{{ publicationError }}</div>
         <div v-else-if="publication?.status === 'checking'" class="publication-message" role="status">
           服务正在检查提交内容，状态更新后请重新加载此页面。
@@ -937,7 +1002,7 @@ onUnmounted(() => {
             v-if="publication?.status === 'preview_ready'"
             class="primary-button"
             data-testid="confirm-publication"
-            :disabled="publicationBusy || publicationExpired || !publication.digest || (props.management && !props.managementEnabled)"
+            :disabled="publicationBusy || publicationLoading || publicationExpired || !publication.digest || (props.management && !props.managementEnabled)"
             @click="mutatePublication('confirm')"
           >
             {{ publicationBusy ? '正在确认…' : isUpdate ? '确认更新' : '确认收录' }}
@@ -946,7 +1011,7 @@ onUnmounted(() => {
             v-if="publication?.status === 'failed' && publication.nextAction !== 'submit_again'"
             class="primary-button"
             data-testid="retry-publication"
-            :disabled="publicationBusy || publicationExpired || (props.management && !props.managementEnabled)"
+            :disabled="publicationBusy || publicationLoading || publicationExpired || (props.management && !props.managementEnabled)"
             @click="mutatePublication('retry')"
           >
             {{ publicationBusy ? '正在重试…' : isUpdate ? '重试更新' : '重试收录' }}
@@ -1011,7 +1076,7 @@ onUnmounted(() => {
       <p class="sidebar-note">让好用的应用<br>被更多人发现</p>
     </aside>
     <main v-if="!props.management" v-show="!detailVisible" ref="directoryMain" class="directory-main">
-      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
+      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
           <div class="catalog-intro"><div class="catalog-heading-main"><h1 id="catalog-heading">发现好用的 AI 应用</h1><span class="catalog-total" aria-label="应用数量">{{ total }}</span></div></div>
@@ -1088,12 +1153,13 @@ onUnmounted(() => {
           <button v-if="props.management && selectedApp && !detailLoading && selectedApp.lifecycle?.status !== 'deleted'" type="button" class="detail-update-link" data-testid="publish-update" :disabled="!props.managementEnabled" @click="openShareDialog(selectedApp.id)">发布新版本</button>
         </div>
       </template>
-      <div v-if="detailLoading" class="dialog-state" role="status">正在读取应用详情…</div>
-      <div v-else-if="detailError" class="dialog-state is-error" role="alert">
-        <strong>应用详情暂时无法加载</strong>
+      <div v-if="detailLoading" class="dialog-state" role="status">{{ selectedApp ? '正在更新应用详情…' : '正在读取应用详情…' }}</div>
+      <div v-if="detailError" class="dialog-state is-error" role="alert">
+        <strong>{{ selectedApp ? '应用详情更新未完成' : '应用详情暂时无法加载' }}</strong>
         <p>{{ detailError }} 请返回刷新，查看当前可用的应用。</p>
+        <button v-if="selectedApp" class="secondary-button" @click="openApp(selectedApp.id, { fromHistory: true, revalidating: true })">重试</button>
       </div>
-      <div v-else-if="selectedApp" class="detail-layout" data-testid="app-detail">
+      <div v-if="selectedApp" class="detail-layout" data-testid="app-detail">
         <div class="detail-content-scroll">
           <AppDetailOverview
             :app="selectedApp"
@@ -1155,9 +1221,9 @@ onUnmounted(() => {
       <div class="agent-instruction-dialog-body" data-testid="agent-instruction-content">
         <p class="agent-upgrade-intro">交给 Agent 检查本地版本：未安装则安装，已有旧版则按指引升级，并保留配置与本地修改。</p>
         <p v-if="instructionEntry?.compatibility" class="instruction-compatibility">兼容信息：{{ instructionEntry.compatibility }}</p>
-        <p v-if="instructionLoading" class="instruction-state" role="status">正在读取作者接入说明…</p>
-        <p v-else-if="instructionError" class="instruction-state is-error" role="alert">{{ instructionError }}</p>
-        <template v-else-if="instruction">
+        <p v-if="instructionLoading" class="instruction-state" role="status">{{ instruction ? '正在更新作者接入说明…' : '正在读取作者接入说明…' }}</p>
+        <p v-if="instructionError" class="instruction-state is-error" role="alert">{{ instructionError }}</p>
+        <template v-if="instruction">
           <p v-if="instruction.compatibility && instruction.compatibility !== instructionEntry?.compatibility" class="instruction-compatibility">
             兼容信息：{{ typeof instruction.compatibility === 'string' ? instruction.compatibility : JSON.stringify(instruction.compatibility) }}
           </p>
@@ -1217,13 +1283,13 @@ onUnmounted(() => {
     </el-dialog>
 
     <el-dialog v-model="shareVisible" :title="shareAppId ? '发布新版本' : '分享我的AI应用'" width="min(720px, 92vw)" top="8vh" append-to-body data-testid="publish-contract-dialog" @close="closeShareDialog">
-      <div v-if="contractLoading" class="dialog-state" role="status">正在读取发布说明…</div>
-      <div v-else-if="contractError" class="dialog-state is-error" role="alert">
+      <div v-if="contractLoading" class="dialog-state" role="status">{{ publishContract ? '正在更新发布说明…' : '正在读取发布说明…' }}</div>
+      <div v-if="contractError" class="dialog-state is-error" role="alert">
         <strong>发布说明暂时无法加载</strong>
         <p>{{ contractError }}</p>
         <button class="secondary-button" @click="openShareDialog(shareAppId)">重试</button>
       </div>
-      <div v-else-if="publishContract" class="share-flow">
+      <div v-if="publishContract" class="share-flow">
         <p v-if="publishContract.updateTarget" class="share-intro" data-testid="update-target">
           {{ publishContract.updateTarget.name }} · 当前 {{ formatVersion(publishContract.updateTarget.version) }}<br>
           让项目 Agent 准备新版本，再由你预览确认。应用链接保持不变。
@@ -1269,106 +1335,106 @@ onUnmounted(() => {
 <style scoped>
 :global(*) { box-sizing: border-box; }
 :global(html), :global(body), :global(#app) { width: 100%; height: 100%; margin: 0; }
-:global(body) { background: #f4f6f9; color: #273449; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
- .directory-shell { width:100%;height:100%;overflow-y:auto;background:var(--plaza-canvas,#f4f6f9); }
+:global(body) { background: var(--plaza-canvas); color: var(--plaza-ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+ .directory-shell { width:100%;height:100%;overflow-y:auto;background:var(--plaza-canvas); }
 .directory-main { --catalog-columns:3;--catalog-card-height:270px;--catalog-gap:20px;display:flex;flex-direction:column;width:calc(100% - 196px);height:calc(100% - 64px);margin-left:196px;padding:28px 28px 12px; }
-.plaza-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:24px;height:64px;padding:0 24px;background:#fff;border-bottom:1px solid var(--plaza-line)}
-.plaza-brand{display:flex;align-items:center;gap:12px;flex:none;width:184px;color:var(--plaza-ink);font-size:19px;font-weight:700;text-decoration:none;white-space:nowrap}.plaza-brand small{display:block;margin-top:4px;font-size:10px;font-weight:400;color:var(--plaza-muted)}
-.plaza-brand-mark{display:grid;grid-template-columns:12px 12px;gap:4px;padding:4px}.plaza-brand-mark i{height:12px;border-radius:4px;background:var(--plaza-brand)}.plaza-brand-mark i:nth-child(2){background:#ffb478;transform:rotate(14deg)}.plaza-brand-mark i:nth-child(3){background:#a8b8ef}
-.plaza-modules{display:flex;gap:8px}.plaza-modules a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 16px;border-radius:9px;text-decoration:none;color:var(--plaza-text);font-size:14px;white-space:nowrap}.plaza-modules a.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.plaza-modules a:hover{background:var(--plaza-brand-soft)}
-.share-button,.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;padding:7px 14px;border:1px solid var(--plaza-brand,#165dff);border-radius:9px;background:var(--plaza-brand,#165dff);color:#fff;font:inherit;font-size:13px;text-decoration:none;cursor:pointer}
-.share-button{margin-left:auto;background:var(--plaza-share);border-color:var(--plaza-share);color:var(--plaza-share-ink);font-weight:650;white-space:nowrap}.share-button:hover{background:#ffb97e;border-color:#ffb97e}.primary-button:hover{filter:brightness(1.06)}.secondary-button{background:#fff;border-color:var(--plaza-line,#d6dde7);color:var(--plaza-text,#46566d)}.secondary-button:hover{background:#f8fafc}.primary-button:disabled,.secondary-button:disabled,.share-button:disabled{opacity:.55;cursor:not-allowed}
+.plaza-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:24px;height:64px;padding:0 24px;background:var(--plaza-surface);border-bottom:1px solid var(--plaza-line)}
+.plaza-brand{display:flex;align-items:center;gap:12px;flex:none;width:184px;color:var(--plaza-ink);font-size:17px;font-weight:700;text-decoration:none;white-space:nowrap;line-height:26px;}.plaza-brand small{display:block;margin-top:4px;font-size:11px;font-weight:400;color:var(--plaza-muted);line-height:18px;}
+.plaza-brand-mark{display:grid;grid-template-columns:12px 12px;gap:4px;padding:4px}.plaza-brand-mark i{height:12px;border-radius:4px;background:var(--plaza-brand)}.plaza-brand-mark i:nth-child(2){background:var(--plaza-share);transform:rotate(14deg)}.plaza-brand-mark i:nth-child(3){background:var(--plaza-brand-soft)}
+.plaza-modules{display:flex;gap:8px}.plaza-modules a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 16px;border-radius:9px;text-decoration:none;color:var(--plaza-text);font-size:14px;white-space:nowrap;line-height:22px;}.plaza-modules a.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.plaza-modules a:hover{background:var(--plaza-brand-soft)}
+.share-button,.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;padding:7px 14px;border:1px solid var(--plaza-brand);border-radius:9px;background:var(--plaza-brand);color:var(--plaza-surface);font:inherit;font-size:14px;text-decoration:none;cursor:pointer}
+.share-button{margin-left:auto;background:var(--plaza-share);border-color:var(--plaza-share);color:var(--plaza-share-ink);font-weight:650;white-space:nowrap}.share-button:hover{background:var(--plaza-share);border-color:var(--plaza-share)}.primary-button:hover{filter:brightness(1.06)}.secondary-button{background:var(--plaza-surface);border-color:var(--plaza-line);color:var(--plaza-text)}.secondary-button:hover{background:var(--plaza-surface)}.primary-button:disabled,.secondary-button:disabled,.share-button:disabled{opacity:.55;cursor:not-allowed}
 .plaza-public button:focus-visible,.plaza-public a:focus-visible{outline:2px solid var(--plaza-brand);outline-offset:3px}
-.discovery-sidebar{position:fixed;top:64px;bottom:0;left:0;display:flex;flex-direction:column;width:196px;padding:18px 10px;background:#faf9f6;border-right:1px solid var(--plaza-line)}.sidebar-title{display:flex;align-items:center;gap:12px;min-height:40px;margin:0 12px 12px;font-size:14px}.sidebar-note{margin:auto 14px 12px;color:var(--plaza-muted);font-size:12px;line-height:1.8}
-.discovery-tabs{display:flex;flex-direction:column;gap:4px}.discovery-tabs button{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 14px;border:0;border-radius:10px;background:transparent;color:var(--plaza-text);font:inherit;font-size:13px;text-align:left;cursor:pointer}.discovery-tabs button:hover{background:#efeee9}.discovery-tabs button[aria-pressed=true]{color:var(--plaza-brand);background:#e9edff;font-weight:650}
-.search-section{flex:none;margin:0 0 22px}.catalog-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:18px;margin-bottom:24px}.catalog-intro h1{font-size:24px;line-height:32px;font-weight:650;letter-spacing:-.35px;margin:0}.catalog-intro p{color:var(--plaza-muted);font-size:12px;margin:8px 0 0}.catalog-heading-main{display:flex;align-items:center;gap:14px}.catalog-total{display:grid;place-items:center;min-width:38px;min-height:34px;padding:4px 10px;border:1px solid var(--plaza-line);border-radius:6px;background:#fff;color:var(--plaza-muted);font-size:12px}
-.catalog-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.search-row{display:flex;gap:8px}.search-input{width:260px;--el-input-height:36px}.search-submit{min-height:36px}.catalog-usage-filter{display:flex;gap:2px;padding:3px;border:1px solid var(--plaza-line);border-radius:9px;background:#fff}.usage-filter-button{min-height:28px;padding:3px 9px;border:0;border-radius:6px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.usage-filter-button.active{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.catalog-sort{font-size:12px;color:var(--plaza-muted);white-space:nowrap}
-.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted)}.filter-chip,.tag-more{flex:none;min-height:32px;padding:5px 12px;border:1px solid transparent;border-radius:20px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:#eae9e5}.filter-chip.active{background:var(--plaza-ink);color:#fff}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
-.catalog-section{display:flex;flex:1;flex-direction:column;min-height:0}.catalog-heading-row{height:0;margin:0;flex:none}.catalog-results{flex:1 0 auto;position:relative}.catalog-refreshing{position:absolute;right:0;top:-20px;color:var(--plaza-muted);font-size:11px}.app-grid{display:grid;grid-template-columns:repeat(var(--catalog-columns),minmax(0,1fr));gap:var(--catalog-gap)}.pagination-row{display:flex;flex:0 0 48px;align-items:center;justify-content:center;margin-top:auto}
-.catalog-state{display:flex;min-height:200px;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:28px;border:1px solid var(--plaza-line);border-radius:16px;background:#fff;color:var(--plaza-muted);font-size:13px;text-align:center}.catalog-state strong{color:var(--plaza-ink);font-size:15px}.catalog-state p{margin:0 0 4px}.catalog-state.is-error{color:var(--plaza-danger);margin-bottom:16px}.empty-mark{font-size:27px}.catalog-notice{margin-bottom:12px;padding:9px 12px;border:1px solid #dce8dc;border-radius:9px;background:#f8fcf7;color:var(--plaza-success);font-size:12px}
-.public-detail{width:calc(100% - 252px);margin:28px 28px 28px 224px;padding:24px;border:1px solid var(--plaza-line);border-radius:16px;background:#fff}.public-detail-heading{display:flex;align-items:center;gap:20px;margin-bottom:24px}.public-detail-heading h1{margin:0;font-size:20px}.public-detail .detail-layout{height:calc(100vh - 240px)}.public-app-version{padding:3px 7px;color:#61748f;font-size:11px}
-.detail-return{min-height:40px;border-color:var(--plaza-brand);background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.detail-return:hover{background:#dce4ff}
-.detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: #26354a; font-size: 15px; font-weight: 650; }
-.detail-update-link { border: 0; background: none; color: #5d6d8a; font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }
-.detail-update-link:hover { color: #3d5bbb; text-decoration: underline; }
-.agent-upgrade-intro { color: #61718a; line-height: 1.7; font-size: 13px; margin: 0 0 14px; }
-.publication-change { padding: 14px 16px; margin: 14px 0; border: 1px solid #dde5f1; border-radius: 8px; background: #f7f9fd; }
-.publication-change strong { color: #304768; font-size: 16px; }
-.publication-change span { margin: 0 10px; color: #8291a9; }
-.publication-change p { color: #64748b; font-size: 13px; margin: 8px 0 0; }
+.discovery-sidebar{position:fixed;top:64px;bottom:0;left:0;display:flex;flex-direction:column;width:196px;padding:18px 10px;background:var(--plaza-canvas);border-right:1px solid var(--plaza-line)}.sidebar-title{display:flex;align-items:center;gap:12px;min-height:40px;margin:0 12px 12px;font-size:14px;line-height:22px;}.sidebar-note{margin:auto 14px 12px;color:var(--plaza-muted);font-size:12px;line-height:18px}
+.discovery-tabs{display:flex;flex-direction:column;gap:4px}.discovery-tabs button{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 14px;border:0;border-radius:10px;background:transparent;color:var(--plaza-text);font:inherit;font-size:14px;text-align:left;cursor:pointer}.discovery-tabs button:hover{background:var(--plaza-brand-soft)}.discovery-tabs button[aria-pressed=true]{color:var(--plaza-brand);background:var(--plaza-brand-soft);font-weight:650}
+.search-section{flex:none;margin:0 0 22px}.catalog-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:18px;margin-bottom:24px}.catalog-intro h1{font-size:24px;line-height:32px;font-weight:650;letter-spacing:-.35px;margin:0}.catalog-intro p{color:var(--plaza-muted);font-size:12px;margin:8px 0 0;line-height:18px;}.catalog-heading-main{display:flex;align-items:center;gap:14px}.catalog-total{display:grid;place-items:center;min-width:38px;min-height:34px;padding:4px 10px;border:1px solid var(--plaza-line);border-radius:6px;background:var(--plaza-surface);color:var(--plaza-muted);font-size:12px;line-height:18px;}
+.catalog-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.search-row{display:flex;gap:8px}.search-input{width:260px;--el-input-height:36px}.search-submit{min-height:36px}.catalog-usage-filter{display:flex;gap:2px;padding:3px;border:1px solid var(--plaza-line);border-radius:9px;background:var(--plaza-surface)}.usage-filter-button{min-height:28px;padding:3px 9px;border:0;border-radius:6px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.usage-filter-button.active{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.catalog-sort{font-size:12px;color:var(--plaza-muted);white-space:nowrap;line-height:18px;}
+.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted);line-height:18px;}.filter-chip,.tag-more{flex:none;min-height:32px;padding:5px 12px;border:1px solid transparent;border-radius:20px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:var(--plaza-brand-soft)}.filter-chip.active{background:var(--plaza-ink);color:var(--plaza-surface)}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
+.catalog-section{display:flex;flex:1;flex-direction:column;min-height:0}.catalog-heading-row{height:0;margin:0;flex:none}.catalog-results{flex:1 0 auto;position:relative}.catalog-refreshing{position:absolute;right:0;top:-20px;color:var(--plaza-muted);font-size:11px;line-height:18px;}.app-grid{display:grid;grid-template-columns:repeat(var(--catalog-columns),minmax(0,1fr));gap:var(--catalog-gap)}.pagination-row{display:flex;flex:0 0 48px;align-items:center;justify-content:center;margin-top:auto}
+.catalog-state{display:flex;min-height:200px;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:28px;border:1px solid var(--plaza-line);border-radius:16px;background:var(--plaza-surface);color:var(--plaza-muted);font-size:14px;text-align:center;line-height:22px;}.catalog-state strong{color:var(--plaza-ink);font-size:17px;line-height:26px;}.catalog-state p{margin:0 0 4px}.catalog-state.is-error{color:var(--plaza-danger);margin-bottom:16px}.empty-mark{font-size:27px}.catalog-notice{margin-bottom:12px;padding:9px 12px;border:1px solid var(--plaza-line);border-radius:9px;background:var(--plaza-surface);color:var(--plaza-success);font-size:12px;line-height:18px;}
+.public-detail{width:calc(100% - 252px);margin:28px 28px 28px 224px;padding:24px;border:1px solid var(--plaza-line);border-radius:16px;background:var(--plaza-surface)}.public-detail-heading{display:flex;align-items:center;gap:20px;margin-bottom:24px}.public-detail-heading h1{margin:0;font-size:24px;line-height:32px;}.public-detail .detail-layout{height:calc(100vh - 240px)}.public-app-version{padding:3px 7px;color:var(--plaza-muted);font-size:11px;line-height:18px;}
+.detail-return{min-height:40px;border-color:var(--plaza-brand);background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.detail-return:hover{background:var(--plaza-brand-soft)}
+.detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: var(--plaza-ink); font-size: 17px; font-weight: 650;line-height:26px;}
+.detail-update-link { border: 0; background: none; color: var(--plaza-text); font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }
+.detail-update-link:hover { color: var(--plaza-brand); text-decoration: underline; }
+.agent-upgrade-intro { color: var(--plaza-muted); line-height:22px; font-size: 14px; margin: 0 0 14px; }
+.publication-change { padding: 14px 16px; margin: 14px 0; border: 1px solid var(--plaza-line); border-radius: 8px; background: var(--plaza-brand-soft); }
+.publication-change strong { color: var(--plaza-ink); font-size:17px;line-height:26px;}
+.publication-change span { margin: 0 10px; color: var(--plaza-text); }
+.publication-change p { color: var(--plaza-text); font-size: 14px; margin: 8px 0 0;line-height:22px;}
 .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 330px); gap: 24px; height: min(570px, calc(100vh - 144px)); min-height: 0; }
 .detail-content-scroll { min-width: 0; min-height: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 0 16px 12px 2px; }
-.detail-actions { align-self: start; min-width: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid #e8ebf0; border-radius: 8px; background: #fafbfd; }
-.detail-action-heading { padding-bottom: 12px; border-bottom: 1px solid #e8ebf0; }
-.detail-action-heading h2 { margin: 0; color: #2d3b50; font-size: 15px; }
-.detail-action-heading p { margin: 5px 0 0; color: #8791a1; font-size: 12px; }
+.detail-actions { align-self: start; min-width: 0; max-height: 100%; overflow-x: hidden; overflow-y: auto; padding: 15px; border: 1px solid var(--plaza-line); border-radius: 8px; background: var(--plaza-surface); }
+.detail-action-heading { padding-bottom: 12px; border-bottom: 1px solid var(--plaza-line); }
+.detail-action-heading h2 { margin: 0; color: var(--plaza-ink); font-size: 17px;line-height:26px;}
+.detail-action-heading p { margin: 5px 0 0; color: var(--plaza-muted); font-size: 12px;line-height:18px;}
 .entry-action { margin-top: 11px; }
-.entry-label { display: block; margin-bottom: 5px; color: #8993a2; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.entry-label { display: block; margin-bottom: 5px; color: var(--plaza-muted); font-size: 11px; line-height:18px; overflow-wrap: anywhere; }
 .entry-button { width: 100%; min-height: 38px; }
-.entry-empty { padding: 15px 0; color: #8590a0; font-size: 12px; line-height: 1.6; }
-.detail-examples { padding-top: 13px; border-top: 1px solid #e4e8ee; }
+.entry-empty { padding: 15px 0; color: var(--plaza-muted); font-size: 12px; line-height:18px; }
+.detail-examples { padding-top: 13px; border-top: 1px solid var(--plaza-line); }
 .detail-material-scroll { max-height: 72vh; overflow-x: hidden; overflow-y: auto; padding: 0 14px 12px 2px; }
 .agent-instruction-dialog-body { max-height: 72vh; overflow: auto; }
-.instruction-compatibility, .instruction-source, .instruction-state { color: #738094; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-.instruction-state.is-error { color: #a44d4d; }
-.instruction-markdown { max-height: 280px; overflow-y: auto; padding: 9px 10px; border: 1px solid #e7ebf0; border-radius: 6px; background: #fff; color: #526177; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.instruction-compatibility, .instruction-source, .instruction-state { color: var(--plaza-muted); font-size: 11px; line-height:18px; overflow-wrap: anywhere; }
+.instruction-state.is-error { color: var(--plaza-danger); }
+.instruction-markdown { max-height: 280px; overflow-y: auto; padding: 9px 10px; border: 1px solid var(--plaza-line); border-radius: 6px; background: var(--plaza-surface); color: var(--plaza-text); font-size: 12px; line-height:18px; overflow-wrap: anywhere; }
 .instruction-markdown :deep(p) { margin: 6px 0; }
 .instruction-markdown :deep(ul), .instruction-markdown :deep(ol) { padding-left: 18px; }
-.instruction-markdown :deep(a) { color: #315fbd; }
-.instruction-markdown :deep(pre) { overflow-x: auto; padding: 8px; background: #f4f6f9; }
+.instruction-markdown :deep(a) { color: var(--plaza-brand); }
+.instruction-markdown :deep(pre) { overflow-x: auto; padding: 8px; background: var(--plaza-canvas); }
 .copy-instruction-button { width: 100%; margin-top: 9px; }
-.dialog-state { display: flex; min-height: 160px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #788598; font-size: 13px; text-align: center; }
-.dialog-state strong { color: #38495f; font-size: 15px; }
+.dialog-state { display: flex; min-height: 160px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: var(--plaza-muted); font-size: 14px; text-align: center;line-height:22px;}
+.dialog-state strong { color: var(--plaza-ink); font-size: 17px;line-height:26px;}
 .dialog-state p { max-width: 560px; margin: 0; line-height: 1.6; }
-.dialog-state.is-error { color: #8e5454; }
-.dialog-state.is-error strong { color: #a14343; }
-.share-flow { color: #526177; }
-.share-intro { margin: 0 0 15px; font-size: 13px; line-height: 1.7; }
+.dialog-state.is-error { color: var(--plaza-danger); }
+.dialog-state.is-error strong { color: var(--plaza-danger); }
+.share-flow { color: var(--plaza-text); }
+.share-intro { margin: 0 0 15px; font-size: 14px; line-height:22px; }
 .share-steps { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; counter-reset: share-step; }
 .share-steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 1px 10px; align-items: baseline; counter-increment: share-step; }
-.share-steps li::before { grid-row: span 2; display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: #edf3fc; color: #42649b; content: counter(share-step); font-size: 12px; font-weight: 650; }
-.share-steps strong { color: #3d4e65; font-size: 13px; }
-.share-steps span { color: #8792a2; font-size: 12px; line-height: 1.5; }
-.publish-prompt-wrap { margin-top: 19px; padding: 13px; border: 1px solid #e5e9ef; border-radius: 7px; background: #fbfcfd; }
-.prompt-heading { display: flex; justify-content: space-between; margin-bottom: 9px; color: #43536a; font-size: 12px; }
-.prompt-heading span { color: #9aa3b0; font-weight: 400; }
-.publish-prompt { max-height: 245px; overflow: auto; margin: 0 0 12px; padding: 11px; border: 1px solid #e8ebf0; border-radius: 5px; background: #fff; color: #4c5c71; font: 12px/1.65 Consolas, "Microsoft YaHei", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
-.share-links { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 14px; color: #778395; font-size: 12px; }
+.share-steps li::before { grid-row: span 2; display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--plaza-brand-soft); color: var(--plaza-brand); content: counter(share-step); font-size: 12px; font-weight: 650;line-height:18px;}
+.share-steps strong { color: var(--plaza-ink); font-size: 14px;line-height:22px;}
+.share-steps span { color: var(--plaza-muted); font-size: 12px; line-height:18px; }
+.publish-prompt-wrap { margin-top: 19px; padding: 13px; border: 1px solid var(--plaza-line); border-radius: 7px; background: var(--plaza-surface); }
+.prompt-heading { display: flex; justify-content: space-between; margin-bottom: 9px; color: var(--plaza-text); font-size: 12px;line-height:18px;}
+.prompt-heading span { color: var(--plaza-muted); font-weight: 400; }
+.publish-prompt { max-height: 245px; overflow: auto; margin: 0 0 12px; padding: 11px; border: 1px solid var(--plaza-line); border-radius: 5px; background: var(--plaza-surface); color: var(--plaza-text); font: 12px/1.65 Consolas, "Microsoft YaHei", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
+.share-links { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 14px; color: var(--plaza-muted); font-size: 12px;line-height:18px;}
 .share-links span { display: flex; flex-basis: 100%; gap: 8px; }
-.share-links span strong { color: #57677d; font-weight: 550; }
-.share-links a { color: #315fbd; text-decoration: none; }
+.share-links span strong { color: var(--plaza-text); font-weight: 550; }
+.share-links a { color: var(--plaza-brand); text-decoration: none; }
 .share-links a:hover { text-decoration: underline; }
-.manual-copy-help { margin: 0 0 10px; color: #69788d; font-size: 13px; }
-.manual-copy-textarea { width: 100%; min-height: 220px; resize: vertical; padding: 10px; border: 1px solid #dce2ea; border-radius: 6px; color: #4c5c71; font: 12px/1.65 Consolas, "Microsoft YaHei", sans-serif; }
-.publication-shell { width: 100%; height: 100%; overflow-y: auto; background: #f4f6f9; }
-.publication-topbar { display: flex; height: 58px; align-items: center; justify-content: space-between; padding: 0 max(24px, calc((100% - 1080px) / 2)); border-bottom: 1px solid #e6eaf0; background: #fff; }
-.publication-brand { color: #25364e; font-size: 15px; font-weight: 650; text-decoration: none; }
-.publication-private-label { padding: 4px 8px; border: 1px solid #e4e9f0; border-radius: 5px; background: #fafbfd; color: #6e7a8c; font-size: 11px; }
+.manual-copy-help { margin: 0 0 10px; color: var(--plaza-muted); font-size: 14px;line-height:22px;}
+.manual-copy-textarea { width: 100%; min-height: 220px; resize: vertical; padding: 10px; border: 1px solid var(--plaza-line); border-radius: 6px; color: var(--plaza-text); font: 12px/1.65 Consolas, "Microsoft YaHei", sans-serif; }
+.publication-shell { width: 100%; height: 100%; overflow-y: auto; background: var(--plaza-canvas); }
+.publication-topbar { display: flex; height: 58px; align-items: center; justify-content: space-between; padding: 0 max(24px, calc((100% - 1080px) / 2)); border-bottom: 1px solid var(--plaza-line); background: var(--plaza-surface); }
+.publication-brand { color: var(--plaza-ink); font-size: 17px; font-weight: 650; text-decoration: none;line-height:26px;}
+.publication-private-label { padding: 4px 8px; border: 1px solid var(--plaza-line); border-radius: 5px; background: var(--plaza-surface); color: var(--plaza-muted); font-size: 11px;line-height:18px;}
 .publication-main { width: min(1080px, calc(100% - 48px)); margin: 24px auto 50px; }
-.publication-status-card, .publication-preview { padding: 22px 24px; border: 1px solid #e5e9ef; border-radius: 9px; background: #fff; }
+.publication-status-card, .publication-preview { padding: 22px 24px; border: 1px solid var(--plaza-line); border-radius: 9px; background: var(--plaza-surface); }
 .publication-status-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.eyebrow { margin: 0 0 5px; color: #8b95a4; font-size: 11px; letter-spacing: .02em; }
-.publication-status-heading h1, .preview-section-heading h2 { margin: 0; color: #26364b; font-size: 19px; font-weight: 650; }
-.publication-status-value { padding: 5px 9px; border: 1px solid #e1e6ed; border-radius: 5px; background: #f8fafc; color: #69788d; font-size: 11px; }
-.status-preview_ready { border-color: #d9e4f3; background: #f3f7fc; color: #48668e; }
-.status-registered { border-color: #d8e8dc; background: #f5faf6; color: #4b7955; }
-.status-failed { border-color: #efdddd; background: #fff8f8; color: #9b5151; }
-.publication-audience { margin: 13px 0 0; color: #58677b; font-size: 13px; line-height: 1.6; }
-.publication-expiry { margin: 7px 0 0; color: #8993a2; font-size: 11px; }
-.publication-message { margin-top: 12px; color: #68768a; font-size: 13px; line-height: 1.65; }
-.publication-message.is-error, .publication-action-error { color: #9b4d4d; }
-.publication-message.is-success { color: #4c7253; }
+.eyebrow { margin: 0 0 5px; color: var(--plaza-muted); font-size: 11px; letter-spacing: .02em;line-height:18px;}
+.publication-status-heading h1, .preview-section-heading h2 { margin: 0; color: var(--plaza-ink); font-size:17px; font-weight: 650;line-height:26px;}
+.publication-status-value { padding: 5px 9px; border: 1px solid var(--plaza-line); border-radius: 5px; background: var(--plaza-surface); color: var(--plaza-muted); font-size: 11px;line-height:18px;}
+.status-preview_ready { border-color: var(--plaza-line); background: var(--plaza-brand-soft); color: var(--plaza-text); }
+.status-registered { border-color: var(--plaza-line); background: var(--plaza-surface); color: var(--plaza-success); }
+.status-failed { border-color: var(--plaza-line); background: var(--plaza-surface); color: var(--plaza-danger); }
+.publication-audience { margin: 13px 0 0; color: var(--plaza-text); font-size: 14px; line-height:22px; }
+.publication-expiry { margin: 7px 0 0; color: var(--plaza-muted); font-size: 11px;line-height:18px;}
+.publication-message { margin-top: 12px; color: var(--plaza-muted); font-size: 14px; line-height:22px; }
+.publication-message.is-error, .publication-action-error { color: var(--plaza-danger); }
+.publication-message.is-success { color: var(--plaza-success); }
 .publication-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 17px; }
 .publication-preview { margin-top: 16px; }
-.preview-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid #e8ebf0; }
-.publication-source-commit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 13px 0; color: #8a94a3; font-size: 11px; }
-.publication-source-commit code { color: #55667d; font-family: Consolas, monospace; overflow-wrap: anywhere; }
+.preview-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--plaza-line); }
+.publication-source-commit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 13px 0; color: var(--plaza-muted); font-size: 11px;line-height:18px;}
+.publication-source-commit code { color: var(--plaza-text); font-family: Consolas, monospace; overflow-wrap: anywhere; }
 @media(min-width:1780px){.directory-main{--catalog-columns:4}}
 @media(max-width:1120px){.directory-main{--catalog-columns:2}}
 @media(min-width:761px) and (max-height:800px){.directory-main{--catalog-card-height:190px}}
 @media(max-width:900px){.detail-layout{grid-template-columns:minmax(0,1fr);height:75vh;max-height:75vh}.detail-content-scroll{max-height:47vh;padding-right:3px}.detail-actions{max-height:25vh}.public-detail .detail-layout{height:auto;max-height:none}.public-detail .detail-content-scroll,.public-detail .detail-actions{max-height:none;overflow:visible}}
-@media(max-width:760px){.plaza-header{height:auto;min-height:64px;gap:12px;flex-wrap:wrap;padding:12px 16px}.plaza-brand{width:auto;font-size:17px}.plaza-modules{order:3;width:100%;gap:4px}.plaza-modules a{min-height:34px;padding:0 12px;font-size:12px}.share-button{padding:7px 9px;font-size:12px}.share-button .plaza-icon{display:none}.discovery-sidebar{position:static;width:100%;padding:8px 16px;border-right:0;border-bottom:1px solid var(--plaza-line)}.sidebar-title,.sidebar-note{display:none}.discovery-tabs{flex-direction:row}.discovery-tabs button{min-height:40px}.directory-main{width:100%;height:auto;min-height:calc(100% - 170px);margin:0;padding:20px 16px 12px}.catalog-intro h1{font-size:22px}.catalog-controls{width:100%;gap:8px}.search-row{width:100%}.search-input{width:auto;flex:1;min-width:0}.catalog-toolbar{gap:18px;margin-bottom:18px}.tag-filter-row{max-height:78px}.public-detail{width:calc(100% - 32px);margin:16px;padding:18px}.public-detail-heading{gap:12px;flex-wrap:wrap}}
-@media(max-width:650px){.directory-main{--catalog-columns:1;--catalog-gap:16px}.publication-main{width:calc(100% - 24px);margin-top:12px}.publication-status-card,.publication-preview{padding:17px 15px}.publication-status-heading h1,.preview-section-heading h2{font-size:17px}}
+@media(max-width:760px){.plaza-header{height:auto;min-height:64px;gap:12px;flex-wrap:wrap;padding:12px 16px}.plaza-brand{width:auto;font-size:17px;line-height:26px;}.plaza-modules{order:3;width:100%;gap:4px}.plaza-modules a{min-height:34px;padding:0 12px;font-size:12px;line-height:18px;}.share-button{padding:7px 9px;font-size:12px;line-height:18px;}.share-button .plaza-icon{display:none}.discovery-sidebar{position:static;width:100%;padding:8px 16px;border-right:0;border-bottom:1px solid var(--plaza-line)}.sidebar-title,.sidebar-note{display:none}.discovery-tabs{flex-direction:row}.discovery-tabs button{min-height:40px}.directory-main{width:100%;height:auto;min-height:calc(100% - 170px);margin:0;padding:20px 16px 12px}.catalog-intro h1{font-size:24px;line-height:32px;}.catalog-controls{width:100%;gap:8px}.search-row{width:100%}.search-input{width:auto;flex:1;min-width:0}.catalog-toolbar{gap:18px;margin-bottom:18px}.tag-filter-row{max-height:78px}.public-detail{width:calc(100% - 32px);margin:16px;padding:18px}.public-detail-heading{gap:12px;flex-wrap:wrap}}
+@media(max-width:650px){.directory-main{--catalog-columns:1;--catalog-gap:16px}.publication-main{width:calc(100% - 24px);margin-top:12px}.publication-status-card,.publication-preview{padding:17px 15px}.publication-status-heading h1,.preview-section-heading h2{font-size:17px;line-height:26px;}}
 </style>
 
 <style scoped>

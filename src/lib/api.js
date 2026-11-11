@@ -13,6 +13,9 @@ export function readPortalToken() {
     return value && value.length <= 8192 && value.trim() === value && !/[\x00-\x1f\x7f]/.test(value) ? value : null
   } catch { return null }
 }
+export function readAuthenticatedPortalToken() {
+  return authenticatedWebIdentity ? readPortalToken() : null
+}
 
 export class ApiError extends Error {
   constructor(message, status, code) {
@@ -58,7 +61,7 @@ export async function apiRequest(path, { method = 'GET', body, token, idempotenc
 
   if (!response.ok) {
     if (payload?.error?.code === 'ADMINISTRATOR_REQUIRED') window.dispatchEvent(new Event('plaza-capabilities-changed'))
-    if (identityEpoch === portalRequestEpoch && portalToken === readPortalToken() && path !== '/api/auth/me' && protectedPath && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED', 'IDENTITY_UNAVAILABLE'].includes(payload?.error?.code)) {
+    if (identityEpoch === portalRequestEpoch && portalToken === readPortalToken() && path !== '/api/auth/me' && protectedPath && response.status < 500 && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED'].includes(payload?.error?.code)) {
       window.dispatchEvent(new CustomEvent('plaza-identity-invalid', { detail: { message: payload?.error?.message || '身份核验未完成，请重试。', code: payload?.error?.code } }))
     }
     throw new ApiError(
@@ -82,7 +85,7 @@ export async function downloadPackage(url) {
   catch { throw new ApiError('下载未完成，请重试。') }
   if (!response.ok) {
     const result = await response.json().catch(() => null)
-    if (epoch === portalRequestEpoch && token === readPortalToken() && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED', 'IDENTITY_UNAVAILABLE'].includes(result?.error?.code)) {
+    if (epoch === portalRequestEpoch && token === readPortalToken() && response.status < 500 && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED'].includes(result?.error?.code)) {
       window.dispatchEvent(new CustomEvent('plaza-identity-invalid', { detail: result.error }))
     }
     throw new ApiError(result?.error?.message || '分发包当前不可访问。', response.status, result?.error?.code)

@@ -210,16 +210,22 @@ const HAS_WEB_ENTRY = `EXISTS (
     ) AS entry(value)
    WHERE entry.value->>'kind' = 'web'
 )`;
-const APP_SELECT = `
+export function catalogAppSelect(documentMode: 'full' | 'omit'): string {
+  const documents = documentMode === 'full' ? 's.documents' : documentMode === 'omit' ? "'{}'::jsonb AS documents" : undefined;
+  if (!documents) throw new Error('Unknown catalog document selection');
+  return `
   SELECT a.id, a.instance_id, a.project_id, a.app_key, a.current_snapshot_id, a.revision,
          a.created_at, a.updated_at, s.id AS snap_id, s.created_at AS snapshot_created_at, s.commit_sha, s.manifest_path, s.tag,
-         s.digest, s.audience, s.version, s.manifest, s.documents, s.project_url, s.source_created_at,
+         s.digest, s.audience, s.version, s.manifest, ${documents}, s.project_url, s.source_created_at,
          ${EFFECTIVE_TAGS} AS effective_tags,
          l.status AS lifecycle_status, l.revision AS lifecycle_revision, l.updated_at AS lifecycle_updated_at
     FROM catalog_apps a
     LEFT JOIN published_snapshots s ON s.id = a.current_snapshot_id
     LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
     ${TAG_OVERRIDE_JOIN}`;
+}
+const APP_SELECT = catalogAppSelect('full');
+const RANDOM_APP_SELECT = catalogAppSelect('omit');
 
 /** Partial Fisher–Yates: every remaining candidate has the same chance at each draw. */
 export function sampleCatalog<T extends { id: string }>(items: T[], exclude: string[] = [], draw: (max: number) => number = randomInt): T[] {
@@ -1055,7 +1061,6 @@ export function createService(config: ServiceConfig): PlazaService {
       if (usage !== undefined && !['all', 'platform', 'agent'].includes(usage)) {
         throw new DomainError(400, 'VALIDATION_FAILED', 'usage 必须是 all、platform 或 agent。');
       }
-      await cleanupExpiredTokens();
       const page = options.page ?? 1;
       const pageSize = options.pageSize ?? PAGE_SIZE;
       if (!Number.isInteger(page) || page < 1 || page > 100_000) {
@@ -1143,15 +1148,33 @@ export function createService(config: ServiceConfig): PlazaService {
       if (exclude.length > 6 || exclude.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
         throw new DomainError(400, 'VALIDATION_FAILED', 'exclude 最多包含 6 个应用 UUID。');
       }
+      const selection = await config.db.query<{ id: string; total_count: number }>(`WITH visible AS MATERIALIZED (
+        SELECT a.id FROM catalog_apps a JOIN published_snapshots s ON s.id=a.current_snapshot_id
+        LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id
+        WHERE s.audience=$1 AND COALESCE(l.status,'published')='published' AND ${appAccessPredicate('$2::uuid')}
+      ), fresh AS (
+        SELECT id, random() AS sample_order FROM visible WHERE NOT (id=ANY($3::uuid[])) ORDER BY sample_order LIMIT 6
+      ), repeated AS (
+        SELECT id, random() AS sample_order FROM visible WHERE id=ANY($3::uuid[])
+          AND (SELECT count(*) FROM fresh)<6
+        ORDER BY sample_order LIMIT (SELECT GREATEST(0,6-count(*)) FROM fresh)
+      ), picked AS (
+        SELECT id,0 AS priority,sample_order FROM fresh
+        UNION ALL SELECT id,1 AS priority,sample_order FROM repeated
+      ), total AS (SELECT count(*) AS total_count FROM visible)
+      SELECT picked.id,total.total_count FROM picked CROSS JOIN total ORDER BY picked.priority,picked.sample_order`,
+      [config.audience, viewerId ?? null, exclude]);
+      const ids = selection.rows.map(row => row.id);
+      if (!ids.length) return { items: [], allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
       const result = await config.db.query<AppRecord>(
-        `${APP_SELECT} WHERE s.audience = $1 AND COALESCE(l.status, 'published') = 'published' AND ${appAccessPredicate('$2::uuid')}`,
-        [config.audience, viewerId ?? null],
+        `${RANDOM_APP_SELECT} WHERE a.id=ANY($1::uuid[]) AND s.audience=$2 AND COALESCE(l.status,'published')='published'
+          AND ${appAccessPredicate('$3::uuid')} ORDER BY array_position($1::uuid[],a.id)`,
+        [ids, config.audience, viewerId ?? null],
       );
-      return { items: sampleCatalog(result.rows, exclude).map(publicCard), allShown: result.rows.length <= 6 };
+      return { items: result.rows.map(publicCard), allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
     },
 
     async app(id, options = {}) {
-      await cleanupExpiredTokens();
       const record = await findAppById(id, config.db, options.includeHidden === true, options.viewerId, options.management);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
@@ -1219,7 +1242,6 @@ export function createService(config: ServiceConfig): PlazaService {
     },
 
     async instructions(id, entryId, options = {}) {
-      await cleanupExpiredTokens();
       const record = await findAppById(id, config.db, options.includeHidden === true, options.viewerId, options.management);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);

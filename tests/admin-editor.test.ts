@@ -106,6 +106,12 @@ test('local editor overlays only current metadata, preserves source history, and
 
   const body = postBody(context.app, 1, context.suggestedVersion);
   const writesBeforeRejectedEdits = h.gitlab.state.writes.length;
+  const noChange = await h.app.inject({ method: 'POST', url: editorUrl, headers: { 'idempotency-key': randomUUID() }, payload: {
+    expectedAppRevision: context.app.revision, manifest: { ...context.app.manifest, projectVersion: context.suggestedVersion }, documents: context.app.documents,
+  } });
+  assert.equal(noChange.statusCode, 400);
+  assert.equal(noChange.json().error.code, 'NO_METADATA_CHANGES');
+  assert.equal(h.gitlab.state.writes.length, writesBeforeRejectedEdits, 'version-only saves must not create any GitLab writes');
   const olderThanPending = await h.app.inject({
     method: 'POST', url: `/api/management/apps/${appId}/editor`, headers: { 'idempotency-key': randomUUID() },
     payload: postBody(context.app, 1, '1.0.2'),

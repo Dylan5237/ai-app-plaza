@@ -2,7 +2,7 @@ import { reactive } from 'vue'
 import { apiRequest, advanceIdentityRequests, configurePortalIdentity, configureWebIdentity, readPortalToken } from './api.js'
 import { publicBasePath } from './public-path.js'
 
-export const identity = reactive({ enabled: false, user: null, busy: false, error: '', switchRequired: false, epoch: 0 })
+export const identity = reactive({ enabled: false, user: null, busy: false, error: '', retryable: false, switchRequired: false, epoch: 0 })
 const suppressionKey = `plaza-explicit-logout:${publicBasePath()}`
 let generation = 0
 let suppressed = false
@@ -12,7 +12,7 @@ function suppress(value) {
   suppressed = value
   try { value ? sessionStorage.setItem(suppressionKey, '1') : sessionStorage.removeItem(suppressionKey) } catch { /* Optional storage. */ }
 }
-function clearUser() { generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.epoch++ }
+function clearUser() { generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.retryable = false; identity.epoch++ }
 function failed(error) {
   clearUser()
   identity.error = error.message
@@ -45,7 +45,9 @@ export async function signOut() {
 }
 
 export async function initializeIdentity() {
+  if (identity.busy) return
   const current = ++generation
+  identity.busy = true; identity.error = ''; identity.retryable = false
   try {
     const status = await apiRequest('/api/auth/tiangong/status')
     if (current !== generation) return
@@ -62,10 +64,12 @@ export async function initializeIdentity() {
     }
     catch (error) {
       if (current !== generation) return
-      if (error.code === 'LOGIN_REQUIRED') await signIn()
+      if (error.code === 'LOGIN_REQUIRED') { identity.busy = false; await signIn() }
+      else if (!error.status || error.status >= 500) { identity.error = error.message; identity.retryable = true }
       else failed(error)
     }
-  } catch (error) { if (current === generation) identity.error = error.message }
+  } catch (error) { if (current === generation) { identity.error = error.message; identity.retryable = !error.status || error.status >= 500 } }
+  finally { if (current === generation) identity.busy = false }
 }
 
 window.addEventListener('plaza-identity-invalid', event => failed(event.detail))
@@ -83,8 +87,13 @@ async function refreshIdentity() {
     if (current === generation && token === readPortalToken()) {
       if (['administrator','superAdministrator','identityAdmin'].some(key => identity.user[key] !== result.user[key])) { advanceIdentityRequests(); identity.epoch++ }
       identity.user = result.user
+      identity.error = ''
     }
-  } catch (error) { if (current === generation) failed(error) }
+  } catch (error) {
+    if (current !== generation || token !== readPortalToken()) return
+    if (error.status === 401 || error.status === 403 || error.code === 'ACCOUNT_SWITCH_REQUIRED') failed(error)
+    else identity.error = error.message
+  }
 }
 window.addEventListener('focus', refreshIdentity)
 window.addEventListener('plaza-capabilities-changed', refreshIdentity)

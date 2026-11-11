@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { isDeepStrictEqual } from 'node:util';
 import { DomainError } from "./errors.js";
 import { gitlabConcurrency } from "./gitlab-concurrency.js";
 import type { DomainDiagnostic } from "./errors.js";
@@ -891,6 +892,11 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         };
         const bundle = validateBundle(submitInput, config.gitlabToken, "metadata_patch", config.gitlabUrl);
         assertMetadataIdentity(app.manifest, bundle.manifest, input.documents);
+        if (input.expectedAppRevision === app.revision && !await findOperation(binding.id, idempotencyDigest(binding.id, idempotencyKey)) &&
+            isDeepStrictEqual({ ...app.manifest, projectVersion: undefined }, { ...bundle.manifest, projectVersion: undefined }) &&
+            isDeepStrictEqual(app.documents, input.documents)) {
+          throw new DomainError(400, 'NO_METADATA_CHANGES', '应用资料没有变化，请修改内容后再保存；仅版本号变化不会创建预览。');
+        }
         const submitted = await submitWithBinding(submitInput, bundle, binding, idempotencyKey, "metadata_patch");
         return { ...submitted.result, operationId: submitted.operationId };
       });

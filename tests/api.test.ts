@@ -14,6 +14,12 @@ test('HTTP publication -> confirmation -> catalog -> usage, with boundary failur
   const { app } = await createApp(config, db);
   t.after(async () => { await app.close(); await db.close(); await gitlab.close(); });
   const request = (method: 'GET' | 'POST', url: string, payload?: Record<string, unknown>, extra: Record<string, string> = {}) => app.inject({ method, url, payload, headers: { host: '127.0.0.1:4173', ...extra } });
+  for (const path of ['/', '/index.html', '/admin']) {
+    const missing = await request('GET', path);
+    assert.equal(missing.statusCode, 503);
+    assert.equal(missing.json().error.code, 'FRONTEND_NOT_BUILT');
+    assert.match(missing.json().error.message, /npm run build/);
+  }
   assert.equal((await request('GET', '/api/apps')).json().total, 0);
   assert.equal((await request('GET', '/api/health')).json().loginRequired, false);
   const contract = (await request('GET', '/api/publish-contract')).json();

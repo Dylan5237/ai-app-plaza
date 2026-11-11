@@ -57,6 +57,13 @@ try {
   assert.ok(oldSource);
   const writesBefore = h.gitlab.state.writes.length;
   await page.getByTestId(`management-edit-${appId}`).click();
+  await page.getByText('修改资料后可保存；仅版本号变化不会创建预览。', { exact: true }).waitFor();
+  assert.equal(await page.getByTestId('editor-save').isDisabled(), true, 'opening the editor cannot create an empty revision');
+  const initialSummary = await page.getByTestId('editor-summary').inputValue();
+  await page.getByTestId('editor-summary').fill('临时修改后还原');
+  assert.equal(await page.getByTestId('editor-save').isDisabled(), false);
+  await page.getByTestId('editor-summary').fill(initialSummary);
+  assert.equal(await page.getByTestId('editor-save').isDisabled(), true, 'reverting all content disables save again');
   await page.getByTestId('editor-summary').fill('在后台修改资料，并保留原有源码与版本历史。');
   assert.equal(await page.getByTestId('editor-version').inputValue(), '1.1.1');
   await page.getByTestId('editor-version').fill('1.0.1');

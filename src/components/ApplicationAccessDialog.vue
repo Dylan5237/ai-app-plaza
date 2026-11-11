@@ -1,12 +1,13 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 
 const props = defineProps({ appId: { type: String, default: '' } })
 const emit = defineEmits(['close', 'saved'])
 const current = ref(null), choices = ref({ users: [], groups: [] }), loading = ref(false), busy = ref(false)
 const section = ref('sharing'), scope = ref('self'), members = ref([]), groups = ref([]), maintainers = ref([]), receiver = ref('')
-const error = ref(''), notice = ref(''), uncertain = ref(false)
+const error = ref(''), notice = ref(''), uncertain = ref(false), conflict = ref(false)
 let generation = 0, pending = null
 const label = person => `${person.name}${person.account ? `（${person.account}）` : ''}`
 const scopes = { all: '全体成员（公开，可未登录浏览）', members: '指定成员', groups: '指定小组', self: '仅自己' }
@@ -30,26 +31,37 @@ const effect = computed(() => section.value === 'sharing'
       : `${scope.value === 'members' ? members.value.length + ' 位成员' : groups.value.length + ' 个小组的当前成员'}可浏览；分享不授予维护或转授权。收紧后旧链接与收藏重新核权。`
   : section.value === 'maintainers' ? '所选人员可维护此应用，不能继续委派或更改分享。移除后停止维护权限，独立的分享可见权限按原设置判断。'
     : '接收人接受前，负责人保持不变。接受后保留版本与分享；原负责人不自动保留维护权限，发布凭据需重新核对。')
-async function load() {
+async function load(revalidating = false, acceptRevision = false) {
   const version = ++generation, id = props.appId
   if (!id) { current.value = null; return }
-  current.value = null
+  if (!revalidating) current.value = null
   loading.value = true
   try {
     const data = await apiRequest(`/api/access/apps/${id}`)
     const options = data.canShare ? await apiRequest(`/api/access/candidates?appId=${id}`) : { users: data.people, groups: data.groups }
     if (version !== generation || id !== props.appId) return
-    current.value = data; choices.value = options
-    scope.value = data.scope; members.value = [...data.member_ids]; groups.value = [...data.group_ids]; maintainers.value = [...data.maintainer_ids]; receiver.value = ''
-  } catch (err) { if (version === generation) { current.value = null; error.value = err.message } }
+    const preserveDraft = revalidating && current.value && (changed.value || acceptRevision) && data.canShare
+    current.value = preserveDraft && !acceptRevision ? { ...data, revision: current.value.revision } : data; choices.value = options
+    if (!preserveDraft) { scope.value = data.scope; members.value = [...data.member_ids]; groups.value = [...data.group_ids]; maintainers.value = [...data.maintainer_ids]; receiver.value = '' }
+    if (acceptRevision) conflict.value = false
+    return true
+  } catch (err) { if (version === generation) { if ([401, 403, 404].includes(err.status)) current.value = null; error.value = err.message } }
   finally { if (version === generation) loading.value = false }
 }
-watch(() => props.appId, () => { pending = null; uncertain.value = false; error.value = ''; notice.value = ''; section.value = 'sharing'; load() }, { immediate: true })
-function revalidate() { if (props.appId && !busy.value && !uncertain.value) void load() }
+watch(() => props.appId, () => { pending = null; uncertain.value = false; conflict.value = false; error.value = ''; notice.value = ''; section.value = 'sharing'; load() }, { immediate: true })
+function revalidate() { if (props.appId && !busy.value && !uncertain.value) void load(true) }
+function beforeClose(done) {
+  if (uncertain.value) { ElMessage.warning('原请求结果尚未确认，请先重试同一请求，确认后再关闭。'); return }
+  done()
+}
+function requestClose() {
+  if (uncertain.value) { ElMessage.warning('原请求结果尚未确认，请先重试同一请求，确认后再关闭。'); return }
+  emit('close')
+}
 onMounted(() => window.addEventListener('focus', revalidate))
 onUnmounted(() => { generation++; window.removeEventListener('focus', revalidate) })
 async function save() {
-  if (busy.value || !current.value || !valid.value || !changed.value && !uncertain.value) return
+  if (busy.value || loading.value || conflict.value || !current.value || !valid.value || !changed.value && !uncertain.value) return
   const version = generation, id = props.appId
   if (!pending) pending = { path: section.value === 'transfer' ? 'transfers' : section.value,
     method: section.value === 'transfer' ? 'POST' : 'PUT', body: { ...payload.value, revision: current.value.revision, requestId: crypto.randomUUID(), confirmed: true } }
@@ -65,16 +77,25 @@ async function save() {
     if (version !== generation || id !== props.appId) return
     uncertain.value = !err.status || err.status >= 500
     error.value = uncertain.value ? '保存结果尚未确认。保留本次请求，重试时核对原操作，不创建另一份变更。' : err.message
-    if (!uncertain.value) { pending = null; if (err.status === 409) await load(); if ([401,403,404].includes(err.status)) current.value = null }
+    if (!uncertain.value) {
+      pending = null
+      if (err.status === 409) {
+        conflict.value = true
+        const refreshed = await load(true, true)
+        error.value = refreshed ? '配置已变化，核对后再次确认。填写内容已保留。' : `配置已变化，回读失败，填写内容已保留：${error.value}`
+      }
+      if ([401,403,404].includes(err.status)) current.value = null
+    }
   } finally { busy.value = false }
 }
 </script>
 
 <template>
-  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy" @close="emit('close')">
+  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" :close-on-click-modal="false" :show-close="!busy && !uncertain" :close-on-press-escape="!busy && !uncertain" :before-close="beforeClose" @close="requestClose">
     <div v-loading="loading" class="access-form">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
       <p v-if="notice" role="status">{{ notice }}</p>
+      <el-alert v-if="uncertain" title="原请求结果尚未确认。请重试同一请求，确认后再关闭此弹窗。" type="warning" :closable="false" show-icon />
       <template v-if="current">
         <p>负责人：{{ label(current.people.find(item => item.id === current.owner_id) || { name: '已核验用户' }) }}</p>
         <p v-if="!current.canShare">当前范围：{{ scopes[current.scope] }}。你可维护此应用，归属、分享及委派由负责人调整。</p>
@@ -93,7 +114,7 @@ async function save() {
         </template>
       </template>
     </div>
-    <template #footer><el-button :disabled="busy" @click="emit('close')">关闭</el-button><el-button v-if="current?.canShare" type="primary" :loading="busy" :disabled="!uncertain && (!changed || !valid)" @click="save">{{ uncertain ? '核对并重试原操作' : section === 'transfer' ? '确认发起交接' : section === 'maintainers' ? '确认更改维护授权' : '确认更改分享范围' }}</el-button></template>
+    <template #footer><el-button :disabled="busy || uncertain" @click="requestClose">关闭</el-button><el-button v-if="conflict" :disabled="busy || loading" @click="load(true, true)">刷新配置并保留填写</el-button><el-button v-if="current?.canShare" type="primary" :loading="busy" :disabled="loading || conflict || (!uncertain && (!changed || !valid))" @click="save">{{ uncertain ? '核对并重试原操作' : section === 'transfer' ? '确认发起交接' : section === 'maintainers' ? '确认更改维护授权' : '确认更改分享范围' }}</el-button></template>
   </el-dialog>
 </template>
 

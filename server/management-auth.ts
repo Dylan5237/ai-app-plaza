@@ -3,6 +3,7 @@ import type { Database, Queryable } from './domain/database.js';
 import type { IdentityHttp } from './identity.js';
 import { requireAppAction } from './domain/app-access.js';
 import { DomainError } from './domain/errors.js';
+import { z } from 'zod';
 
 declare module 'fastify' { interface FastifyRequest { plazaUserId?: string } }
 
@@ -28,9 +29,11 @@ export function installManagementIdentity(app: FastifyInstance, db: Database, id
     if (!['GET', 'HEAD'].includes(request.method)) auth.sameOrigin(request);
     const actor = await auth.authenticate(request);
     request.plazaUserId = actor.id;
-    const appId = /^\/api\/management\/apps\/([a-f0-9-]{36})(?:\/|$)/i.exec(request.url)?.[1];
+    const appIdValue = /^\/api\/management\/apps\/([a-f0-9-]{36})(?:\/|$)/i.exec(request.url)?.[1];
+    const appId = appIdValue === undefined ? undefined : z.string().uuid().parse(appIdValue);
     if (appId) await requireAppAction(db, appId, actor.id);
-    const publicationId = /^\/api\/management\/publications\/([a-f0-9-]{36})(?:\/|$)/i.exec(request.url)?.[1];
+    const publicationIdValue = /^\/api\/management\/publications\/([a-f0-9-]{36})(?:\/|$)/i.exec(request.url)?.[1];
+    const publicationId = publicationIdValue === undefined ? undefined : z.string().uuid().parse(publicationIdValue);
     if (publicationId) await requirePublicationMaintenance(db, publicationId, sourceInstance, actor.id);
   });
 }
