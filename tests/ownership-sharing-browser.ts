@@ -81,6 +81,16 @@ try {
   await focusSharing;
   await page.locator('.application-access-dialog .el-loading-mask').waitFor({ state: 'hidden' });
   await page.locator('.application-access-dialog .el-form-item').filter({ hasText: '谁可以浏览' }).getByText('指定小组', { exact: true }).waitFor();
+  const beforeConflict = Number((await h.db.query('SELECT revision FROM plaza_app_access WHERE app_id=$1', [target.appId])).rows[0].revision);
+  await h.db.query('UPDATE plaza_app_access SET revision=revision+1 WHERE app_id=$1', [target.appId]);
+  const staleSharing = page.waitForRequest('**/api/access/apps/*/sharing');
+  await page.getByRole('button', { name: '确认更改分享范围', exact: true }).click();
+  assert.equal((await staleSharing).postDataJSON().revision, beforeConflict);
+  await page.getByRole('alert').filter({ hasText: '配置已变化，核对后再次确认' }).waitFor();
+  await page.locator('.application-access-dialog .el-loading-mask').waitFor({ state: 'hidden' });
+  await page.locator('.application-access-dialog .el-form-item').filter({ hasText: '谁可以浏览' }).getByText('指定小组', { exact: true }).waitFor();
+  await page.locator('.application-access-dialog').getByText('浏览器分享小组', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '确认更改分享范围', exact: true }).isEnabled(), true, 'readback preserves the draft and requires another explicit confirmation');
   const sharingBodies: string[] = [];
   await page.route('**/api/access/apps/*/sharing', async route => {
     sharingBodies.push(route.request().postData()!);
@@ -96,6 +106,7 @@ try {
   await page.getByRole('button', { name: '核对并重试原操作', exact: true }).click();
   await page.getByText('配置已保存，已回读当前结果。', { exact: true }).waitFor();
   assert.equal(sharingBodies.length, 2); assert.equal(sharingBodies[0], sharingBodies[1]);
+  assert.equal(JSON.parse(sharingBodies[0]).revision, beforeConflict + 1, 'the second confirmation uses the fresh revision');
   assert.equal((await h.db.query("SELECT count(*) AS n FROM plaza_access_operations WHERE resource_id=$1 AND action='sharing_changed'", [target.appId])).rows[0].n, 1);
   await page.getByText('维护授权', { exact: true }).click();
   await select(page, '应用维护者', memberLabel);
