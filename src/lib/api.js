@@ -85,7 +85,7 @@ export async function downloadPackage(url) {
   catch { throw new ApiError('下载未完成，请重试。') }
   if (!response.ok) {
     const result = await response.json().catch(() => null)
-    if (epoch === portalRequestEpoch && token === readPortalToken() && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED', 'IDENTITY_UNAVAILABLE'].includes(result?.error?.code)) {
+    if (epoch === portalRequestEpoch && token === readPortalToken() && response.status < 500 && ['LOGIN_REQUIRED', 'PORTAL_TOKEN_REQUIRED', 'PORTAL_IDENTITY_INVALID', 'ACCOUNT_SWITCH_REQUIRED'].includes(result?.error?.code)) {
       window.dispatchEvent(new CustomEvent('plaza-identity-invalid', { detail: result.error }))
     }
     throw new ApiError(result?.error?.message || '分发包当前不可访问。', response.status, result?.error?.code)
