@@ -79,8 +79,8 @@ function offset(index) {
 function opacity(index) {
   if (props.items.length < 2) return 1
   const distance = Math.abs(offset(index))
-  // A card crosses the wrap boundary while invisible, never through the foreground.
-  const edge = Math.min(1, Math.max(0, (props.items.length / 2 - distance) / .65))
+  // With a very small batch, keep both neighbors visible instead of fading the whole ring out.
+  const edge = props.items.length < 3 ? 1 : Math.min(1, Math.max(0, (props.items.length / 2 - distance) / .65))
   return Math.max(0, 1 - distance * .18) * edge
 }
 function aim(index) {
@@ -144,11 +144,8 @@ function click(event) {
 <template>
   <section class="random-section" aria-label="随便看看" data-testid="random-discovery">
     <div class="random-heading">
-      <div><h2>随便看看</h2><p>随机遇见一个好用的应用</p></div>
-      <div class="random-actions">
-        <button @click="emit('return')">返回应用目录</button>
-        <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? revalidating ? '正在核验…' : '正在抽取…' : '换一批' }}</button>
-      </div>
+      <div><h1>随便看看</h1><p>从当前上架的应用中随机抽取，一批最多 6 个，等权展示。</p></div>
+      <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? revalidating ? '正在核验…' : '正在抽取…' : '换一批' }}</button>
     </div>
     <p v-if="error" role="alert" class="random-error">{{ error }}</p>
     <p v-if="loading && !items.length" class="random-state" role="status">正在读取随机应用…</p>
@@ -181,23 +178,23 @@ function click(event) {
 </template>
 
 <style scoped>
-.random-section { min-height: 400px; }
-.random-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 18px 0; }
-h2 { margin: 0; font-size: 17px;;line-height:26px;}
-.random-heading p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 14px;;line-height:22px;}
-.random-actions { display: flex; gap: 8px; }
-button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--plaza-line); border-radius: var(--plaza-control-radius); background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 14px; cursor: pointer; }
+.random-section { min-height: 400px; padding-top: 2px; }
+.random-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin: 0 0 18px; }
+h1 { margin: 0; color: var(--plaza-ink); font-size: 27px; font-weight: 680; line-height: 36px; letter-spacing: -.025em; }
+.random-heading p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 12.5px; line-height: 20px; }
+button { min-height: 36px; padding: 6px 13px; border: 1px solid var(--plaza-line); border-radius: 9px; background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 12.5px; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
-.refresh-button { background: var(--plaza-brand); border-color: var(--plaza-brand); color: var(--plaza-surface); }
-.wheel { position: relative; height: 370px; overflow: hidden; touch-action: pan-y; }
-.wheel-card { position: absolute; width: min(390px, 76%); left: 50%; top: 24px; transform: translate3d(calc(-50% + var(--offset) * 51%),calc(var(--distance) * 14px),0) scale(calc(1 - var(--distance) * .12)); opacity: var(--wheel-opacity); will-change: transform,opacity; }
-.wheel-card :deep(.app-card) { --catalog-card-height: 290px; }
+.refresh-button { background: var(--plaza-surface); border-color: var(--plaza-line); color: var(--plaza-text); font-weight: 600; }
+.refresh-button:hover { border-color: rgb(32 42 59 / .24); color: var(--plaza-ink); }
+.wheel { position: relative; height: 355px; overflow: hidden; touch-action: pan-y; }
+.wheel-card { position: absolute; width: min(380px, 76%); left: 50%; top: 14px; transform: translate3d(calc(-50% + var(--offset) * 51%),calc(var(--distance) * 14px),0) scale(calc(1 - var(--distance) * .12)); opacity: var(--wheel-opacity); will-change: transform,opacity; }
+.wheel-card :deep(.app-card) { --catalog-card-height: 250px; }
 .side-select { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
 .wheel-controls, .wheel-dots { display: flex; justify-content: center; align-items: center; gap: 12px; }
 .wheel-dots button { position: relative; display: grid; width: 24px; height: 24px; min-height: 24px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; }
-.wheel-dots button::before { width: 10px; height: 10px; border-radius: 50%; background: var(--plaza-line); content: ""; }
-.wheel-dots button[aria-pressed="true"] { outline: 2px solid var(--plaza-brand); outline-offset: 1px; }
-.wheel-dots button[aria-pressed="true"]::before { background: var(--plaza-brand); }
+.wheel-dots button::before { width: 8px; height: 8px; border-radius: 50%; background: rgb(32 42 59 / .18); content: ""; transition: background .12s, transform .12s; }
+.wheel-dots button[aria-pressed="true"]::before { background: var(--plaza-brand); transform: scale(1.3); }
+.wheel-dots button:focus-visible { outline: 2px solid var(--plaza-brand); outline-offset: 2px; }
 
 .wheel-status, .random-state { color: var(--plaza-muted); font-size: 14px; text-align: center;;line-height:22px;}
 .wheel-hint { margin: 8px 0 0; color: var(--plaza-muted); font-size: 11px; text-align: center;;line-height:18px;}

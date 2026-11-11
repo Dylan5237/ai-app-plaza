@@ -14,13 +14,15 @@ async function toggle() {
 </script>
 <template>
   <button v-if="identity.enabled" class="favorite-button" :class="{ saved }" type="button" :aria-pressed="saved" :aria-label="identity.user && !favorites.loaded ? favorites.error ? '收藏状态读取失败，点击重试' : '正在读取收藏状态' : saved ? '取消收藏' : identity.user ? '收藏应用' : '登录后收藏'" :title="identity.user && !favorites.loaded && favorites.error ? '读取失败，单击重试' : undefined" :disabled="identity.busy || (identity.user && !favorites.loaded && favorites.loading) || favorites.busy.includes(appId)" @click.stop="toggle" @pointerover.stop @pointerdown.stop>
-    <PlazaIcon name="favorite" />
+    <PlazaIcon name="bookmark" />
   </button>
 </template>
 <style scoped>
-.favorite-button { display: inline-flex; width: 44px; height: 44px; flex: none; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--plaza-line); border-radius: var(--plaza-control-radius); background: var(--plaza-surface); color: var(--plaza-muted); cursor: pointer; }
-.favorite-button:hover, .favorite-button.saved { color: var(--plaza-brand); background: var(--plaza-brand-soft); }
-.favorite-button.saved :deep(svg) { fill: currentColor; }
-.favorite-button:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
+.favorite-button { display: inline-flex; width: 30px; height: 30px; flex: none; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #8a93a2; cursor: pointer; transition: color .12s, background .12s; }
+.favorite-button :deep(svg) { width: 17px; height: 17px; }
+.favorite-button:hover { color: var(--plaza-brand); background: var(--plaza-brand-soft); }
+.favorite-button.saved { color: var(--plaza-brand); }
+.favorite-button.saved :deep(svg) { fill: #d0d9ff; stroke: var(--plaza-brand); }
+.favorite-button:focus-visible { outline: 2px solid var(--plaza-brand); outline-offset: 2px; }
 .favorite-button:disabled { opacity: .55; cursor: wait; }
 </style>

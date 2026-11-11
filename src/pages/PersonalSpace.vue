@@ -46,14 +46,16 @@ onUnmounted(() => { sequence++; window.removeEventListener('plaza-favorites-chan
   </main>
 </template>
 <style scoped>
-.personal-space { flex: 1; min-height: 0; overflow: auto; padding: 28px 32px; }
-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
-h1 { margin: 0; font-size: 24px; line-height: 32px; }
+.personal-space { flex: 1; min-height: 0; overflow: auto; padding: 26px 32px 32px; background: var(--plaza-canvas); }
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+h1 { margin: 0; color: var(--plaza-ink); font-size: 27px; line-height: 36px; font-weight: 680; letter-spacing: -.025em; }
+header p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 12.5px; line-height: 20px; }
 p { margin: 8px 0; color: var(--plaza-text); line-height: 1.6; }
-.personal-grid { --catalog-card-height: 300px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin: 20px 0; }
-.personal-empty { padding: 64px 20px; text-align: center; }
-.unavailable-favorite { min-height: 220px; padding: 24px; border: 1px dashed var(--plaza-line); border-radius: var(--plaza-radius); background: var(--plaza-surface); }
-.unavailable-favorite h2 { font-size: 17px; }
+.personal-grid { --catalog-card-height: 250px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.personal-empty { padding: 64px 20px; text-align: center; border: 1px dashed rgb(32 42 59 / .12); border-radius: 16px; background: var(--plaza-surface); }
+.personal-empty h2 { color: var(--plaza-ink); font-size: 18px; }
+.unavailable-favorite { min-height: 220px; padding: 24px; border: 1px dashed rgb(32 42 59 / .12); border-radius: 16px; background: var(--plaza-surface); }
+.unavailable-favorite h2 { color: var(--plaza-ink); font-size: 17px; }
 [role="alert"] { color: var(--plaza-danger); }
 @media(min-width:1780px) { .personal-grid { grid-template-columns: repeat(4,minmax(0,1fr)); } }
 @media(max-width:1120px) { .personal-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }

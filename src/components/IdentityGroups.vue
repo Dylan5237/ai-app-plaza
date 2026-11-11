@@ -80,13 +80,16 @@ onMounted(load)
 </template>
 
 <style scoped>
-.identity-groups { flex: 1; min-height: 0; overflow: auto; padding: 28px 32px; background: var(--plaza-canvas); color: var(--plaza-ink); }
-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
-h1 { margin: 0; font-size: 24px; }
+.identity-groups { flex: 1; min-height: 0; overflow: auto; padding: 26px 32px 32px; background: var(--plaza-canvas); color: var(--plaza-ink); }
+header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+h1 { margin: 0; color: var(--plaza-ink); font-size: 27px; font-weight: 680; line-height: 36px; letter-spacing: -.025em; }
+header p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 12.5px; line-height: 20px; }
 p { line-height: 1.7; color: var(--plaza-text); }
-.group-toolbar { display: flex; gap: 12px; margin: 24px 0; }
+.group-toolbar { display: flex; gap: 10px; margin: 18px 0; }
 .field-label { display: block; margin: 18px 0 8px; }
 [role="alert"] { color: var(--plaza-danger); }
-.group-confirm { margin-top: 18px; padding: 12px 16px; background: var(--plaza-brand-soft); border-radius: var(--plaza-control-radius); overflow-wrap: anywhere; }
+.group-confirm { margin-top: 18px; padding: 12px 16px; background: var(--plaza-brand-soft); border-radius: 10px; overflow-wrap: anywhere; }
+.identity-groups :deep(.el-table) { border: 1px solid rgb(32 42 59 / .07); border-radius: 14px; background: var(--plaza-surface); }
+@media(max-width:650px) { .identity-groups { padding: 20px 16px; } header { flex-wrap: wrap; gap: 10px; } }
 @media(max-width:600px) { .identity-groups { padding: 18px; } header { align-items: flex-start; } }
 </style>
