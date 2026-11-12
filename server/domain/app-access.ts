@@ -100,17 +100,17 @@ export function createAppAccessService(db: Database, audience: string) {
       LEFT JOIN plaza_app_access p ON p.app_id=a.id LEFT JOIN plaza_identities i ON i.id=p.owner_id
       LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id WHERE s.audience=$1 ORDER BY a.updated_at DESC,a.id`, [audience])).rows;
   }
-  async function adopt(actorId: string, appId: string, input: { ownerId: string; expectedAppRevision: number; requestId: string; reason: string; sourceAuthorizationConfirmed: true }) {
+  async function adopt(actorId: string, appId: string, input: { ownerId: string; expectedAppRevision: number; requestId: string }) {
     return db.transaction(async tx => {
       const app = await lock(tx, appId);
       await requireAdministrator(tx, actorId);
-      if (await replay(tx, actorId, appId, 'legacy_owner_verified', input)) return { recovered: true };
+      if (await replay(tx, actorId, appId, 'owner_assigned', input)) return { recovered: true };
       if (await accessRecord(tx, appId)) throw new DomainError(409, 'OWNER_ALREADY_ASSIGNED', '应用已有负责人，请使用负责人交接。');
       if (app.revision !== input.expectedAppRevision) throw conflict();
       await existingUser(tx, input.ownerId);
       // Existing audience remains public; legacy credentials are not silently bound to a new person.
       await tx.query("INSERT INTO plaza_app_access(app_id,owner_id,scope) VALUES($1,$2,'all')", [appId, input.ownerId]);
-      await audit(tx, actorId, appId, 'legacy_owner_verified', input, null, { ownerId: input.ownerId, scope: 'all' });
+      await audit(tx, actorId, appId, 'owner_assigned', input, null, { ownerId: input.ownerId, scope: 'all' });
       return { saved: true };
     });
   }

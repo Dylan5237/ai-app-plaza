@@ -39,7 +39,7 @@ export async function administratorUsers(db: Queryable, actorId: string) {
     FROM plaza_identities i LEFT JOIN plaza_platform_roles r ON r.user_id=i.id WHERE i.source='tiangong' ORDER BY i.name,i.id`)).rows;
 }
 
-export async function setAdministrator(db: Database, actorId: string, input: { userId: string; role: 'member' | 'administrator' | 'super_administrator'; revision: number; requestId: string; reason: string }) {
+export async function setAdministrator(db: Database, actorId: string, input: { userId: string; role: 'member' | 'administrator' | 'super_administrator'; revision: number; requestId: string }) {
   return db.transaction(async tx => {
     // All role writers lock the same existing super-administrator set before counting it.
     await tx.query("SELECT user_id FROM plaza_platform_roles WHERE role='super_administrator' ORDER BY user_id FOR UPDATE");

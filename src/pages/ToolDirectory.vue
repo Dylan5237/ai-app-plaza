@@ -1396,7 +1396,7 @@ onUnmounted(() => {
         </div>
         <div class="share-links">
           <span v-if="publishContract.audience"><strong>目录可见范围</strong>{{ publishContract.audience }}</span>
-          <a v-if="safeHttpUrl(publishContract.managed?.groupUrl || publishContract.gitlabUrl)" :href="safeHttpUrl(publishContract.managed?.groupUrl || publishContract.gitlabUrl)" target="_blank" rel="noopener noreferrer">{{ publishContract.mode === 'managed' ? '统一托管空间' : '项目托管平台' }}</a>
+          <a v-if="safeHttpUrl(publishContract.managed?.groupUrl || publishContract.gitlabUrl)" :href="safeHttpUrl(publishContract.managed?.groupUrl || publishContract.gitlabUrl)" target="_blank" rel="noopener noreferrer">{{ publishContract.mode === 'managed' ? '查看 GitLab 仓库（统一托管空间）' : '项目托管平台' }}</a>
         </div>
       </div>
     </el-dialog>

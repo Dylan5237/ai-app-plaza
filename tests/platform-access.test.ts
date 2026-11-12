@@ -27,7 +27,7 @@ test('platform roles require super-administrator authority, reject stale writes 
   const h = await startIdentityHarness('', { superAdminAccount: 'fixture.admin' }); t.after(h.close);
   const admin = await h.login('fixture-admin');
   const member = await h.login('fixture-member');
-  const input = { userId: member.user.id, role: 'administrator' as const, revision: 0, requestId: randomUUID(), reason: '指定验证管理员' };
+  const input = { userId: member.user.id, role: 'administrator' as const, revision: 0, requestId: randomUUID() };
   await assert.rejects(() => administratorUsers(h.db, member.user.id), /管理员/);
   await assert.rejects(() => setAdministrator(h.db, member.user.id, input), /管理员/);
   await setAdministrator(h.db, admin.user.id, input);

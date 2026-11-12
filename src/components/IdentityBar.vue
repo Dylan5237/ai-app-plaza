@@ -16,8 +16,8 @@ onMounted(initializeIdentity)
       <template v-if="!rail">
         <button v-if="identity.user" type="button" @click="$emit('personal')">我的收藏</button>
         <a v-if="identity.user" :href="publicPath('/admin')">我的应用</a>
-        <a v-if="identity.user" :href="publicPath('/?space=transfers')">负责人交接</a>
-        <a v-if="identity.user?.administrator" :href="publicPath('/?space=governance')">应用归属核验</a>
+        <a v-if="identity.user" :href="publicPath('/?space=transfers')">应用交接</a>
+        <a v-if="identity.user?.administrator" :href="publicPath('/?space=governance')">应用负责人</a>
         <a v-if="identity.user?.administrator" :href="publicPath('/?space=operations')">运营看板</a>
         <a v-if="identity.user?.superAdministrator" :href="publicPath('/?space=administrators')">管理员配置</a>
         <button v-if="identity.user?.identityAdmin" type="button" @click="$emit('groups')">成员与小组</button>

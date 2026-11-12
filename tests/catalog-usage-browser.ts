@@ -760,6 +760,21 @@ try {
     const box = button.getBoundingClientRect(); return box.width >= 24 && box.height >= 24;
   })), true, 'wheel selectors have at least a 24px target');
   assert.ok(await page.getByTestId('random-discovery').locator('.wheel-dots button[aria-pressed="true"]').evaluate((button: HTMLElement) => parseFloat(getComputedStyle(button).outlineWidth) >= 2), 'the current wheel item has a shape cue beyond color');
+  const wheelLayout = await page.getByTestId('random-discovery').evaluate((section: HTMLElement) => {
+    const wheelBox = section.querySelector('.wheel')!.getBoundingClientRect();
+    const controls = section.querySelector('.wheel-controls')!.getBoundingClientRect();
+    const refresh = section.querySelector('[data-testid="random-refresh"]')!.getBoundingClientRect();
+    const next = section.querySelector('[aria-label="下一个应用"]')!.getBoundingClientRect();
+    const heading = section.querySelector('.random-heading')!.getBoundingClientRect();
+    const hint = section.querySelector('.wheel-hint')!.getBoundingClientRect();
+    return { controlsGap: controls.top - wheelBox.bottom, refreshGap: refresh.left - next.right,
+      rowOffset: Math.abs((refresh.top + refresh.height / 2) - (next.top + next.height / 2)),
+      topGap: wheelBox.top - heading.bottom, bottomGap: innerHeight - hint.bottom };
+  });
+  assert.ok(wheelLayout.controlsGap >= 0 && wheelLayout.controlsGap <= 40, 'switch controls sit directly below the cards');
+  assert.ok(wheelLayout.rowOffset <= 2 && wheelLayout.refreshGap >= 0 && wheelLayout.refreshGap <= 24, '换一批 sits in the same controls row next to the arrows');
+  assert.ok(wheelLayout.bottomGap <= wheelLayout.topGap + 60, 'the wheel stage stays vertically balanced instead of leaving a large bottom void');
+  report.checks.push('random stage centers vertically and 换一批 shares the switch-controls row beside the cards');
   const batchIds = () => wheel.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
   const refreshRandom = async () => {
     const response = page.waitForResponse((res: any) => new URL(res.url()).pathname === '/api/apps/random');

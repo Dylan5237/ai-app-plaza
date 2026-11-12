@@ -31,11 +31,10 @@ async function login(surface: Page, button: string) {
   await surface.getByRole('button', { name: button, exact: true }).click();
   await surface.getByRole('link', { name: '我的应用', exact: true }).waitFor();
 }
-async function role(value: string, reason: string) {
+async function role(value: string) {
   const row = page.getByRole('row').filter({ hasText: memberLabel });
   await row.getByRole('button', { name: '调整角色', exact: true }).click();
   await select(page, '平台角色', value);
-  await page.getByRole('textbox', { name: '核验依据或变更原因' }).fill(reason);
   await page.getByRole('button', { name: '确认更改角色', exact: true }).click();
   await page.getByRole('dialog', { name: '调整平台角色', exact: true }).waitFor({ state: 'hidden' });
   await row.getByRole('cell', { name: value, exact: true }).waitFor();
@@ -43,13 +42,14 @@ async function role(value: string, reason: string) {
 try {
   await login(page, '以测试名册管理员进入');
   await page.getByText('超级管理员 · 天宫身份', { exact: true }).waitFor();
-  await page.getByRole('link', { name: '应用归属核验', exact: true }).click();
-  await page.getByRole('heading', { name: '应用归属核验', exact: true }).waitFor();
+  await page.getByRole('link', { name: '应用负责人', exact: true }).click();
+  await page.getByRole('heading', { name: '应用负责人', exact: true }).waitFor();
   const appRow = page.getByRole('row').filter({ hasText: target.source.name });
-  await appRow.getByRole('button', { name: '核验并指定负责人', exact: true }).click();
-  await select(page, '核验后的负责人', adminLabel);
-  await page.getByRole('textbox', { name: '核验依据或变更原因' }).fill('已核对固定来源、维护责任和原公开授权');
-  await page.getByText('我已核对该应用的来源授权及原公开授权', { exact: true }).click();
+  await appRow.getByRole('button', { name: '指定负责人', exact: true }).click();
+  await select(page, '应用负责人', adminLabel);
+  const assignDialog = page.getByRole('dialog', { name: '指定应用负责人', exact: true });
+  assert.equal(await assignDialog.getByRole('textbox').count(), 0, 'assigning an owner no longer asks for a written justification');
+  assert.equal(await assignDialog.getByRole('checkbox').count(), 0, 'assigning an owner no longer asks for an authorization checkbox');
   let adoptionAttempts = 0;
   await page.route(`**/api/access/apps/${target.appId}/adopt`, route => {
     adoptionAttempts++;
@@ -57,14 +57,13 @@ try {
     return route.continue();
   });
   await page.getByRole('button', { name: '确认指定负责人', exact: true }).click();
-  const governanceDialog = page.getByRole('dialog', { name: '核验应用负责人', exact: true });
+  const governanceDialog = page.getByRole('dialog', { name: '指定应用负责人', exact: true });
   await governanceDialog.getByRole('alert').filter({ hasText: '填写内容已保留' }).waitFor();
-  assert.equal(await governanceDialog.getByRole('textbox', { name: '核验依据或变更原因' }).inputValue(), '已核对固定来源、维护责任和原公开授权');
-  assert.equal(await governanceDialog.getByRole('checkbox').isChecked(), true);
+  assert.ok((await governanceDialog.locator('.el-select__selection').innerText()).includes(adminLabel), 'the chosen owner survives the conflict');
   assert.equal(await governanceDialog.getByRole('button', { name: '确认指定负责人', exact: true }).isDisabled(), true, 'a stale form requires an explicit refresh');
   await governanceDialog.getByRole('button', { name: '刷新记录并保留填写', exact: true }).click();
   await governanceDialog.getByText('记录已刷新。填写内容已保留，请核对后重新确认。', { exact: true }).waitFor();
-  assert.equal(await governanceDialog.getByRole('textbox', { name: '核验依据或变更原因' }).inputValue(), '已核对固定来源、维护责任和原公开授权');
+  assert.ok((await governanceDialog.locator('.el-select__selection').innerText()).includes(adminLabel), 'the chosen owner survives the refresh');
   await governanceDialog.getByRole('button', { name: '确认指定负责人', exact: true }).click();
   await appRow.getByText('已归属', { exact: true }).waitFor();
   await page.unroute(`**/api/access/apps/${target.appId}/adopt`);
@@ -150,8 +149,8 @@ try {
   await page.getByRole('button', { name: '确认发起交接', exact: true }).click();
   await page.getByText('交接请求已发送，等待接收人接受。', { exact: true }).waitFor();
   await page.getByRole('dialog', { name: '应用归属与权限' }).getByRole('button', { name: '关闭', exact: true }).click();
-  await receiver.getByRole('link', { name: '负责人交接', exact: true }).click();
-  await page.getByRole('link', { name: '负责人交接', exact: true }).click();
+  await receiver.getByRole('link', { name: '应用交接', exact: true }).click();
+  await page.getByRole('link', { name: '应用交接', exact: true }).click();
   await page.getByRole('button', { name: '取消交接', exact: true }).click();
   const cancelConfirmation = page.getByRole('dialog', { name: '取消负责人交接', exact: true });
   await cancelConfirmation.waitFor();
@@ -178,7 +177,6 @@ try {
   const memberRow = page.getByRole('row').filter({ hasText: memberLabel });
   await memberRow.getByRole('button', { name: '调整角色', exact: true }).click();
   await select(page, '平台角色', '管理员');
-  await page.getByRole('textbox', { name: '核验依据或变更原因' }).fill('结果未知时保留原操作');
   await page.route('**/api/access/administrators', route => route.request().method() === 'PUT' ? route.abort('failed') : route.continue());
   await page.getByRole('button', { name: '确认更改角色', exact: true }).click();
   const roleDialog = page.getByRole('dialog', { name: '调整平台角色', exact: true });
@@ -190,20 +188,33 @@ try {
   await memberRow.getByRole('button', { name: '调整角色', exact: true }).click();
   await page.getByRole('button', { name: '丢弃并编辑', exact: true }).click();
   await roleDialog.waitFor();
-  assert.equal(await roleDialog.getByRole('textbox', { name: '核验依据或变更原因' }).inputValue(), '', 'explicit discard starts a fresh form');
+  assert.ok((await roleDialog.locator('.el-select__selection').innerText()).includes('普通成员'), 'explicit discard starts a fresh form');
   assert.equal(await page.getByRole('button', { name: '核对并重试原操作', exact: true }).count(), 0);
   await roleDialog.getByRole('button', { name: '取消', exact: true }).click();
   await page.unroute('**/api/access/administrators');
-  await role('管理员', '授权运营看板与治理职责');
+  await role('管理员');
   await receiver.goto(`${h.origin}/plaza/?space=operations`);
   await receiver.getByRole('heading', { name: '看见应用的发现与增长', exact: true }).waitFor();
   await receiver.getByRole('heading', { name: '应用发现表现', exact: true }).waitFor();
   assert.equal((await receiver.locator('body').innerText()).includes(target.source.name), false);
+  await receiver.setViewportSize({ width: 1440, height: 700 });
+  const opsScroll = await receiver.evaluate(() => {
+    const main = document.querySelector('.ops-dashboard')!;
+    main.scrollTop = main.scrollHeight;
+    const footnote = document.querySelector('.ops-dashboard .footnote')!.getBoundingClientRect();
+    const result = { scrollable: main.scrollHeight > main.clientHeight, reached: main.scrollTop > 0, footnoteBottom: footnote.bottom, viewport: innerHeight };
+    main.scrollTop = 0;
+    return result;
+  });
+  assert.equal(opsScroll.scrollable, true, 'operations dashboard scrolls its own content instead of clipping lower panels');
+  assert.equal(opsScroll.reached, true);
+  assert.ok(opsScroll.footnoteBottom <= opsScroll.viewport + 1, 'the dashboard footnote is reachable by scrolling');
+  await receiver.setViewportSize({ width: 1366, height: 900 });
   await receiver.screenshot({ path: 'artifacts/operations-integrated.png', fullPage: true });
   await receiver.setViewportSize({ width: 390, height: 844 });
   assert.equal(await receiver.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await receiver.screenshot({ path: 'artifacts/operations-integrated-mobile.png', fullPage: true });
-  await role('普通成员', '回收运营看板权限');
+  await role('普通成员');
   await receiver.evaluate(() => dispatchEvent(new Event('focus')));
   await receiver.getByRole('heading', { name: '当前身份没有此页面权限', exact: true }).waitFor();
   assert.equal(await receiver.getByRole('heading', { name: '应用发现表现', exact: true }).count(), 0);
