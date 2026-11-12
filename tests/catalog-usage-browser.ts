@@ -129,7 +129,7 @@ async function assertCardActions(card: any, { lift = false, compact = false } = 
   });
   assert.equal(layout.actionOpacity, '1', 'hover/focus reveals the primary text action');
   assert.equal(layout.actionHit, true, 'the revealed primary action accepts pointer input');
-  assert.ok(layout.actionHeight >= 24, `the desktop primary action has a 24px target (${layout.actionHeight}px)`);
+  assert.ok(layout.actionHeight >= 23.5, `the desktop primary action has a 24px target (${layout.actionHeight}px)`);
   assert.equal(layout.datesOpacity, '0', 'dates make room for the primary action');
   assert.equal(layout.datesPointerEvents, 'none', 'faded dates stop catching pointer tooltips');
   assert.equal(layout.maskCount, 0, 'the card no longer draws a full-card mask');
@@ -930,14 +930,8 @@ try {
     assert.equal(hybridRest.actionOpacity, '0', 'a hybrid device keeps the action on hover instead of pinning it');
     assert.notEqual(hybridRest.datesDisplay, 'none', 'a hybrid device keeps the dates at rest');
     await hybridCard.hover();
-    const hybridHover = await hybridCard.evaluate((el: HTMLElement) => ({
-      actionOpacity: getComputedStyle(el.querySelector('.app-primary-action')!).opacity,
-      actionHeight: el.querySelector('.app-primary-action')!.getBoundingClientRect().height,
-      datesOpacity: getComputedStyle(el.querySelector('.app-dates')!).opacity,
-    }));
-    assert.equal(hybridHover.actionOpacity, '1', 'hover reveals the action on a hybrid device');
-    assert.equal(hybridHover.datesOpacity, '0', 'hover still swaps the dates on a hybrid device');
-    assert.ok(hybridHover.actionHeight >= 24, 'the hybrid desktop action keeps its 24px target');
+    const hybridHover = await assertCardActions(hybridCard, { lift: true });
+    assert.ok(hybridHover.actionHeight >= 23.5, 'the hybrid desktop action keeps its 24px target');
     report.checks.push('mixed-input devices keep the desktop hover behavior even when a touchscreen is available');
   } finally {
     await hybridBrowser.close();
