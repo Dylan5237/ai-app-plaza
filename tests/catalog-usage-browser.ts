@@ -456,6 +456,26 @@ try {
   assert.ok(report.externalRequests.includes(platformHref!), 'the external target was intercepted before network access');
   report.checks.push('platform link opens a protected new tab and does not trigger card detail');
 
+  // A device whose primary input cannot hover but which has another hover-capable input keeps the desktop behavior.
+  const hybridContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const hybridPage = await hybridContext.newPage();
+  const hybridCdp = await hybridContext.newCDPSession(hybridPage);
+  await hybridCdp.send('Emulation.setEmulatedMedia', { features: [
+    { name: 'hover', value: 'none' },
+    { name: 'any-hover', value: 'hover' },
+  ] });
+  await hybridPage.goto(harness.origin);
+  await hybridPage.getByTestId('app-card').first().waitFor();
+  await hybridPage.mouse.move(0, 0);
+  const hybridRest = await hybridPage.getByTestId('app-card').first().evaluate((el: HTMLElement) => ({
+    actionOpacity: getComputedStyle(el.querySelector('.app-primary-action')!).opacity,
+    datesDisplay: getComputedStyle(el.querySelector('.app-dates')!).display,
+  }));
+  assert.equal(hybridRest.actionOpacity, '0', 'a hover-capable hybrid device keeps the action hidden at rest');
+  assert.notEqual(hybridRest.datesDisplay, 'none', 'a hover-capable hybrid device keeps the dates visible');
+  await hybridContext.close();
+  report.checks.push('hybrid pointers with a hover-capable input keep the desktop hover behavior');
+
   const filteredAgentResponse = await clickUsage(page, 'agent');
   assert.equal(filteredAgentResponse.total, 0, 'switching categories preserves the active search query');
   const agentResponse = await search(page, '', 'agent');
@@ -886,20 +906,10 @@ try {
   await touchContext.close();
   report.checks.push('real touch swipe changes the current item without resampling or opening details; the visible 44px primary action and card title remain tappable');
 
-  // A secondary touchscreen must work even while the desktop mouse remains the primary pointer.
+  // A secondary touchscreen must not pin the action while the desktop mouse remains the primary pointer.
   const hybridBrowser = await chromium.launch({ ...browserOptions, args: ['--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=6'] });
   try {
     const hybridContext = await hybridBrowser.newContext({ viewport: { width: 1440, height: 900 } });
-    let noteHybridTarget!: (url: string) => void;
-    const hybridTarget = new Promise<string>(resolve => { noteHybridTarget = resolve; });
-    await hybridContext.route('**/*', (route: any) => {
-      const url = route.request().url();
-      if (/^https?:/.test(url) && new URL(url).origin !== harness.origin) {
-        noteHybridTarget(url);
-        return route.abort();
-      }
-      return route.continue();
-    });
     const hybridPage = await hybridContext.newPage();
     hybridPage.setDefaultTimeout(10000);
     await hybridPage.goto(harness.origin);
@@ -907,29 +917,28 @@ try {
     await clickUsage(hybridPage, 'platform');
     await hybridPage.mouse.move(0, 0);
     const hybridCard = hybridPage.getByTestId('app-card').first();
-    const hybridAction = hybridCard.getByTestId('open-platform');
-    const hybridLayout = await hybridCard.evaluate((el: HTMLElement) => ({
+    const hybridRest = await hybridCard.evaluate((el: HTMLElement) => ({
       fine: matchMedia('(pointer: fine)').matches,
       touchAvailable: matchMedia('(any-pointer: coarse)').matches,
+      hoverAvailable: matchMedia('(any-hover: hover)').matches,
       actionOpacity: getComputedStyle(el.querySelector('.app-primary-action')!).opacity,
-      actionHeight: el.querySelector('.app-primary-action')!.getBoundingClientRect().height,
       datesDisplay: getComputedStyle(el.querySelector('.app-dates')!).display,
     }));
-    assert.equal(hybridLayout.fine, true, 'the mixed-input fixture keeps the mouse as its primary pointer');
-    assert.equal(hybridLayout.touchAvailable, true, 'the mixed-input fixture also exposes a touchscreen');
-    assert.equal(hybridLayout.actionOpacity, '1', 'the secondary touchscreen has an action before hover');
-    assert.equal(hybridLayout.datesDisplay, 'none');
-    assert.ok(hybridLayout.actionHeight >= 44, 'the secondary touchscreen has a 44px action target');
-    const hybridBox = await hybridAction.boundingBox();
-    const hybridPopup = hybridPage.waitForEvent('popup');
-    const hybridCdp = await hybridContext.newCDPSession(hybridPage);
-    await hybridCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: hybridBox!.x + hybridBox!.width / 2, y: hybridBox!.y + hybridBox!.height / 2 }] });
-    await hybridCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    const opened = await hybridPopup;
-    assert.equal(await hybridTarget, await hybridAction.getAttribute('href'), 'a native tap opens the intended platform');
-    assert.equal(await hybridPage.getByTestId('app-detail').count(), 0, 'the mixed-input action does not navigate to detail');
-    await opened.close();
-    report.checks.push('a native secondary-touchscreen tap reaches the always-visible 44px platform action while the primary pointer is fine');
+    assert.equal(hybridRest.fine, true, 'the mixed-input fixture keeps the mouse as its primary pointer');
+    assert.equal(hybridRest.touchAvailable, true, 'the mixed-input fixture also exposes a touchscreen');
+    assert.equal(hybridRest.hoverAvailable, true, 'the mixed-input fixture exposes a hover-capable input');
+    assert.equal(hybridRest.actionOpacity, '0', 'a hybrid device keeps the action on hover instead of pinning it');
+    assert.notEqual(hybridRest.datesDisplay, 'none', 'a hybrid device keeps the dates at rest');
+    await hybridCard.hover();
+    const hybridHover = await hybridCard.evaluate((el: HTMLElement) => ({
+      actionOpacity: getComputedStyle(el.querySelector('.app-primary-action')!).opacity,
+      actionHeight: el.querySelector('.app-primary-action')!.getBoundingClientRect().height,
+      datesOpacity: getComputedStyle(el.querySelector('.app-dates')!).opacity,
+    }));
+    assert.equal(hybridHover.actionOpacity, '1', 'hover reveals the action on a hybrid device');
+    assert.equal(hybridHover.datesOpacity, '0', 'hover still swaps the dates on a hybrid device');
+    assert.ok(hybridHover.actionHeight >= 24, 'the hybrid desktop action keeps its 24px target');
+    report.checks.push('mixed-input devices keep the desktop hover behavior even when a touchscreen is available');
   } finally {
     await hybridBrowser.close();
   }
