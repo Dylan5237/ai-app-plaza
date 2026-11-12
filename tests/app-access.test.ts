@@ -16,7 +16,7 @@ test('visibility is applied before totals, tags, random selection and all detail
   const privateApp = await seedTagCatalog(h.db, h.config.audience, ['受限标签']);
   const publicApp = await seedTagCatalog(h.db, h.config.audience, ['公开标签'], 2);
   await h.db.query("UPDATE published_snapshots SET search_text='privatewordonly' WHERE id=$1", [privateApp.snapshotId]);
-  await access.adopt(owner.user.id, privateApp.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID(), reason: '核验已有来源和原公开授权', sourceAuthorizationConfirmed: true });
+  await access.adopt(owner.user.id, privateApp.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID() });
   await access.update(owner.user.id, privateApp.appId, { revision: 1, requestId: randomUUID(), scope: 'self', memberIds: [], groupIds: [] });
   const anonymous = await h.service.list({ pageSize: 1, sort: 'updated' });
   assert.equal(anonymous.total, 1);
@@ -45,7 +45,7 @@ test('member and current group audiences grant reading, while maintenance and de
   const owner = await h.login('fixture-admin'), member = await h.login('fixture-member');
   const access = createAppAccessService(h.db, h.config.audience);
   const app = await seedTagCatalog(h.db, h.config.audience, ['边界']);
-  await access.adopt(owner.user.id, app.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID(), reason: '来源核验', sourceAuthorizationConfirmed: true });
+  await access.adopt(owner.user.id, app.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID() });
   const sharing = { revision: 1, requestId: randomUUID(), scope: 'members' as const, memberIds: [member.user.id], groupIds: [] };
   await access.update(owner.user.id, app.appId, sharing);
   assert.deepEqual(await access.update(owner.user.id, app.appId, sharing), { recovered: true });
@@ -74,7 +74,7 @@ test('ownership handoff requires the receiver and preserves share state, and sta
   const owner = await h.login('fixture-admin'), receiver = await h.login('fixture-member');
   const access = createAppAccessService(h.db, h.config.audience);
   const app = await seedTagCatalog(h.db, h.config.audience, ['交接']);
-  await access.adopt(owner.user.id, app.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID(), reason: '原归属和授权已核对', sourceAuthorizationConfirmed: true });
+  await access.adopt(owner.user.id, app.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID() });
   const requestId = randomUUID();
   await access.requestTransfer(owner.user.id, app.appId, { receiverId: receiver.user.id, revision: 1, requestId });
   await assert.rejects(() => access.decideTransfer(owner.user.id, requestId, { action: 'accept', requestId: randomUUID() }), /不可访问/);
@@ -197,7 +197,7 @@ test('HTTP management and dashboard independently authenticate every caller and 
   assert.equal((await get('/api/management/apps')).json().total, 0);
   assert.equal((await get(`/api/management/apps/${app.appId}`, headers(admin, 'fixture-admin'))).statusCode, 404);
   const adopted = await h.app.inject({ method: 'POST', url: `/plaza/api/access/apps/${app.appId}/adopt`, headers: headers(admin, 'fixture-admin'),
-    payload: { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID(), reason: '核对原来源和公开授权', sourceAuthorizationConfirmed: true, confirmed: true } });
+    payload: { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID(), confirmed: true } });
   assert.equal(adopted.statusCode, 200, adopted.body);
   assert.equal((await get('/api/management/apps')).json().total, 1);
   assert.equal((await get('/api/management/apps', headers(admin, 'fixture-admin'))).json().total, 0);

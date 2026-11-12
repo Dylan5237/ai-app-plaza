@@ -22,8 +22,7 @@ export function registerApplicationAccess(app: FastifyInstance, db: Database, au
   app.get('/api/access/governance', async request => ({ items: await access.governance(await user(request)) }));
   app.post('/api/access/apps/:id/adopt', async request => {
     const actorId = await user(request, true);
-    const { confirmed: _, ...input } = mutation.extend({ ownerId: z.string().uuid(), expectedAppRevision: z.number().int().positive(),
-      reason: z.string().trim().min(1).max(500), sourceAuthorizationConfirmed: z.literal(true) }).strict().parse(request.body);
+    const { confirmed: _, ...input } = mutation.extend({ ownerId: z.string().uuid(), expectedAppRevision: z.number().int().positive() }).strict().parse(request.body);
     return access.adopt(actorId, id(request.params), input);
   });
   app.get('/api/access/apps/:id', async request => access.settings(await user(request), id(request.params)));
@@ -53,7 +52,7 @@ export function registerApplicationAccess(app: FastifyInstance, db: Database, au
   app.put('/api/access/administrators', async request => {
     const actorId = await user(request, true);
     const { confirmed: _, ...input } = mutation.extend({ userId: z.string().uuid(), role: z.enum(['member', 'administrator', 'super_administrator']),
-      revision: z.number().int().nonnegative(), reason: z.string().trim().min(1).max(500) }).strict().parse(request.body);
+      revision: z.number().int().nonnegative() }).strict().parse(request.body);
     return setAdministrator(db, actorId, input);
   });
 }

@@ -145,13 +145,12 @@ function click(event) {
   <section class="random-section" aria-label="随便看看" data-testid="random-discovery">
     <div class="random-heading">
       <div><h1>随便看看</h1><p>从当前上架的应用中随机抽取，一批最多 6 个，等权展示。</p></div>
-      <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? revalidating ? '正在核验…' : '正在抽取…' : '换一批' }}</button>
     </div>
     <p v-if="error" role="alert" class="random-error">{{ error }}</p>
-    <p v-if="loading && !items.length" class="random-state" role="status">正在读取随机应用…</p>
-    <p v-else-if="!error && !items.length" class="random-state">目录中还没有可展示的应用。</p>
-    <template v-if="items.length">
-      <div ref="wheel" class="wheel" data-testid="catalog-wheel" tabindex="0" aria-label="应用轮盘，可使用鼠标滚轮或左右方向键切换"
+    <div class="random-stage">
+      <p v-if="loading && !items.length" class="random-state" role="status">正在读取随机应用…</p>
+      <p v-else-if="!error && !items.length" class="random-state">目录中还没有可展示的应用。</p>
+      <div v-if="items.length" ref="wheel" class="wheel" data-testid="catalog-wheel" tabindex="0" aria-label="应用轮盘，可使用鼠标滚轮或左右方向键切换"
         @wheel="scrollCards"
         @keydown.left.prevent="move(-1)" @keydown.right.prevent="move(1)"
         @pointerdown="start" @pointerup="end" @pointercancel="touchStart = null; touchTarget = null" @touchend="finishTouch" @click.capture="click">
@@ -165,21 +164,25 @@ function click(event) {
         </div>
       </div>
       <div class="wheel-controls">
-        <button aria-label="上一个应用" :disabled="items.length < 2" @click="move(-1)">←</button>
-        <div class="wheel-dots" aria-label="本批应用">
-          <button v-for="(app, position) in items" :key="app.id" :aria-label="`第 ${position + 1} 项：${app.manifest.name}`" :aria-pressed="position === index" @click="select(position)"></button>
-        </div>
-        <button aria-label="下一个应用" :disabled="items.length < 2" @click="move(1)">→</button>
+        <template v-if="items.length">
+          <button aria-label="上一个应用" :disabled="items.length < 2" @click="move(-1)">←</button>
+          <div class="wheel-dots" aria-label="本批应用">
+            <button v-for="(app, position) in items" :key="app.id" :aria-label="`第 ${position + 1} 项：${app.manifest.name}`" :aria-pressed="position === index" @click="select(position)"></button>
+          </div>
+          <button aria-label="下一个应用" :disabled="items.length < 2" @click="move(1)">→</button>
+        </template>
+        <button class="refresh-button" data-testid="random-refresh" :disabled="loading" @click="emit('refresh')">{{ loading ? revalidating ? '正在核验…' : '正在抽取…' : '换一批' }}</button>
       </div>
-      <p class="wheel-status" role="status">{{ index + 1 }} / {{ items.length }}<span v-if="allShown" data-testid="random-all-shown"> · 已展示全部</span></p>
+      <p v-if="items.length" class="wheel-status" role="status">{{ index + 1 }} / {{ items.length }}<span v-if="allShown" data-testid="random-all-shown"> · 已展示全部</span></p>
       <p v-if="items.length > 1" class="wheel-hint">在卡片区域滚动鼠标，或用 ← → 切换</p>
-    </template>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.random-section { min-height: 400px; padding-top: 2px; }
-.random-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin: 0 0 18px; }
+.random-section { display: flex; flex: 1; flex-direction: column; min-height: 400px; padding-top: 2px; }
+.random-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin: 0 0 18px; flex: none; }
+.random-stage { display: flex; flex-direction: column; width: 100%; margin-block: auto; }
 h1 { margin: 0; color: var(--plaza-ink); font-size: 27px; font-weight: 680; line-height: 36px; letter-spacing: -.025em; }
 .random-heading p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 12.5px; line-height: 20px; }
 button { min-height: 36px; padding: 6px 13px; border: 1px solid var(--plaza-line); border-radius: 9px; background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 12.5px; cursor: pointer; }
@@ -191,6 +194,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .wheel-card :deep(.app-card) { --catalog-card-height: 250px; }
 .side-select { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
 .wheel-controls, .wheel-dots { display: flex; justify-content: center; align-items: center; gap: 12px; }
+.wheel-controls .refresh-button { margin-left: 8px; }
 .wheel-dots button { position: relative; display: grid; width: 24px; height: 24px; min-height: 24px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; }
 .wheel-dots button::before { width: 8px; height: 8px; border-radius: 50%; background: rgb(32 42 59 / .18); content: ""; transition: background .12s, transform .12s; }
 .wheel-dots button[aria-pressed="true"]::before { background: var(--plaza-brand); transform: scale(1.3); }

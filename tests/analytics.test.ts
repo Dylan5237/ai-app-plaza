@@ -80,8 +80,7 @@ test('selected analytics tags use the authenticated viewer catalog scope', async
   const owner = await h.login('fixture-admin');
   const privateApp = await seedTagCatalog(h.db, h.config.audience, ['PrivateOnly']);
   const access = createAppAccessService(h.db, h.config.audience);
-  await access.adopt(owner.user.id, privateApp.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID(),
-    reason: '测试受限标签统计范围', sourceAuthorizationConfirmed: true });
+  await access.adopt(owner.user.id, privateApp.appId, { ownerId: owner.user.id, expectedAppRevision: 1, requestId: randomUUID() });
   await access.update(owner.user.id, privateApp.appId, { revision: 1, requestId: randomUUID(), scope: 'self', memberIds: [], groupIds: [] });
   const event = { eventId: randomUUID(), eventName: 'catalog_results_viewed', occurredAt: new Date().toISOString(),
     identityScope: 'persistent', visitorId: randomUUID(), sessionId: randomUUID(), viewId: randomUUID(), resultSetId: randomUUID(),

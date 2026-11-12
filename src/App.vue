@@ -89,7 +89,7 @@ async function usePersonalApp(app) {
       <template v-if="isCenter">
         <OperationsDashboard v-if="centerAllowed && center === 'operations'" :key="identity.epoch" />
         <AdministrationCenter v-else-if="centerAllowed" :key="identity.epoch" :mode="center" />
-        <main v-else class="center-denied plaza-public"><h1>{{ identity.user ? '当前身份没有此页面权限' : '请先核验天宫身份' }}</h1><p>运营看板与治理功能仅对获授权管理员开放，负责人交接需本人登录。</p><a :href="publicPath('/')">返回应用广场</a></main>
+        <main v-else class="center-denied plaza-public"><h1>{{ identity.user ? '当前身份没有此页面权限' : '请先核验天宫身份' }}</h1><p>运营看板与治理功能仅对获授权管理员开放，应用交接需本人登录。</p><a :href="publicPath('/')">返回应用广场</a></main>
       </template>
       <template v-else>
         <AppManagement v-show="!showGroups && !showPersonal" v-if="showManagement && !detailFromPersonal" :key="identity.epoch" />

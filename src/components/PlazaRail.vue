@@ -58,7 +58,7 @@ const active = computed(() => props.active || fallbackActive)
         <PlazaIcon name="management" /><span>我的应用</span>
       </a>
       <a v-if="identity?.user" class="rail-item" :class="{ active: active === 'handover' }" :aria-current="active === 'handover' ? 'page' : undefined" :href="publicPath('/?space=transfers')">
-        <PlazaIcon name="handover" /><span>负责人交接</span>
+        <PlazaIcon name="handover" /><span>应用交接</span>
       </a>
 
       <template v-if="identity?.user?.administrator || identity?.user?.superAdministrator || identity?.user?.identityAdmin">
@@ -67,7 +67,7 @@ const active = computed(() => props.active || fallbackActive)
           <PlazaIcon name="operations" /><span>运营看板</span>
         </a>
         <a v-if="identity?.user?.administrator || identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'governance' }" :aria-current="active === 'governance' ? 'page' : undefined" :href="publicPath('/?space=governance')">
-          <PlazaIcon name="access" /><span>应用归属核验</span>
+          <PlazaIcon name="access" /><span>应用负责人</span>
         </a>
         <button v-if="identity?.user?.identityAdmin" class="rail-item" :class="{ active: active === 'groups' }" type="button" @click="emit('groups')">
           <PlazaIcon name="groups" /><span>成员与小组</span>
