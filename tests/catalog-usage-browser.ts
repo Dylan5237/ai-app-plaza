@@ -112,8 +112,10 @@ async function assertCardActions(card: any, { lift = false, compact = false } = 
     const footerBox = footer.getBoundingClientRect();
     return {
       cardHeight: height,
+      actionHeight: actionBox.height,
       actionOpacity: getComputedStyle(action).opacity,
       datesOpacity: getComputedStyle(dates).opacity,
+      datesPointerEvents: getComputedStyle(dates).pointerEvents,
       maskCount: el.querySelectorAll('.card-actions').length,
       transform: getComputedStyle(el).transform,
       translateY: getComputedStyle(el).transform === 'none' ? 0 : new DOMMatrix(getComputedStyle(el).transform).m42,
@@ -125,7 +127,9 @@ async function assertCardActions(card: any, { lift = false, compact = false } = 
     };
   });
   assert.equal(layout.actionOpacity, '1', 'hover/focus reveals the primary text action');
+  assert.ok(layout.actionHeight >= 24, `the desktop primary action has a 24px target (${layout.actionHeight}px)`);
   assert.equal(layout.datesOpacity, '0', 'dates make room for the primary action');
+  assert.equal(layout.datesPointerEvents, 'none', 'faded dates stop catching pointer tooltips');
   assert.equal(layout.maskCount, 0, 'the card no longer draws a full-card mask');
   assert.ok(layout.actionInsideFooter, 'the primary action sits in the footer meta slot');
   assert.ok(layout.footerInsideCard, 'the footer stays inside the card');

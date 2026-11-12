@@ -39,13 +39,13 @@ function detail(event) {
       <span v-if="tags.length > 3" class="app-tag-more">+{{ tags.length - 3 }}</span>
     </div>
     <div class="app-card-footer">
-      <span class="app-author"><svg class="app-author-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0" /><circle cx="12" cy="7" r="4" /></svg>{{ author }}</span>
+      <span class="app-author"><svg class="app-author-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0" /><circle cx="12" cy="7" r="4" /></svg><span class="app-author-name">{{ author }}</span></span>
       <div class="app-meta">
         <div v-if="!action.reason" class="app-dates">
           <time :datetime="app.createdAt" :title="`创建于 ${date(app.createdAt)}`">{{ date(app.createdAt) }}</time>
           <time :datetime="app.updatedAt" :title="`更新于 ${date(app.updatedAt)}`">{{ date(app.updatedAt) }}</time>
         </div>
-        <p v-if="action.reason" :id="`entry-reason-${app.id}`" class="app-primary-reason" :title="action.reason" data-testid="primary-disabled-reason">{{ action.reason }}</p>
+        <p v-if="action.reason" class="app-primary-reason" :title="action.reason" data-testid="primary-disabled-reason">{{ action.reason }}</p>
         <PlatformOpenButton v-else-if="action.entry?.kind === 'web'" class="app-primary-action" data-testid="open-platform" :href="safeHttpUrl(action.entry.url)" @click.prevent="emit('primary', app)" />
         <button v-else class="app-primary-action" data-testid="card-primary-agent" @click.stop="emit('primary', app)">{{ action.label }} <span aria-hidden="true">→</span></button>
       </div>
@@ -56,7 +56,7 @@ function detail(event) {
 <style scoped>
 .app-card { display: flex; height: var(--catalog-card-height); min-width: 0; flex-direction: column; padding: 18px 20px; border: 1px solid rgb(32 42 59 / .07); border-radius: 16px; background: var(--plaza-surface); box-shadow: 0 1px 2px rgb(28 37 51 / .03); cursor: pointer; position: relative; transition: transform .18s cubic-bezier(.2,.7,.3,1), border-color .18s, box-shadow .18s; }
 .app-card:hover { transform: translateY(-2px); border-color: rgb(32 42 59 / .09); box-shadow: 0 16px 36px -18px rgb(28 37 51 / .30), 0 2px 4px rgb(28 37 51 / .05); }
-.app-card:focus-within { outline: 2px solid var(--plaza-brand); outline-offset: 2px; }
+.app-card:has(:focus-visible) { outline: 2px solid var(--plaza-brand); outline-offset: 2px; }
 .app-card-top { display: flex; min-height: 30px; flex-shrink: 0; align-items: center; gap: 8px; padding-right: 0 }
 .app-card-top :deep(.favorite-button) { position: relative; z-index: 2; margin: -4px -6px -4px 0; }
 .app-card-identity { display: flex; min-width: 0; flex: 1; align-items: baseline; gap: 8px; }
@@ -73,15 +73,16 @@ function detail(event) {
 .app-tag:hover, .app-tag.active { background: var(--plaza-brand-soft); color: var(--plaza-brand); }
 .app-tag-more { max-width: none; flex: none; padding: 0 2px; background: transparent; color: var(--plaza-muted); }
 .app-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding-top: 10px; margin-top: 10px; border-top: 1px solid rgb(32 42 59 / .06); }
-.app-author { display: inline-flex; max-width: 150px; min-width: 0; align-items: center; gap: 5px; overflow: hidden; color: var(--plaza-text); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.app-author { display: inline-flex; max-width: 150px; min-width: 0; align-items: center; gap: 5px; overflow: hidden; color: var(--plaza-text); font-size: 12px; line-height: 18px; white-space: nowrap; }
+.app-author-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .app-author-icon { width: 14px; height: 14px; flex: none; color: #8a93a2; }
 .app-meta { position: relative; display: flex; min-width: 120px; height: 32px; align-items: center; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .app-dates { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; color: #6b7383; font-size: 10.5px; line-height: 1.3; text-align: right; white-space: nowrap; transition: opacity .14s, transform .14s; }
 .app-dates time:last-child { color: var(--plaza-text); font-size: 12px; }
-.app-card:hover .app-dates, .app-card:focus-within .app-dates { opacity: 0; transform: translateX(-3px); }
-.app-primary-action { position: absolute; right: 0; top: 50%; z-index: 2; display: inline-flex; min-height: 18px; align-items: center; gap: 3px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--plaza-brand); font: inherit; font-size: 12px; font-weight: 600; line-height: 18px; white-space: nowrap; text-decoration: none; cursor: pointer; opacity: 0; pointer-events: none; transform: translate(4px, -50%); transition: opacity .14s, transform .14s; }
+.app-card:hover .app-dates, .app-card:focus-within .app-dates { opacity: 0; pointer-events: none; transform: translateX(-3px); }
+.app-primary-action { position: absolute; right: 0; top: 50%; z-index: 2; display: inline-flex; min-height: 24px; align-items: center; gap: 3px; padding: 3px 0; border: 0; border-radius: 0; background: transparent; color: var(--plaza-brand); font: inherit; font-size: 12px; font-weight: 600; line-height: 18px; white-space: nowrap; text-decoration: none; cursor: pointer; opacity: 0; pointer-events: none; transform: translate(4px, -50%); transition: opacity .14s, transform .14s; }
 .app-card:hover .app-primary-action, .app-card:focus-within .app-primary-action { opacity: 1; pointer-events: auto; transform: translate(0, -50%); }
-.app-meta :deep(.platform-open-button) { min-height: 18px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--plaza-brand); font-size: 12px; font-weight: 600; line-height: 18px; }
+.app-meta :deep(.platform-open-button) { min-height: 24px; padding: 3px 0; border: 0; border-radius: 0; background: transparent; color: var(--plaza-brand); font-size: 12px; font-weight: 600; line-height: 18px; }
 .app-meta :deep(.platform-open-button:hover) { background: transparent; border-color: transparent; color: var(--plaza-brand); }
 .app-primary-reason { display: -webkit-box; max-width: 180px; margin: 0; overflow: hidden; color: var(--plaza-muted); font-size: 11px; line-height: 1.4; text-align: right; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 @media (min-width: 761px) and (max-height: 800px) {
@@ -98,6 +99,7 @@ function detail(event) {
   .app-primary-action { position: static; opacity: 1; pointer-events: auto; transform: none; }
   .app-primary-action, .app-meta :deep(.platform-open-button) { min-height: 44px; padding: 10px 0; }
   .app-card:hover .app-primary-action, .app-card:focus-within .app-primary-action { transform: none; }
+  .app-primary-reason { display: block; overflow: visible; -webkit-line-clamp: unset; }
 }
 @media (prefers-reduced-motion: reduce) {
   .app-card, .app-card:hover, .app-primary-action, .app-dates { transition: none; }
