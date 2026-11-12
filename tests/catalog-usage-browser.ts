@@ -323,7 +323,7 @@ try {
   await waitForCatalog(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await waitForCatalog(page);
-  await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 9
     && document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false'
     && document.querySelector('.pagination-row .number.is-active')?.textContent?.trim() === '1');
   assertNoViewportOverflow(await overflowMetrics(), '1440x900');
