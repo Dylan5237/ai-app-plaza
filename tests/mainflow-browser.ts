@@ -268,7 +268,7 @@ try {
     await page.keyboard.press('Escape');
     await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
 
-    const boxes = await page.getByTestId('app-card').evaluateAll(cards => cards.map(card => { const r = card.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), width: r.width, height: r.height }; }));
+    const boxes = await page.getByTestId('app-card').evaluateAll(cards => cards.map(card => { const r = card.getBoundingClientRect(); return { x: Math.round(r.x), y: (card as HTMLElement).offsetTop, width: r.width, height: r.height }; }));
     assert.ok(await page.getByTestId('app-card').evaluateAll(cards => cards.every(card => {
       const footer = card.querySelector('.app-card-footer')!.getBoundingClientRect();
       return footer.bottom <= card.getBoundingClientRect().bottom - 4;
@@ -437,7 +437,7 @@ try {
   const resizeHeld = new Promise<void>(resolve => { markResizeStarted = resolve; });
   const resizeReleased = new Promise<void>(resolve => { releaseResize = resolve; });
   await layoutPage.route('**/api/apps?**', async route => {
-    if (new URL(route.request().url()).searchParams.get('pageSize') === '9') {
+    if (new URL(route.request().url()).searchParams.get('pageSize') === '12') {
       markResizeStarted();
       await resizeReleased;
     }
@@ -447,7 +447,7 @@ try {
   await resizeHeld;
   await layoutPage.setViewportSize({ width: 1280, height: 720 });
   await layoutPage.waitForFunction(() => document.querySelectorAll('[data-testid="app-card"]').length === 6);
-  const staleResizeResponse = layoutPage.waitForResponse(response => new URL(response.url()).searchParams.get('pageSize') === '9');
+  const staleResizeResponse = layoutPage.waitForResponse(response => new URL(response.url()).searchParams.get('pageSize') === '12');
   releaseResize();
   await staleResizeResponse;
   await layoutPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

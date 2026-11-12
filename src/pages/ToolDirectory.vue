@@ -292,6 +292,10 @@ const catalogHeading = ref(null)
 const paginationRow = ref(null)
 let layoutObserver
 let layoutFrame = 0
+let observedCatalogCards = []
+let catalogMeasurementScope = ''
+let measuredCardLayout = ''
+let measuredCardHeight = 0
 let catalogReady = false
 let catalogLoaded = false
 const catalogLoading = ref(false)
@@ -375,6 +379,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
   if (!preserveNotice) catalogNotice.value = ''
   const params = new URLSearchParams()
   const trimmedQuery = query.value.trim()
+  const measurementScope = JSON.stringify([trimmedQuery, selectedUsage.value, [...selectedTags.value].sort()])
   if (trimmedQuery) params.set('query', trimmedQuery)
   for (const tag of selectedTags.value) params.append('tags', tag)
   params.set('page', String(page.value))
@@ -386,6 +391,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
     const result = await apiRequest(`/api/apps?${params.toString()}`)
     if (requestSequence !== catalogRequestSequence) return
     catalogLoaded = true
+    catalogMeasurementScope = measurementScope
     apps.value = Array.isArray(result.items) ? result.items : []
     authorTags.value = Array.isArray(result.tags) ? result.tags : []
     total.value = Number.isFinite(Number(result.total)) ? Number(result.total) : 0
@@ -408,7 +414,10 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
     catalogError.value = errorText(error)
     if (!props.management) recordFailure(trigger === 'search' ? 'search' : trigger === 'filter' ? 'filter' : 'catalog', error)
   } finally {
-    if (requestSequence === catalogRequestSequence) catalogLoading.value = false
+    if (requestSequence === catalogRequestSequence) {
+      catalogLoading.value = false
+      scheduleCatalogLayout()
+    }
   }
 }
 
@@ -416,15 +425,25 @@ function updateCatalogPageSize(reload = true) {
   const main = directoryMain.value
   const heading = catalogHeading.value
   const footer = paginationRow.value
-  if (!main || !heading || !footer || detailVisible.value || discoveryTab.value !== 'catalog') return
+  const viewport = shell()
+  if (!main || !heading || !footer || !main.clientWidth || !viewport?.clientHeight || detailVisible.value || discoveryTab.value !== 'catalog') return
   const style = getComputedStyle(main)
   const columns = Number(style.getPropertyValue('--catalog-columns'))
-  const cardHeight = parseFloat(style.getPropertyValue('--catalog-card-height'))
+  const minimumCardHeight = parseFloat(style.getPropertyValue('--catalog-card-height'))
   const gap = parseFloat(style.getPropertyValue('--catalog-gap'))
+  const layout = JSON.stringify([viewport.getBoundingClientRect().width, columns, minimumCardHeight, gap, catalogMeasurementScope])
+  if (layout !== measuredCardLayout) {
+    measuredCardLayout = layout
+    measuredCardHeight = minimumCardHeight
+  }
+  // Keep the largest measured card for this query/layout so shorter pages cannot expand and reset pagination again.
+  for (const card of main.querySelectorAll('.app-grid [data-testid="app-card"]')) {
+    measuredCardHeight = Math.max(measuredCardHeight, card.getBoundingClientRect().height)
+  }
+  const cardHeight = Math.ceil(measuredCardHeight)
   const notice = main.querySelector('.catalog-notice')
   const noticeHeight = notice ? notice.offsetHeight + parseFloat(getComputedStyle(notice).marginBottom) : 0
   // Size from the viewport, not the last page's content height (mobile main is auto-height).
-  const viewport = shell()
   const availableHeight = viewport.clientHeight - (heading.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top + viewport.scrollTop)
     - parseFloat(getComputedStyle(heading).marginBottom) - parseFloat(style.paddingBottom) - footer.offsetHeight - noticeHeight
   const capacity = catalogPageCapacity({
@@ -443,14 +462,27 @@ function scheduleCatalogLayout() {
   layoutFrame = requestAnimationFrame(() => updateCatalogPageSize())
 }
 
+function observeCatalogCards() {
+  for (const card of observedCatalogCards) layoutObserver?.unobserve(card)
+  observedCatalogCards = [...(directoryMain.value?.querySelectorAll('.app-grid [data-testid="app-card"]') || [])]
+  for (const card of observedCatalogCards) layoutObserver?.observe(card)
+}
+
 watch(directoryMain, (main) => {
   layoutObserver?.disconnect()
+  observedCatalogCards = []
   tagObserver?.disconnect()
   cancelAnimationFrame(tagFrame)
   if (!main) return
   layoutObserver = new ResizeObserver(scheduleCatalogLayout)
-  layoutObserver.observe(main)
-  layoutObserver.observe(main.querySelector('.catalog-section'))
+  for (const element of [main, shell(), main.querySelector('.catalog-section'), main.querySelector('.catalog-page-head'), main.querySelector('.search-section'), paginationRow.value]) {
+    if (element) layoutObserver.observe(element)
+  }
+  observeCatalogCards()
+  scheduleCatalogLayout()
+}, { flush: 'post' })
+watch(apps, () => {
+  observeCatalogCards()
   scheduleCatalogLayout()
 }, { flush: 'post' })
 watch([catalogNotice, usageCounts], async () => {
@@ -1388,7 +1420,7 @@ onUnmounted(() => {
 :global(html), :global(body), :global(#app) { width: 100%; height: 100%; margin: 0; }
 :global(body) { background: var(--plaza-canvas); color: var(--plaza-ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
  .directory-shell { display:flex; width:100%; height:100%; flex:1; min-height:0; flex-direction:column; overflow-y:auto; background:var(--plaza-canvas); }
-.directory-main { --catalog-columns:3;--catalog-card-height:250px;--catalog-gap:16px;display:flex;flex-direction:column;width:100%;min-height:100%;flex:1;margin:0;padding:26px 32px 12px; }
+.directory-main { --catalog-columns:3;--catalog-card-height:200px;--catalog-gap:16px;display:flex;flex-direction:column;width:100%;min-height:100%;flex:1;margin:0;padding:26px 32px 12px; }
 .catalog-page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin:2px 0 20px;flex:none}.catalog-page-head h1{margin:0;color:var(--plaza-ink);font-size:27px;line-height:36px;font-weight:680;letter-spacing:-.025em}.catalog-sub{margin:7px 0 0;color:var(--plaza-muted);font-size:12.5px;line-height:20px}
 .catalog-total{display:inline-grid;min-width:28px;height:22px;margin-left:8px;place-items:center;padding:0 8px;border-radius:999px;background:rgb(32 42 59 / .06);color:var(--plaza-muted);font-size:11.5px;font-weight:600;line-height:22px;vertical-align:3px}
 .share-button,.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 14px;border:1px solid var(--plaza-brand);border-radius:9px;background:var(--plaza-brand);color:var(--plaza-surface);font:inherit;font-size:12.5px;font-weight:600;text-decoration:none;white-space:nowrap;cursor:pointer}
@@ -1477,7 +1509,7 @@ onUnmounted(() => {
 .publication-source-commit code { color: var(--plaza-text); font-family: Consolas, monospace; overflow-wrap: anywhere; }
 @media(min-width:1780px){.directory-main{--catalog-columns:4}}
 @media(max-width:1120px){.directory-main{--catalog-columns:2}}
-@media(min-width:761px) and (max-height:800px){.directory-main{--catalog-card-height:210px;padding-top:18px}.catalog-page-head{margin-bottom:14px}.catalog-page-head h1{font-size:24px;line-height:32px}.catalog-sub{margin-top:4px}.search-section{margin-bottom:12px}}
+@media(min-width:761px) and (max-height:800px){.directory-main{--catalog-card-height:170px;padding-top:18px}.catalog-page-head{margin-bottom:14px}.catalog-page-head h1{font-size:24px;line-height:32px}.catalog-sub{margin-top:4px}.search-section{margin-bottom:12px}}
 @media(max-width:900px){.detail-layout{grid-template-columns:minmax(0,1fr);height:75vh;max-height:75vh}.detail-content-scroll{max-height:47vh;padding-right:3px}.detail-actions{max-height:25vh}.public-detail .detail-layout{height:auto;max-height:none}.public-detail .detail-content-scroll,.public-detail .detail-actions{max-height:none;overflow:visible}}
 @media(max-width:760px){.directory-main{width:100%;min-height:0;padding:20px 16px 12px}.catalog-page-head{flex-wrap:wrap;gap:10px}.catalog-page-head h1{font-size:24px;line-height:32px;}.catalog-controls{width:100%;gap:8px}.search-row{width:100%}.search-input{width:auto;flex:1;min-width:0}.catalog-usage-filter{order:3}.catalog-sort{margin-left:auto}.tag-filter-row{max-height:78px}.public-detail{width:100%;padding:18px 16px}.public-detail-heading{gap:12px;flex-wrap:wrap}}
 @media(max-width:650px){.directory-main{--catalog-columns:1;--catalog-gap:16px}.publication-main{width:calc(100% - 24px);margin-top:12px}.publication-status-card,.publication-preview{padding:17px 15px}.publication-status-heading h1,.preview-section-heading h2{font-size:17px;line-height:26px;}}

@@ -5,7 +5,7 @@
   --plaza-primary-button:var(--plaza-brand);
   --plaza-success:#267154;--plaza-warning:#925a16;--plaza-danger:#b83f4b;
   --plaza-radius:16px;--plaza-control-radius:9px;--plaza-focus:0 0 0 3px var(--plaza-brand);
-  --plaza-shadow:0 3px 12px rgb(34 43 64 / 4%);--plaza-motion:180ms;--plaza-hover-delay:120ms;
+  --plaza-shadow:0 3px 12px rgb(34 43 64 / 4%);--plaza-motion:180ms;
   --plaza-font:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
   --el-color-primary:var(--plaza-brand);--el-color-primary-light-3:#7486df;--el-color-primary-light-5:#a0aceb;--el-color-primary-light-7:#c5cdf5;--el-color-primary-light-8:#dce2fb;--el-color-primary-light-9:#edf0ff;--el-color-primary-dark-2:#2d43a8;
   --el-color-success:var(--plaza-success);--el-color-warning:var(--plaza-warning);--el-color-danger:var(--plaza-danger);--el-color-info:var(--plaza-text);
