@@ -268,7 +268,7 @@ try {
     await page.keyboard.press('Escape');
     await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
 
-    const boxes = await page.getByTestId('app-card').evaluateAll(cards => cards.map(card => { const r = card.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), width: r.width, height: r.height }; }));
+    const boxes = await page.getByTestId('app-card').evaluateAll(cards => cards.map(card => { const r = card.getBoundingClientRect(); return { x: Math.round(r.x), y: (card as HTMLElement).offsetTop, width: r.width, height: r.height }; }));
     assert.ok(await page.getByTestId('app-card').evaluateAll(cards => cards.every(card => {
       const footer = card.querySelector('.app-card-footer')!.getBoundingClientRect();
       return footer.bottom <= card.getBoundingClientRect().bottom - 4;

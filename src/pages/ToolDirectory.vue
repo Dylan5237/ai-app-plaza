@@ -292,6 +292,10 @@ const catalogHeading = ref(null)
 const paginationRow = ref(null)
 let layoutObserver
 let layoutFrame = 0
+let observedCatalogCards = []
+let catalogMeasurementScope = ''
+let measuredCardLayout = ''
+let measuredCardHeight = 0
 let catalogReady = false
 let catalogLoaded = false
 const catalogLoading = ref(false)
@@ -375,6 +379,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
   if (!preserveNotice) catalogNotice.value = ''
   const params = new URLSearchParams()
   const trimmedQuery = query.value.trim()
+  const measurementScope = JSON.stringify([trimmedQuery, selectedUsage.value, [...selectedTags.value].sort()])
   if (trimmedQuery) params.set('query', trimmedQuery)
   for (const tag of selectedTags.value) params.append('tags', tag)
   params.set('page', String(page.value))
@@ -386,6 +391,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
     const result = await apiRequest(`/api/apps?${params.toString()}`)
     if (requestSequence !== catalogRequestSequence) return
     catalogLoaded = true
+    catalogMeasurementScope = measurementScope
     apps.value = Array.isArray(result.items) ? result.items : []
     authorTags.value = Array.isArray(result.tags) ? result.tags : []
     total.value = Number.isFinite(Number(result.total)) ? Number(result.total) : 0
@@ -408,7 +414,10 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
     catalogError.value = errorText(error)
     if (!props.management) recordFailure(trigger === 'search' ? 'search' : trigger === 'filter' ? 'filter' : 'catalog', error)
   } finally {
-    if (requestSequence === catalogRequestSequence) catalogLoading.value = false
+    if (requestSequence === catalogRequestSequence) {
+      catalogLoading.value = false
+      scheduleCatalogLayout()
+    }
   }
 }
 
@@ -416,15 +425,25 @@ function updateCatalogPageSize(reload = true) {
   const main = directoryMain.value
   const heading = catalogHeading.value
   const footer = paginationRow.value
-  if (!main || !heading || !footer || detailVisible.value || discoveryTab.value !== 'catalog') return
+  const viewport = shell()
+  if (!main || !heading || !footer || !main.clientWidth || !viewport?.clientHeight || detailVisible.value || discoveryTab.value !== 'catalog') return
   const style = getComputedStyle(main)
   const columns = Number(style.getPropertyValue('--catalog-columns'))
-  const cardHeight = parseFloat(style.getPropertyValue('--catalog-card-height'))
+  const minimumCardHeight = parseFloat(style.getPropertyValue('--catalog-card-height'))
   const gap = parseFloat(style.getPropertyValue('--catalog-gap'))
+  const layout = JSON.stringify([viewport.getBoundingClientRect().width, columns, minimumCardHeight, gap, catalogMeasurementScope])
+  if (layout !== measuredCardLayout) {
+    measuredCardLayout = layout
+    measuredCardHeight = minimumCardHeight
+  }
+  // Keep the largest measured card for this query/layout so shorter pages cannot expand and reset pagination again.
+  for (const card of main.querySelectorAll('.app-grid [data-testid="app-card"]')) {
+    measuredCardHeight = Math.max(measuredCardHeight, card.getBoundingClientRect().height)
+  }
+  const cardHeight = Math.ceil(measuredCardHeight)
   const notice = main.querySelector('.catalog-notice')
   const noticeHeight = notice ? notice.offsetHeight + parseFloat(getComputedStyle(notice).marginBottom) : 0
   // Size from the viewport, not the last page's content height (mobile main is auto-height).
-  const viewport = shell()
   const availableHeight = viewport.clientHeight - (heading.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top + viewport.scrollTop)
     - parseFloat(getComputedStyle(heading).marginBottom) - parseFloat(style.paddingBottom) - footer.offsetHeight - noticeHeight
   const capacity = catalogPageCapacity({
@@ -443,14 +462,27 @@ function scheduleCatalogLayout() {
   layoutFrame = requestAnimationFrame(() => updateCatalogPageSize())
 }
 
+function observeCatalogCards() {
+  for (const card of observedCatalogCards) layoutObserver?.unobserve(card)
+  observedCatalogCards = [...(directoryMain.value?.querySelectorAll('.app-grid [data-testid="app-card"]') || [])]
+  for (const card of observedCatalogCards) layoutObserver?.observe(card)
+}
+
 watch(directoryMain, (main) => {
   layoutObserver?.disconnect()
+  observedCatalogCards = []
   tagObserver?.disconnect()
   cancelAnimationFrame(tagFrame)
   if (!main) return
   layoutObserver = new ResizeObserver(scheduleCatalogLayout)
-  layoutObserver.observe(main)
-  layoutObserver.observe(main.querySelector('.catalog-section'))
+  for (const element of [main, shell(), main.querySelector('.catalog-section'), main.querySelector('.catalog-page-head'), main.querySelector('.search-section'), paginationRow.value]) {
+    if (element) layoutObserver.observe(element)
+  }
+  observeCatalogCards()
+  scheduleCatalogLayout()
+}, { flush: 'post' })
+watch(apps, () => {
+  observeCatalogCards()
   scheduleCatalogLayout()
 }, { flush: 'post' })
 watch([catalogNotice, usageCounts], async () => {

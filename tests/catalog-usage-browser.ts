@@ -96,8 +96,8 @@ async function assertCardActions(card: any, { lift = false, compact = false } = 
   const action = card.locator('.app-primary-action').first();
   await action.evaluate(async (el: HTMLElement) => {
     const deadline = performance.now() + 1500;
-    while (getComputedStyle(el).opacity !== '1') {
-      if (performance.now() > deadline) throw new Error('Card action did not finish appearing');
+    while (getComputedStyle(el).opacity !== '1' || getComputedStyle(el).pointerEvents !== 'auto') {
+      if (performance.now() > deadline) throw new Error('Card action did not finish appearing and accepting pointer input');
       await new Promise(resolve => requestAnimationFrame(resolve));
     }
   });
@@ -114,6 +114,7 @@ async function assertCardActions(card: any, { lift = false, compact = false } = 
       cardHeight: height,
       actionHeight: actionBox.height,
       actionOpacity: getComputedStyle(action).opacity,
+      actionHit: action.contains(document.elementFromPoint(actionBox.x + actionBox.width / 2, actionBox.y + actionBox.height / 2)),
       datesOpacity: getComputedStyle(dates).opacity,
       datesPointerEvents: getComputedStyle(dates).pointerEvents,
       maskCount: el.querySelectorAll('.card-actions').length,
@@ -127,6 +128,7 @@ async function assertCardActions(card: any, { lift = false, compact = false } = 
     };
   });
   assert.equal(layout.actionOpacity, '1', 'hover/focus reveals the primary text action');
+  assert.equal(layout.actionHit, true, 'the revealed primary action accepts pointer input');
   assert.ok(layout.actionHeight >= 24, `the desktop primary action has a 24px target (${layout.actionHeight}px)`);
   assert.equal(layout.datesOpacity, '0', 'dates make room for the primary action');
   assert.equal(layout.datesPointerEvents, 'none', 'faded dates stop catching pointer tooltips');
@@ -246,12 +248,13 @@ function assertNoViewportOverflow(metrics: { horizontal: boolean; vertical: bool
 }
 
 try {
-  browser = await chromium.launch({
+  const browserOptions = {
     headless: true,
     ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
       ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
       : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}),
-  });
+  };
+  browser = await chromium.launch(browserOptions);
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   let signalExternalRequest!: () => void;
   const externalRequest = new Promise<void>(resolve => { signalExternalRequest = resolve; });
@@ -349,6 +352,38 @@ try {
   report.viewports.push({ label: '390x844', horizontal: mobileOverflow });
   report.checks.push('catalog layout fits at 1440x900 and 1280x720, with no horizontal overflow at 390px');
 
+  const touchLayoutContext = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 1024, height: 920 } });
+  const touchLayout = await touchLayoutContext.newPage();
+  touchLayout.on('pageerror', (error: Error) => report.errors.push(error.message));
+  const touchLayoutReads: string[] = [];
+  touchLayout.on('request', (request: any) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/apps') touchLayoutReads.push(url.search);
+  });
+  await touchLayout.goto(harness.origin);
+  await waitForCatalog(touchLayout);
+  const touchLayoutMetrics = await touchLayout.evaluate(() => {
+    const shell = document.querySelector('.directory-shell')!;
+    const footer = document.querySelector('[data-testid="pagination"]')!.getBoundingClientRect();
+    const cards = [...document.querySelectorAll('[data-testid="app-card"]')];
+    return { count: cards.length, cardHeight: cards[0].getBoundingClientRect().height, footerBottom: footer.bottom, viewportHeight: innerHeight, overflow: shell.scrollHeight - shell.clientHeight };
+  });
+  assert.ok(touchLayoutMetrics.cardHeight > 200, 'touch controls make the actual card taller than the desktop estimate');
+  assert.equal(touchLayoutMetrics.count, 4, 'the touch viewport renders two complete rows');
+  assert.ok(touchLayoutMetrics.footerBottom <= touchLayoutMetrics.viewportHeight + 1, 'touch pagination stays completely inside the viewport');
+  assert.ok(touchLayoutMetrics.overflow <= 1, 'touch pagination needs no extra scroll');
+  const firstTouchIds = await touchLayout.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
+  const readsBeforePaging = touchLayoutReads.length;
+  await touchLayout.getByTestId('pagination').locator('button.btn-next').click();
+  await waitForCatalog(touchLayout);
+  assert.equal(await touchLayout.locator('.pagination-row .number.is-active').innerText(), '2', 'measuring the next page preserves page two');
+  const secondTouchIds = await touchLayout.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
+  assert.equal(secondTouchIds.length, 4);
+  assert.ok(secondTouchIds.every((id: string) => !firstTouchIds.includes(id)), 'touch pages have no repeated applications');
+  assert.equal(touchLayoutReads.length, readsBeforePaging + 1, 'touch pagination has no measurement reload loop');
+  await touchLayoutContext.close();
+  report.checks.push('touch pagination uses actual card height, fits the viewport and keeps page two without repeated reads or duplicate cards');
+
   await page.setViewportSize({ width: 1280, height: 720 });
   await waitForCatalog(page);
   const platformResponse = await clickUsage(page, 'platform');
@@ -373,6 +408,19 @@ try {
   const originalUrl = page.url();
   await page.mouse.move(0, 0);
   assert.equal(await webCard.locator('.app-primary-action').evaluate((el: HTMLElement) => getComputedStyle(el).opacity), '0', 'desktop primary action is hidden until hover or focus');
+  // A click aimed at the visible date must retain the card-detail action while the CTA fades in.
+  const datePopups: any[] = [];
+  const recordDatePopup = (popup: any) => datePopups.push(popup);
+  page.on('popup', recordDatePopup);
+  const dateBox = await webCard.locator('.app-dates time').last().boundingBox();
+  await page.mouse.click(dateBox!.x + dateBox!.width / 2, dateBox!.y + dateBox!.height / 2);
+  await page.waitForTimeout(200);
+  assert.equal(datePopups.length, 0, 'clicking a date before the CTA appears cannot open the external platform');
+  await page.getByTestId('app-detail').waitFor();
+  await page.getByTestId('return-discovery').click();
+  await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
+  page.off('popup', recordDatePopup);
+  report.checks.push('a fast native mouse click on the visible update date opens detail without opening a platform tab');
   await webCard.hover();
   const hoverLayout = await assertCardActions(webCard, { lift: true, compact: true });
   assert.ok(hoverLayout.cardHeight <= 190, `the short-screen card uses its compact height (${hoverLayout.cardHeight}px)`);
@@ -838,6 +886,54 @@ try {
   await touchContext.close();
   report.checks.push('real touch swipe changes the current item without resampling or opening details; the visible 44px primary action and card title remain tappable');
 
+  // A secondary touchscreen must work even while the desktop mouse remains the primary pointer.
+  const hybridBrowser = await chromium.launch({ ...browserOptions, args: ['--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=6'] });
+  try {
+    const hybridContext = await hybridBrowser.newContext({ viewport: { width: 1440, height: 900 } });
+    let noteHybridTarget!: (url: string) => void;
+    const hybridTarget = new Promise<string>(resolve => { noteHybridTarget = resolve; });
+    await hybridContext.route('**/*', (route: any) => {
+      const url = route.request().url();
+      if (/^https?:/.test(url) && new URL(url).origin !== harness.origin) {
+        noteHybridTarget(url);
+        return route.abort();
+      }
+      return route.continue();
+    });
+    const hybridPage = await hybridContext.newPage();
+    hybridPage.setDefaultTimeout(10000);
+    await hybridPage.goto(harness.origin);
+    await waitForCatalog(hybridPage);
+    await clickUsage(hybridPage, 'platform');
+    await hybridPage.mouse.move(0, 0);
+    const hybridCard = hybridPage.getByTestId('app-card').first();
+    const hybridAction = hybridCard.getByTestId('open-platform');
+    const hybridLayout = await hybridCard.evaluate((el: HTMLElement) => ({
+      fine: matchMedia('(pointer: fine)').matches,
+      touchAvailable: matchMedia('(any-pointer: coarse)').matches,
+      actionOpacity: getComputedStyle(el.querySelector('.app-primary-action')!).opacity,
+      actionHeight: el.querySelector('.app-primary-action')!.getBoundingClientRect().height,
+      datesDisplay: getComputedStyle(el.querySelector('.app-dates')!).display,
+    }));
+    assert.equal(hybridLayout.fine, true, 'the mixed-input fixture keeps the mouse as its primary pointer');
+    assert.equal(hybridLayout.touchAvailable, true, 'the mixed-input fixture also exposes a touchscreen');
+    assert.equal(hybridLayout.actionOpacity, '1', 'the secondary touchscreen has an action before hover');
+    assert.equal(hybridLayout.datesDisplay, 'none');
+    assert.ok(hybridLayout.actionHeight >= 44, 'the secondary touchscreen has a 44px action target');
+    const hybridBox = await hybridAction.boundingBox();
+    const hybridPopup = hybridPage.waitForEvent('popup');
+    const hybridCdp = await hybridContext.newCDPSession(hybridPage);
+    await hybridCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: hybridBox!.x + hybridBox!.width / 2, y: hybridBox!.y + hybridBox!.height / 2 }] });
+    await hybridCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    const opened = await hybridPopup;
+    assert.equal(await hybridTarget, await hybridAction.getAttribute('href'), 'a native tap opens the intended platform');
+    assert.equal(await hybridPage.getByTestId('app-detail').count(), 0, 'the mixed-input action does not navigate to detail');
+    await opened.close();
+    report.checks.push('a native secondary-touchscreen tap reaches the always-visible 44px platform action while the primary pointer is fine');
+  } finally {
+    await hybridBrowser.close();
+  }
+
   // S3: a mixed app remains a platform while its author changes the primary action.
   await page.getByTestId('tab-catalog').click();
   await search(page, 'dualmarker', 'all');
@@ -865,6 +961,15 @@ try {
   await page.mouse.up();
   assert.ok(await page.evaluate(() => Boolean(window.getSelection()?.toString().trim())), 'text remains selectable while the card action is available');
   assert.equal(await detail.count(), 0, 'text selection does not navigate');
+  await mixedCard.locator('.app-tag').first().focus();
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await mixedCard.getByTestId('card-title').evaluate((el: HTMLElement) => document.activeElement === el), true);
+  assert.ok(await page.evaluate(() => Boolean(window.getSelection()?.toString().trim())), 'keyboard navigation preserves the earlier text selection');
+  await page.keyboard.press('Enter');
+  await detail.waitFor();
+  await page.getByTestId('return-discovery').click();
+  await detail.waitFor({ state: 'hidden' });
+  report.checks.push('after real text selection, Shift+Tab to the title and Enter still open detail');
   // A later click on selected text must not turn into navigation either.
   await mixedCard.locator('.app-summary').evaluate((el: HTMLElement) => {
     const range = document.createRange(); range.selectNodeContents(el);
@@ -952,10 +1057,29 @@ try {
   await waitForCatalog(page);
   await search(page, 'disabledmarker', 'all');
   const disabledCard = page.getByTestId('app-card');
+  await page.setViewportSize({ width: 1130, height: 900 });
+  await waitForCatalog(page);
   await disabledCard.hover();
   assert.equal(await disabledCard.locator('.app-primary-action').count(), 0, 'a disabled Agent primary renders no action');
   assert.equal(await disabledCard.getByTestId('open-platform').count(), 0, 'disabled Agent primary must not fall back to the available Web entry');
   assert.equal(await disabledCard.getByTestId('primary-disabled-reason').innerText(), profile.reason);
+  const disabledFooter = await disabledCard.evaluate((el: HTMLElement) => {
+    const author = el.querySelector('.app-author-name')!;
+    const authorBox = author.getBoundingClientRect();
+    const authorText = document.createRange(); authorText.selectNodeContents(author);
+    const reason = el.querySelector('.app-primary-reason')!;
+    const reasonBox = reason.getBoundingClientRect();
+    const footerBox = el.querySelector('.app-card-footer')!.getBoundingClientRect();
+    return { authorWidth: authorBox.width, authorTextWidth: authorText.getBoundingClientRect().width,
+      authorRight: authorBox.right, reasonLeft: reasonBox.left, reasonWidth: reasonBox.width,
+      reasonRight: reasonBox.right, footerRight: footerBox.right,
+      cardBottom: el.getBoundingClientRect().bottom, footerBottom: footerBox.bottom };
+  });
+  assert.ok(disabledFooter.authorWidth >= disabledFooter.authorTextWidth, 'the narrow disabled card still shows its registered author');
+  assert.ok(disabledFooter.reasonWidth >= 80, 'the disabled reason keeps enough width for readable wrapped text');
+  assert.ok(disabledFooter.authorRight <= disabledFooter.reasonLeft, 'the author and disabled reason do not overlap');
+  assert.ok(disabledFooter.reasonRight <= disabledFooter.footerRight + 1 && disabledFooter.footerBottom <= disabledFooter.cardBottom + 1, 'the disabled reason stays inside the card');
+  assert.ok((await disabledCard.ariaSnapshot()).includes(profile.reason), 'assistive technology receives the full disabled reason');
   await disabledCard.getByTestId('card-title').click();
   await detail.waitFor();
   assert.equal(await detail.getByTestId('use-agent').isDisabled(), true);
@@ -963,6 +1087,8 @@ try {
   assert.equal(await detail.getByTestId('use-web').count(), 1, 'other entries remain accessible in detail');
   await page.getByTestId('return-discovery').click();
   await detail.waitFor({ state: 'hidden' });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await waitForCatalog(page);
   report.checks.push('real disabled-entry projection disables the author primary with its reason, preserves detail and never substitutes an alternate Web entry');
 
   // Random empty/single states use the same real service; no duplicate fillers.
