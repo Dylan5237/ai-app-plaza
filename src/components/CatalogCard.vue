@@ -96,7 +96,7 @@ function detail(event) {
 }
 
 .app-title:focus-visible, button:focus-visible { outline: 3px solid var(--plaza-brand); outline-offset: 2px; }
-@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+@media (hover: none) and (any-hover: none) {
   .app-card { height: auto; min-height: var(--catalog-card-height); }
   .app-dates { display: none; }
   .app-meta { min-width: 0; height: auto; }
