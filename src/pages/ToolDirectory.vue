@@ -611,10 +611,14 @@ async function applyDiscoveryFromUrl() {
   void observeCards()
 }
 
+let historyNavigationSequence = 0
 async function handlePopState() {
   if (props.management || publicationId.value) return
-  const id = new URLSearchParams(location.search).get('app')
+  const navigation = ++historyNavigationSequence
+  const target = new URL(location.href)
   await applyDiscoveryFromUrl()
+  if (disposed || navigation !== historyNavigationSequence || location.href !== target.href) return
+  const id = target.searchParams.get('app')
   if (id) await openApp(id, { fromHistory: true })
   else if (detailVisible.value) await restoreDiscovery()
 }

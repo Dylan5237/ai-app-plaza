@@ -629,6 +629,57 @@ try {
   assert.equal(restoredUrl.searchParams.has('app'), false, 'Back does not leave a stale detail id in the URL');
   await historyPage.close();
 
+  // A suspended Forward handler must not close a newer detail when its wheel request finishes.
+  const interruptedHistory = await context.newPage();
+  interruptedHistory.setDefaultTimeout(10000);
+  interruptedHistory.on('pageerror', (error: Error) => report.errors.push(error.message));
+  let releaseHistoryWheel!: () => void;
+  const historyWheelGate = new Promise<void>(resolve => { releaseHistoryWheel = resolve; });
+  await interruptedHistory.route('**/api/apps/random**', async (route: any) => {
+    await historyWheelGate;
+    await route.continue();
+  });
+  await interruptedHistory.goto(harness.origin);
+  await waitForCatalog(interruptedHistory);
+  const historyCards = await interruptedHistory.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.slice(0, 2).map(card => ({
+    id: card.dataset.appId!, name: card.querySelector('.app-title')!.textContent!.trim(), summary: card.querySelector('.app-summary')!.textContent!.trim(),
+  })));
+  assert.equal(historyCards.length, 2, 'the history race uses two distinct catalog details');
+  const [earlierDetail, newerDetail] = historyCards;
+  assert.notEqual(earlierDetail.id, newerDetail.id);
+  await interruptedHistory.locator(`[data-app-id="${earlierDetail.id}"] .app-title`).click();
+  await interruptedHistory.getByTestId('app-detail').waitFor();
+  const initialHistoryWheel = interruptedHistory.waitForRequest((request: any) => new URL(request.url()).pathname === '/api/apps/random');
+  await interruptedHistory.getByTestId('tab-random').click();
+  await initialHistoryWheel;
+  await interruptedHistory.goBack();
+  await interruptedHistory.locator(`[data-app-id="${newerDetail.id}"]`).waitFor();
+  await interruptedHistory.goForward();
+  await interruptedHistory.getByTestId('random-discovery').waitFor();
+  assert.equal(await interruptedHistory.getByTestId('tab-random').getAttribute('aria-current'), 'page', 'Forward has resumed the wheel view while its read remains pending');
+  await interruptedHistory.goBack();
+  await interruptedHistory.locator(`[data-app-id="${newerDetail.id}"] .app-title`).click();
+  const latestDetail = interruptedHistory.getByTestId('app-detail');
+  await latestDetail.waitFor();
+  assert.equal(await latestDetail.locator('.overview-title-row h2').innerText(), newerDetail.name, 'the newer detail is open before releasing the old requests');
+  const oldWheelResponse = interruptedHistory.waitForResponse((response: any) => new URL(response.url()).pathname === '/api/apps/random');
+  releaseHistoryWheel();
+  const completedWheelResponse = await oldWheelResponse;
+  assert.equal(completedWheelResponse.status(), 200);
+  await completedWheelResponse.finished();
+  await interruptedHistory.waitForLoadState('networkidle');
+  await interruptedHistory.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  const latestDetailUrl = new URL(interruptedHistory.url());
+  assert.equal(latestDetailUrl.searchParams.get('app'), newerDetail.id, 'the newer app id remains in the URL after the old Forward completes');
+  assert.equal(latestDetailUrl.searchParams.has('discover'), false, 'the newer detail retains its catalog return destination');
+  assert.equal(await latestDetail.isVisible(), true, 'the old Forward completion must not close the newer detail');
+  assert.equal(await latestDetail.locator('.overview-title-row h2').innerText(), newerDetail.name, 'detail content still belongs to the newer app');
+  assert.equal(await latestDetail.locator('.overview-summary').innerText(), newerDetail.summary, 'the newer app body remains visible');
+  assert.equal(await interruptedHistory.getByTestId('tab-catalog').getAttribute('aria-current'), 'page', 'the rail remains selected on the newer detail return destination');
+  assert.equal(await interruptedHistory.getByTestId('tab-random').getAttribute('aria-current'), null);
+  await interruptedHistory.close();
+  report.checks.push('Back/Forward/Back while wheel reads are pending preserves the newer detail URL, body and catalog rail selection after the old reads finish');
+
   let randomRequests = 0;
   page.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps/random') randomRequests++; });
   await page.getByTestId('tab-random').click();
