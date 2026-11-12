@@ -66,10 +66,12 @@ function updatePageSize(reload = true) {
   const header = records.value.querySelector('.el-table__header-wrapper')
   // Reserve the horizontal scrollbar as well as the table heading and pager.
   const available = records.value.clientHeight - footer.value.offsetHeight - (header?.offsetHeight || 40) - 14
+  if (available <= 0) return
   const capacity = Math.max(1, Math.min(20, Math.floor(available / 64)))
   if (capacity === pageSize.value) return
   pageSize.value = capacity
-  page.value = 1
+  // Keep the current page across remounts and layout settling. View, query and
+  // filter changes reset it explicitly; an out-of-range page is clamped after load.
   if (reload) load()
 }
 function scheduleLayout() {
@@ -156,36 +158,40 @@ onUnmounted(() => { ++sequence; window.removeEventListener('focus', revalidateAc
 </template>
 
 <style scoped>
-.management-main { box-sizing: border-box; display: flex; flex-direction: column; width: min(1480px, 100%); height: 100%; min-height: 360px; margin: 0 auto; padding: 28px 24px; color: var(--plaza-ink); }
+.management-main { box-sizing: border-box; display: flex; flex-direction: column; width: min(1480px, 100%); height: 100%; min-height: 360px; margin: 0 auto; padding: 26px 32px 20px; color: var(--plaza-ink); }
 .management-heading, .management-tabs, .management-toolbar, .management-alert, .management-note { flex-shrink: 0; }
-.management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.management-heading h1 { margin: 0 0 7px; color: var(--plaza-ink); font-size: 24px;;line-height:32px;}
-.management-heading p { margin: 0; color: var(--plaza-muted); font-size: 14px; line-height:22px; }
-.local-label { flex: none; padding: 5px 10px; border: 1px solid var(--plaza-brand-soft); border-radius: 4px; background: var(--plaza-brand-soft); color: var(--plaza-brand); font-size: 12px;;line-height:18px;}
+.management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.management-heading h1 { margin: 0 0 6px; color: var(--plaza-ink); font-size: 27px; line-height: 36px; font-weight: 680; letter-spacing: -.025em; }
+.management-heading p { margin: 0; color: var(--plaza-muted); font-size: 12.5px; line-height: 20px; }
+.local-label { flex: none; padding: 4px 9px; border: 1px solid var(--plaza-line); border-radius: 999px; background: var(--plaza-surface); color: var(--plaza-muted); font-size: 11px; line-height: 18px; }
 .management-heading-actions { display: flex; align-items: center; gap: 12px; }
-.management-tabs { display: flex; gap: 24px; margin-bottom: 16px; border-bottom: 1px solid var(--plaza-line); }
-.management-tabs button { padding: 9px 0 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--plaza-muted); font-size: 14px; cursor: pointer;;line-height:22px;}
-.management-tabs button.active { border-bottom-color: var(--plaza-brand); color: var(--plaza-brand); font-weight: 600; }
-.management-toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
-.management-toolbar :deep(.el-input) { width: 340px; max-width: 100%; }
-.management-toolbar :deep(.el-select) { width: 160px; }
+.management-tabs { display: flex; gap: 22px; margin-bottom: 16px; border-bottom: 1px solid rgb(32 42 59 / .08); }
+.management-tabs button { position: relative; padding: 7px 1px 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--plaza-muted); font-size: 12.5px; font-weight: 500; cursor: pointer; line-height: 20px; }
+.management-tabs button:hover { color: var(--plaza-ink); }
+.management-tabs button.active { border-bottom-color: var(--plaza-brand); color: var(--plaza-ink); font-weight: 600; }
+.management-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.management-toolbar :deep(.el-input) { width: 300px; max-width: 100%; }
+.management-toolbar :deep(.el-select) { width: 150px; }
 .management-toolbar :deep(.el-button + .el-button) { margin-left: 0; }
-.management-alert { margin-bottom: 16px; }
-.management-records { display: flex; flex: 1; flex-direction: column; min-height: 118px; overflow: hidden; border: 1px solid var(--plaza-line); border-radius: 7px; background: var(--plaza-surface); }
-.management-records :deep(.el-table) { flex: 1; min-height: 0; }
-.management-records :deep(.el-table__row) { height: 64px; }
+.management-alert { margin-bottom: 14px; }
+.management-records { display: flex; flex: 1; flex-direction: column; min-height: 118px; overflow: hidden; border: 1px solid rgb(32 42 59 / .07); border-radius: 14px; background: var(--plaza-surface); box-shadow: 0 1px 2px rgb(28 37 51 / .03); }
+.management-records :deep(.el-table) { flex: 1; min-height: 0; background: transparent; }
+.management-records :deep(.el-table__row) { height: 56px; }
 .management-records :deep(.cell) { white-space: nowrap; }
+.management-records :deep(.el-table th.el-table__cell) { padding: 12px 0 9px; }
+.management-records :deep(.el-table td.el-table__cell) { padding: 11px 0; }
 .record-app > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.record-app { display: grid; gap: 3px; line-height: 20px; }
-.record-app strong, .record-name { color: var(--plaza-ink); font-size: 14px; font-weight: 600;;line-height:22px;}
+.record-app { display: grid; gap: 2px; line-height: 20px; }
+.record-app strong, .record-name { color: var(--plaza-ink); font-size: 12.5px; font-weight: 600; line-height: 20px; }
 .record-name { width: fit-content; padding: 0; border: 0; background: transparent; line-height: 20px; text-align: left; cursor: pointer; }
 .record-name:hover { color: var(--plaza-brand); }
-.record-app span { color: var(--plaza-muted); font-size: 12px;;line-height:18px;}
-.management-actions { display: flex; gap: 12px; align-items: center; }
+.record-app span { color: var(--plaza-muted); font-size: 11px; line-height: 16px; }
+.management-actions { display: flex; gap: 11px; align-items: center; flex-wrap: wrap; }
 .management-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.management-footer { position: relative; display: flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 12px; min-height: 52px; padding: 0 16px; border-top: 1px solid var(--plaza-line); color: var(--plaza-muted); font-size: 12px;;line-height:18px;}
-.management-pager { display: flex; min-height: 32px; align-items: center; justify-content: center; }
+.management-actions :deep(.el-button) { font-size: 12px; }
+.management-footer { position: relative; display: flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 12px; min-height: 48px; padding: 0 16px; border-top: 1px solid rgb(32 42 59 / .06); color: var(--plaza-muted); font-size: 11.5px; line-height: 18px; }
+.management-pager { display: flex; min-height: 30px; align-items: center; justify-content: center; }
 .management-footer > span { position: absolute; left: 16px; }
-.management-note { color: var(--plaza-muted); font-size: 12px; line-height:18px; }
-@media (max-width: 650px) { .management-footer { flex-direction: column; gap: 8px; padding: 10px 16px; } .management-footer > span { position: static; align-self: flex-start; } .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 24px;;line-height:32px;} .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px;;line-height:18px;} }
+.management-note { color: var(--plaza-muted); font-size: 11.5px; line-height: 1.6; margin-top: 10px; }
+@media (max-width: 650px) { .management-footer { flex-direction: column; gap: 8px; padding: 10px 16px; } .management-footer > span { position: static; align-self: flex-start; } .management-main { padding: 20px 14px; } .management-heading { flex-wrap: wrap; align-items: flex-start; } .management-heading-actions { margin-left: auto; } .management-heading h1 { font-size: 24px; line-height: 32px; } .management-toolbar { flex-wrap: wrap; } .management-toolbar :deep(.el-input) { flex: 1 1 100%; width: 100%; } .management-tabs { gap: 18px; } .local-label { font-size: 11px; padding: 4px 6px; line-height: 18px; } }
 </style>

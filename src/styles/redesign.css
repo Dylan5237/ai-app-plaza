@@ -1,0 +1,93 @@
+/* Shared visual layer for the plaza redesign. Component-specific layout stays in each SFC. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(32 42 59 / .22) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgb(32 42 59 / .22);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgb(32 42 59 / .38); background-clip: content-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
+.el-scrollbar__bar { opacity: .55; }
+.el-scrollbar__thumb { background: rgb(32 42 59 / .24); border-radius: 999px; }
+.el-scrollbar__thumb:hover { background: rgb(32 42 59 / .4); }
+
+.el-button {
+  --el-button-font-weight: 600;
+  border-radius: var(--plaza-control-radius);
+  font-size: 13px;
+}
+.el-button--small { font-size: 12px; }
+.el-button .plaza-icon { width: 15px; height: 15px; }
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  border-radius: var(--plaza-control-radius);
+  box-shadow: 0 0 0 1px var(--plaza-line) inset;
+}
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px rgb(62 88 206 / .55) inset, 0 0 0 3px rgb(62 88 206 / .12);
+}
+
+.el-overlay { background-color: rgb(20 26 38 / .38); }
+.el-dialog {
+  border-radius: 16px;
+  padding: 24px 26px 8px;
+  box-shadow: 0 30px 90px -20px rgb(12 20 38 / .45);
+}
+.el-dialog__header { margin-right: 0; padding: 0 0 6px; }
+.el-dialog__title { color: var(--plaza-ink); font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+.el-dialog__body { padding: 14px 0 4px; color: var(--plaza-text); font-size: 13px; line-height: 1.65; }
+.el-dialog__footer { margin-top: 14px; padding: 14px 0 10px; border-top: 1px solid var(--plaza-line); }
+
+.el-table {
+  --el-table-border-color: var(--plaza-line);
+  --el-table-header-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-row-hover-bg-color: #faf9f6;
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  padding: 10px 0;
+  background: transparent;
+  color: var(--plaza-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.el-table td.el-table__cell { padding: 12px 0; color: var(--plaza-text); }
+.el-table__inner-wrapper::before { display: none; }
+
+.el-tag { border-radius: 999px; font-size: 11px; }
+.el-alert { border-radius: 10px; }
+.el-message { border-radius: 10px; }
+.el-radio-group { gap: 2px; padding: 3px; border-radius: 10px; background: #edeae5; }
+.el-radio-button__inner {
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent;
+  box-shadow: none !important;
+  font-size: 12px;
+}
+.el-radio-button.is-active .el-radio-button__inner {
+  background: var(--plaza-surface);
+  color: var(--plaza-ink);
+  box-shadow: 0 1px 3px rgb(23 31 44 / .12) !important;
+}
+.el-checkbox { --el-checkbox-checked-bg-color: var(--plaza-brand); --el-checkbox-checked-input-border-color: var(--plaza-brand); }
+
+.el-loading-mask { border-radius: inherit; }
+.el-popper.is-light { border-radius: 10px; box-shadow: 0 12px 32px -8px rgb(23 31 44 / .24); }
+.el-select-dropdown { border-radius: 10px; }
+.el-select-dropdown__list { padding: 5px; }
+.el-select-dropdown__item { margin: 1px 0; border-radius: 7px; font-size: 12.5px; }
+.el-select-dropdown__item.is-selected { color: var(--plaza-brand); background: var(--plaza-brand-soft); font-weight: 600; }
+.el-dropdown-menu { border-radius: 10px; padding: 5px; }
+.el-dropdown-menu__item { border-radius: 7px; font-size: 12.5px; }

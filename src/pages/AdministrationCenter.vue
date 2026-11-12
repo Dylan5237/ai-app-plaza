@@ -3,7 +3,6 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import { identity } from '../lib/identity.js'
-import { publicPath } from '../lib/public-path.js'
 
 const props = defineProps({ mode: { type: String, default: 'governance' } })
 const rows = ref([]), choices = ref([]), loading = ref(false), busy = ref(false), error = ref(''), notice = ref('')
@@ -97,7 +96,7 @@ onMounted(load)
 
 <template>
   <main class="administration-center">
-    <header><div><h1>{{ title }}</h1><p>{{ mode === 'governance' ? '逐项核对来源、原授权与真实负责人；不按显示姓名自动认领。' : mode === 'administrators' ? '平台管理与应用维护分别授权。普通管理员可查看看板和治理清单，超级管理员还可配置管理员与名册。' : '接收前负责人不变，接受时再次核对归属及权限。' }}</p></div><a :href="publicPath('/')">返回应用广场</a></header>
+    <header><div><h1>{{ title }}</h1><p>{{ mode === 'governance' ? '逐项核对来源、原授权与真实负责人；不按显示姓名自动认领。' : mode === 'administrators' ? '平台管理与应用维护分别授权。普通管理员可查看看板和治理清单，超级管理员还可配置管理员与名册。' : '接收前负责人不变，接受时再次核对归属及权限。' }}</p></div></header>
     <el-alert v-if="error && !selected" :title="error" type="error" :closable="false" show-icon />
     <p v-if="notice && !selected" role="status">{{ notice }}</p>
     <div class="center-tools"><el-button :disabled="loading || busy" @click="load">刷新</el-button><el-button v-if="uncertain" type="primary" :loading="busy" @click="write()">核对并重试原操作</el-button></div>
@@ -132,5 +131,5 @@ onMounted(load)
 </template>
 
 <style scoped>
-.administration-center { flex: 1; min-height: 0; overflow: auto; padding: 28px 32px; color: var(--plaza-ink); background: var(--plaza-canvas); }.administration-center header { display: flex; gap: 24px; justify-content: space-between; align-items: flex-start; }.administration-center h1 { margin: 0; font-size: 24px; line-height: 32px; }.administration-center p { line-height: 1.7; }.administration-center header p,.center-note { color: var(--plaza-muted); font-size: 14px; }.administration-center a { color: var(--plaza-brand); white-space: nowrap; }.center-tools { display: flex; gap: 12px; margin: 16px 0; }.center-table { border: 1px solid var(--plaza-line); border-radius: var(--plaza-radius,16px); overflow: hidden; background: var(--plaza-surface); }.administration-center :deep(.el-select) { width: 100%; }@media(max-width:650px) { .administration-center { padding: 20px 16px; }.administration-center header { flex-wrap: wrap; gap: 8px; } }
+.administration-center { flex: 1; min-height: 0; overflow: auto; padding: 26px 32px 32px; color: var(--plaza-ink); background: var(--plaza-canvas); }.administration-center header { display: flex; gap: 24px; justify-content: space-between; align-items: flex-start; }.administration-center h1 { margin: 0; color: var(--plaza-ink); font-size: 27px; line-height: 36px; font-weight: 680; letter-spacing: -.025em; }.administration-center header p { margin: 7px 0 0; color: var(--plaza-muted); font-size: 12.5px; line-height: 20px; }.administration-center p { line-height: 1.7; }.center-note { color: var(--plaza-muted); font-size: 12px; }.center-tools { display: flex; gap: 10px; margin: 18px 0 14px; }.center-table { border: 1px solid rgb(32 42 59 / .07); border-radius: 14px; overflow: hidden; background: var(--plaza-surface); box-shadow: 0 1px 2px rgb(28 37 51 / .03); }.administration-center :deep(.el-select) { width: 100%; }@media(max-width:650px) { .administration-center { padding: 20px 16px; }.administration-center header { flex-wrap: wrap; gap: 8px; } }
 </style>

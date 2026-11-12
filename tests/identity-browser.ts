@@ -169,7 +169,16 @@ try {
   await page.getByRole('button', { name: '我的收藏', exact: true }).click();
   await page.getByRole('heading', { name: '我的收藏', exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, '/plaza/', 'personal navigation leaves the legacy management surface');
-  await page.getByRole('button', { name: '返回应用广场', exact: true }).click();
+  await page.getByTestId('tab-random').click();
+  await page.getByTestId('wheel-current').waitFor();
+  const favoritesRandomUrl = new URL(page.url());
+  assert.equal(favoritesRandomUrl.searchParams.has('space'), false, 'wheel navigation from favorites clears the favorites parameter');
+  assert.equal(favoritesRandomUrl.searchParams.get('discover'), 'random', 'wheel navigation from favorites stays refreshable as the wheel');
+  await page.reload();
+  await page.getByTestId('wheel-current').waitFor();
+  await page.getByTestId('tab-catalog').click();
+  await page.getByTestId('app-card').first().waitFor();
+  assert.equal(new URL(page.url()).searchParams.has('space'), false, 'the refreshed wheel does not fall back to favorites');
   await page.getByRole('button', { name: '成员与小组' }).click();
   await page.getByText('暂无小组。', { exact: true }).waitFor();
   await page.getByRole('button', { name: '新建小组', exact: true }).click();
@@ -255,6 +264,12 @@ try {
   await page.getByRole('button', { name: '使用天宫身份登录' }).click();
   await page.getByRole('button', { name: '成员与小组' }).click();
   await page.getByRole('button', { name: '编辑 浏览器验证小组' }).waitFor();
+  await page.setViewportSize({ width: 568, height: 280 });
+  const logoutInShort = await page.getByRole('button', { name: '退出广场', exact: true }).evaluate(button => {
+    const box = button.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && box.top >= 0 && box.left >= 0 && box.bottom <= innerHeight && box.right <= innerWidth;
+  });
+  assert.equal(logoutInShort, true, 'a signed-in short landscape keeps the logout action inside the viewport');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '编辑 浏览器验证小组', exact: true }).click();
   await page.getByRole('dialog', { name: '编辑小组', exact: true }).waitFor();
@@ -263,12 +278,18 @@ try {
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await page.getByText('访客浏览', { exact: true }).waitFor();
   assert.equal(await page.getByRole('heading', { name: '成员与小组' }).count(), 0, 'disabled identity clears private group view');
+  await page.setViewportSize({ width: 568, height: 280 });
+  const signInInShort = await page.getByRole('button', { name: '使用天宫身份登录', exact: true }).evaluate(button => {
+    const box = button.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && box.top >= 0 && box.left >= 0 && box.bottom <= innerHeight && box.right <= innerWidth;
+  });
+  assert.equal(signInInShort, true, 'a guest short landscape keeps the sign-in action inside the viewport');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: 'artifacts/identity-mobile.png', fullPage: true });
   assert.deepEqual(errors, []);
   const usage = (await h.db.query("SELECT count(*) AS n FROM analytics_events WHERE event_name='app_entry_clicked'")).rows[0].n;
   assert.equal(usage, 1, 'only the deliberate Agent-entry click counts; favorite interactions add no usage');
-  await writeFile('artifacts/identity-browser.json', JSON.stringify({ status: 'PASS', checks: ['prefixed anonymous directory and analytics', 'Tiangong sign-in', 'guest favorite intent', 'persisted personal favorites', 'favorite detail return', 'account isolation', 'inline group impact and uncertain-result retry', 'logout suppression', 'explicit account switch', 'direct authorization denial', 'disabled identity removes private content', 'mobile layout'], errors }, null, 2));
+  await writeFile('artifacts/identity-browser.json', JSON.stringify({ status: 'PASS', checks: ['prefixed anonymous directory and analytics', 'Tiangong sign-in', 'guest favorite intent', 'persisted personal favorites', 'favorite detail return', 'account isolation', 'inline group impact and uncertain-result retry', 'logout suppression', 'explicit account switch', 'direct authorization denial', 'disabled identity removes private content', 'short landscape identity actions', 'mobile layout'], errors }, null, 2));
   console.log('PASS: Tiangong identity, personal favorites and local groups browser flow (synthetic portal).');
 } catch (error) {
   await page.screenshot({ path: 'artifacts/identity-failure.png', fullPage: true });

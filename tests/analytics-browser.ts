@@ -25,6 +25,14 @@ try {
   assert.ok(rows.some(row => row.event_name === 'catalog_results_viewed' && row.attributes.trigger === 'initial'));
   assert.ok(rows.some(row => row.event_name === 'app_card_exposed'), `visible cards counted after one second: ${JSON.stringify({ names: rows.map(row => row.event_name), errors })}`);
   assert.ok(rows.filter(row => row.event_name === 'app_card_exposed').every(row => row.snapshot_id && row.result_set_id));
+  const directRandom = await context.newPage();
+  await directRandom.goto(`${h.origin}/?discover=random`);
+  await directRandom.getByTestId('wheel-current').waitFor();
+  for (let attempt=0; attempt<30 && !(await read()).some(row => row.event_name === 'app_card_exposed' && row.attributes.section === 'random'); attempt++) await directRandom.waitForTimeout(200);
+  const directRows = await read();
+  assert.ok(directRows.some(row => row.event_name === 'portal_viewed' && row.attributes.pageContext === 'random'), 'a direct wheel link initializes analytics from the server switch');
+  assert.ok(directRows.some(row => row.event_name === 'app_card_exposed' && row.attributes.section === 'random'), 'a direct wheel link records visible card exposure');
+  await directRandom.close();
   let randomRequests = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === '/api/apps/random') randomRequests++; });
   await page.getByTestId('tab-random').click();
@@ -76,6 +84,9 @@ try {
   assert.equal(previews.length, 1);
   assert.equal(previews[0].publication_id, draft.id);
   assert.equal(previews[0].attributes.viewerContext, 'publication_link');
+  await preview.getByTestId('tab-catalog').click();
+  await preview.getByTestId('app-card').first().waitFor();
+  assert.equal(new URL(preview.url()).hash.includes('publish'), false, 'leaving a publication preview clears its publish fragment');
   const management = await context.newPage();
   await management.goto(`${h.origin}/admin#publish=${draft.id}`);
   await management.getByTestId('confirm-publication').waitFor();

@@ -18,12 +18,12 @@ import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
-const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false } })
-const emit = defineEmits(['return'])
+const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, discover: { type: String, default: '' } })
+const emit = defineEmits(['return', 'discover'])
 let disposed = false
-defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel })
+defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel, selectDiscovery })
 
-const discoveryTab = ref('catalog')
+const discoveryTab = ref(props.discover === 'random' || new URLSearchParams(location.search).get('discover') === 'random' ? 'random' : 'catalog')
 const randomItems = ref([])
 const randomIndex = ref(0)
 const randomLoading = ref(false)
@@ -101,6 +101,9 @@ async function observeCards() {
 }
 function onVisibilityChange() { void observeCards() }
 watch(randomIndex, () => { if (discoveryTab.value === 'random') void observeCards() }, { flush: 'post' })
+watch(() => props.discover, tab => {
+  if (tab && tab !== discoveryTab.value) void selectDiscovery(tab)
+})
 const detailHeading = ref(null)
 let detailOriginFocus = null
 let detailOriginUrl = ''
@@ -109,10 +112,28 @@ let primaryRequestSequence = 0
 
 function shell() { return directoryMain.value?.closest('.directory-shell') }
 
-async function selectDiscovery(tab) {
+async function selectDiscovery(tab, { syncUrl = true } = {}) {
+  if (!['catalog', 'random'].includes(tab)) return
   scrollPositions[discoveryTab.value] = shell()?.scrollTop || 0
+  if (detailVisible.value) closeDetail()
   discoveryTab.value = tab
+  emit('discover', tab)
+  if (syncUrl) {
+    const url = new URL(location.href)
+    if (tab === 'random') url.searchParams.set('discover', 'random')
+    else url.searchParams.delete('discover')
+    url.searchParams.delete('app')
+    url.searchParams.delete('space')
+    url.hash = ''
+    history.replaceState(history.state, '', url)
+  }
   await nextTick()
+  if (tab === 'catalog') {
+    const previousPageSize = pageSize.value
+    updateCatalogPageSize(false)
+    if (!catalogLoaded) await loadCatalog({ trigger: 'initial' })
+    else if (pageSize.value !== previousPageSize) await loadCatalog({ trigger: 'layout_refresh' })
+  }
   if (shell()) shell().scrollTop = scrollPositions[tab]
   if (tab === 'random' && !randomLoaded) await loadRandom()
   void observeCards()
@@ -156,6 +177,14 @@ async function loadRandom({ revalidating = false } = {}) {
     const previousIndex = randomIndex.value
     randomItems.value = result.items
     if (!revalidating) randomResultSetId = uuid()
+    if (!revalidating && !props.management) {
+      measurementEnabled = result.analyticsEnabled === true
+      enableAnalytics(measurementEnabled)
+      if (measurementEnabled && !portalViewed) {
+        track('portal_viewed', eventAttributes())
+        portalViewed = true
+      }
+    }
     randomAllShown.value = result.allShown
     const keptIndex = result.items.findIndex(app => app.id === currentId)
     randomIndex.value = revalidating ? Math.max(0, keptIndex >= 0 ? keptIndex : Math.min(previousIndex, result.items.length - 1)) : 0
@@ -218,8 +247,8 @@ const selectedUsage = ref('all')
 const usageCounts = ref({ platform: 0, agent: 0 })
 const usageOptions = [
   { value: 'all', label: '全部' },
-  { value: 'platform', label: '平台类应用' },
-  { value: 'agent', label: 'Agent能力' },
+  { value: 'platform', label: '平台应用' },
+  { value: 'agent', label: 'Agent 能力' },
 ]
 const apps = ref([])
 const authorTags = ref([])
@@ -264,6 +293,7 @@ const paginationRow = ref(null)
 let layoutObserver
 let layoutFrame = 0
 let catalogReady = false
+let catalogLoaded = false
 const catalogLoading = ref(false)
 const catalogError = ref('')
 const catalogNotice = ref('')
@@ -355,6 +385,7 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
   try {
     const result = await apiRequest(`/api/apps?${params.toString()}`)
     if (requestSequence !== catalogRequestSequence) return
+    catalogLoaded = true
     apps.value = Array.isArray(result.items) ? result.items : []
     authorTags.value = Array.isArray(result.tags) ? result.tags : []
     total.value = Number.isFinite(Number(result.total)) ? Number(result.total) : 0
@@ -563,11 +594,33 @@ function returnFromDetail() {
   }
 }
 
-function handlePopState() {
+async function applyDiscoveryFromUrl() {
+  const tab = new URLSearchParams(location.search).get('discover') === 'random' ? 'random' : 'catalog'
+  if (tab === discoveryTab.value) return
+  discoveryTab.value = tab
+  emit('discover', tab)
+  await nextTick()
+  if (tab === 'catalog') {
+    const previousPageSize = pageSize.value
+    updateCatalogPageSize(false)
+    if (!catalogLoaded) await loadCatalog({ trigger: 'initial' })
+    else if (pageSize.value !== previousPageSize) await loadCatalog({ trigger: 'layout_refresh' })
+  } else if (!randomLoaded) {
+    await loadRandom()
+  }
+  void observeCards()
+}
+
+let historyNavigationSequence = 0
+async function handlePopState() {
   if (props.management || publicationId.value) return
-  const id = new URLSearchParams(location.search).get('app')
-  if (id) void openApp(id, { fromHistory: true })
-  else if (detailVisible.value) void restoreDiscovery()
+  const navigation = ++historyNavigationSequence
+  const target = new URL(location.href)
+  await applyDiscoveryFromUrl()
+  if (disposed || navigation !== historyNavigationSequence || location.href !== target.href) return
+  const id = target.searchParams.get('app')
+  if (id) await openApp(id, { fromHistory: true })
+  else if (detailVisible.value) await restoreDiscovery()
 }
 
 function handleDetailKey(event) {
@@ -922,8 +975,13 @@ onMounted(async () => {
   await nextTick()
   updateCatalogPageSize(false)
   catalogReady = true
-  await loadCatalog({ trigger: 'initial' })
-  if (appId) await openApp(appId)
+  if (discoveryTab.value === 'random') {
+    await selectDiscovery('random', { syncUrl: false })
+    if (appId && discoveryTab.value === 'random' && new URLSearchParams(location.search).get('app') === appId) await openApp(appId)
+  } else {
+    await loadCatalog({ trigger: 'initial' })
+    if (appId && discoveryTab.value === 'catalog' && new URLSearchParams(location.search).get('app') === appId) await openApp(appId)
+  }
 })
 
 onUnmounted(() => {
@@ -1062,31 +1120,24 @@ onUnmounted(() => {
 
   <div v-else class="directory-shell" :class="{ 'plaza-public': !props.management }">
     <slot v-if="props.management" name="management" :open-app="openApp" :open-update="openShareDialog" :open-publication="openPublication" :open-create="openShareDialog" />
-    <header v-if="!props.management" class="plaza-header">
-      <a class="plaza-brand" :href="publicPath('/')" aria-label="AI 应用广场首页"><span class="plaza-brand-mark" aria-hidden="true"><i/><i/><i/><i/></span><span>AI 应用广场<small>更多应用，更好用</small></span></a>
-      <nav class="plaza-modules" aria-label="主要导航"><a class="active" :href="publicPath('/')" aria-current="page"><PlazaIcon name="catalog"/>应用广场</a><a :href="publicPath('/admin')"><PlazaIcon name="management"/>管理中心</a></nav>
-      <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
-    </header>
-    <aside v-if="!props.management" class="discovery-sidebar">
-      <div class="sidebar-title"><PlazaIcon name="catalog"/><strong>应用广场</strong></div>
-      <nav class="discovery-tabs" aria-label="发现应用">
-        <button :aria-pressed="discoveryTab === 'catalog'" data-testid="tab-catalog" @click="selectDiscovery('catalog')"><PlazaIcon name="catalog"/>全部应用</button>
-        <button :aria-pressed="discoveryTab === 'random'" data-testid="tab-random" @click="selectDiscovery('random')"><PlazaIcon name="random"/>随便看看</button>
-      </nav>
-      <p class="sidebar-note">让好用的应用<br>被更多人发现</p>
-    </aside>
     <main v-if="!props.management" v-show="!detailVisible" ref="directoryMain" class="directory-main">
+      <header v-show="discoveryTab === 'catalog'" class="catalog-page-head">
+        <div>
+          <h1 id="catalog-heading">发现好用的 AI 应用 <span class="catalog-total" aria-hidden="true">{{ total }}</span></h1>
+          <p class="catalog-sub">团队内部收录的 AI 应用，按用途浏览，或直接搜索。</p>
+        </div>
+        <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
+      </header>
       <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
-          <div class="catalog-intro"><div class="catalog-heading-main"><h1 id="catalog-heading">发现好用的 AI 应用</h1><span class="catalog-total" aria-label="应用数量">{{ total }}</span></div></div>
           <div class="catalog-controls">
             <div class="search-row">
               <el-input v-model="query" class="search-input" data-testid="search-input" clearable placeholder="搜索应用名称、用途或能力" aria-label="搜索应用名称、用途或能力" @keyup.enter="searchCatalog" @clear="searchCatalog"><template #prefix><PlazaIcon name="search"/></template></el-input>
               <el-button class="search-submit" type="primary" data-testid="search-button" @click="searchCatalog">搜索</el-button>
             </div>
             <div class="catalog-usage-filter" role="group" aria-label="按使用方式筛选"><button v-for="option in usageOptions" :key="option.value" class="usage-filter-button" :class="{ active: selectedUsage === option.value }" :data-testid="`usage-${option.value}`" :aria-pressed="selectedUsage === option.value" @click="selectUsage(option.value)">{{ option.label }}</button></div>
-            <span class="catalog-sort" aria-label="排序：最近更新">最近更新 ↓</span>
+            <span class="catalog-sort" aria-label="排序：最近更新">最近更新 <PlazaIcon name="sort"/></span>
           </div>
         </div>
         <div ref="tagRow" class="tag-filter-row" aria-label="按作者标签筛选">
@@ -1336,23 +1387,18 @@ onUnmounted(() => {
 :global(*) { box-sizing: border-box; }
 :global(html), :global(body), :global(#app) { width: 100%; height: 100%; margin: 0; }
 :global(body) { background: var(--plaza-canvas); color: var(--plaza-ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
- .directory-shell { width:100%;height:100%;overflow-y:auto;background:var(--plaza-canvas); }
-.directory-main { --catalog-columns:3;--catalog-card-height:270px;--catalog-gap:20px;display:flex;flex-direction:column;width:calc(100% - 196px);height:calc(100% - 64px);margin-left:196px;padding:28px 28px 12px; }
-.plaza-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:24px;height:64px;padding:0 24px;background:var(--plaza-surface);border-bottom:1px solid var(--plaza-line)}
-.plaza-brand{display:flex;align-items:center;gap:12px;flex:none;width:184px;color:var(--plaza-ink);font-size:17px;font-weight:700;text-decoration:none;white-space:nowrap;line-height:26px;}.plaza-brand small{display:block;margin-top:4px;font-size:11px;font-weight:400;color:var(--plaza-muted);line-height:18px;}
-.plaza-brand-mark{display:grid;grid-template-columns:12px 12px;gap:4px;padding:4px}.plaza-brand-mark i{height:12px;border-radius:4px;background:var(--plaza-brand)}.plaza-brand-mark i:nth-child(2){background:var(--plaza-share);transform:rotate(14deg)}.plaza-brand-mark i:nth-child(3){background:var(--plaza-brand-soft)}
-.plaza-modules{display:flex;gap:8px}.plaza-modules a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 16px;border-radius:9px;text-decoration:none;color:var(--plaza-text);font-size:14px;white-space:nowrap;line-height:22px;}.plaza-modules a.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.plaza-modules a:hover{background:var(--plaza-brand-soft)}
-.share-button,.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;padding:7px 14px;border:1px solid var(--plaza-brand);border-radius:9px;background:var(--plaza-brand);color:var(--plaza-surface);font:inherit;font-size:14px;text-decoration:none;cursor:pointer}
-.share-button{margin-left:auto;background:var(--plaza-share);border-color:var(--plaza-share);color:var(--plaza-share-ink);font-weight:650;white-space:nowrap}.share-button:hover{background:var(--plaza-share);border-color:var(--plaza-share)}.primary-button:hover{filter:brightness(1.06)}.secondary-button{background:var(--plaza-surface);border-color:var(--plaza-line);color:var(--plaza-text)}.secondary-button:hover{background:var(--plaza-surface)}.primary-button:disabled,.secondary-button:disabled,.share-button:disabled{opacity:.55;cursor:not-allowed}
+ .directory-shell { display:flex; width:100%; height:100%; flex:1; min-height:0; flex-direction:column; overflow-y:auto; background:var(--plaza-canvas); }
+.directory-main { --catalog-columns:3;--catalog-card-height:250px;--catalog-gap:16px;display:flex;flex-direction:column;width:100%;min-height:100%;flex:1;margin:0;padding:26px 32px 12px; }
+.catalog-page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin:2px 0 20px;flex:none}.catalog-page-head h1{margin:0;color:var(--plaza-ink);font-size:27px;line-height:36px;font-weight:680;letter-spacing:-.025em}.catalog-sub{margin:7px 0 0;color:var(--plaza-muted);font-size:12.5px;line-height:20px}
+.catalog-total{display:inline-grid;min-width:28px;height:22px;margin-left:8px;place-items:center;padding:0 8px;border-radius:999px;background:rgb(32 42 59 / .06);color:var(--plaza-muted);font-size:11.5px;font-weight:600;line-height:22px;vertical-align:3px}
+.share-button,.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 14px;border:1px solid var(--plaza-brand);border-radius:9px;background:var(--plaza-brand);color:var(--plaza-surface);font:inherit;font-size:12.5px;font-weight:600;text-decoration:none;white-space:nowrap;cursor:pointer}
+.share-button{flex:none;margin-top:2px;border-color:transparent;background:var(--plaza-share);color:var(--plaza-share-ink)}.share-button:hover{background:#ffbe88;border-color:transparent}.primary-button:hover{background:#3349b8}.secondary-button{background:var(--plaza-surface);border-color:var(--plaza-line);color:var(--plaza-text)}.secondary-button:hover{border-color:rgb(32 42 59 / .22);background:var(--plaza-surface)}.primary-button:disabled,.secondary-button:disabled,.share-button:disabled{opacity:.55;cursor:not-allowed}
 .plaza-public button:focus-visible,.plaza-public a:focus-visible{outline:2px solid var(--plaza-brand);outline-offset:3px}
-.discovery-sidebar{position:fixed;top:64px;bottom:0;left:0;display:flex;flex-direction:column;width:196px;padding:18px 10px;background:var(--plaza-canvas);border-right:1px solid var(--plaza-line)}.sidebar-title{display:flex;align-items:center;gap:12px;min-height:40px;margin:0 12px 12px;font-size:14px;line-height:22px;}.sidebar-note{margin:auto 14px 12px;color:var(--plaza-muted);font-size:12px;line-height:18px}
-.discovery-tabs{display:flex;flex-direction:column;gap:4px}.discovery-tabs button{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 14px;border:0;border-radius:10px;background:transparent;color:var(--plaza-text);font:inherit;font-size:14px;text-align:left;cursor:pointer}.discovery-tabs button:hover{background:var(--plaza-brand-soft)}.discovery-tabs button[aria-pressed=true]{color:var(--plaza-brand);background:var(--plaza-brand-soft);font-weight:650}
-.search-section{flex:none;margin:0 0 22px}.catalog-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:18px;margin-bottom:24px}.catalog-intro h1{font-size:24px;line-height:32px;font-weight:650;letter-spacing:-.35px;margin:0}.catalog-intro p{color:var(--plaza-muted);font-size:12px;margin:8px 0 0;line-height:18px;}.catalog-heading-main{display:flex;align-items:center;gap:14px}.catalog-total{display:grid;place-items:center;min-width:38px;min-height:34px;padding:4px 10px;border:1px solid var(--plaza-line);border-radius:6px;background:var(--plaza-surface);color:var(--plaza-muted);font-size:12px;line-height:18px;}
-.catalog-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.search-row{display:flex;gap:8px}.search-input{width:260px;--el-input-height:36px}.search-submit{min-height:36px}.catalog-usage-filter{display:flex;gap:2px;padding:3px;border:1px solid var(--plaza-line);border-radius:9px;background:var(--plaza-surface)}.usage-filter-button{min-height:28px;padding:3px 9px;border:0;border-radius:6px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.usage-filter-button.active{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.catalog-sort{font-size:12px;color:var(--plaza-muted);white-space:nowrap;line-height:18px;}
-.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted);line-height:18px;}.filter-chip,.tag-more{flex:none;min-height:32px;padding:5px 12px;border:1px solid transparent;border-radius:20px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:var(--plaza-brand-soft)}.filter-chip.active{background:var(--plaza-ink);color:var(--plaza-surface)}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
+.search-section{flex:none;margin:0 0 18px}.catalog-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px}.catalog-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%}.search-row{display:flex;gap:8px}.search-input{width:300px;--el-input-height:36px}.search-submit{min-height:36px;padding:0 13px}.catalog-usage-filter{display:flex;gap:2px;padding:3px;border-radius:10px;background:#edeae5}.usage-filter-button{min-height:30px;padding:3px 11px;border:0;border-radius:8px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;font-weight:500;white-space:nowrap;cursor:pointer}.usage-filter-button:hover{color:var(--plaza-ink)}.usage-filter-button.active{background:var(--plaza-surface);color:var(--plaza-ink);font-weight:600;box-shadow:0 1px 3px rgb(23 31 44 / .12)}.catalog-sort{display:inline-flex;align-items:center;gap:4px;margin-left:auto;color:var(--plaza-muted);font-size:12px;white-space:nowrap;line-height:18px}.catalog-sort :deep(.plaza-icon){width:13px;height:13px}
+.tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none}.tag-filter-row::-webkit-scrollbar{display:none}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted);line-height:18px;}.filter-chip,.tag-more{flex:none;min-height:30px;padding:4px 12px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.filter-chip.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:600}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
 .catalog-section{display:flex;flex:1;flex-direction:column;min-height:0}.catalog-heading-row{height:0;margin:0;flex:none}.catalog-results{flex:1 0 auto;position:relative}.catalog-refreshing{position:absolute;right:0;top:-20px;color:var(--plaza-muted);font-size:11px;line-height:18px;}.app-grid{display:grid;grid-template-columns:repeat(var(--catalog-columns),minmax(0,1fr));gap:var(--catalog-gap)}.pagination-row{display:flex;flex:0 0 48px;align-items:center;justify-content:center;margin-top:auto}
 .catalog-state{display:flex;min-height:200px;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:28px;border:1px solid var(--plaza-line);border-radius:16px;background:var(--plaza-surface);color:var(--plaza-muted);font-size:14px;text-align:center;line-height:22px;}.catalog-state strong{color:var(--plaza-ink);font-size:17px;line-height:26px;}.catalog-state p{margin:0 0 4px}.catalog-state.is-error{color:var(--plaza-danger);margin-bottom:16px}.empty-mark{font-size:27px}.catalog-notice{margin-bottom:12px;padding:9px 12px;border:1px solid var(--plaza-line);border-radius:9px;background:var(--plaza-surface);color:var(--plaza-success);font-size:12px;line-height:18px;}
-.public-detail{width:calc(100% - 252px);margin:28px 28px 28px 224px;padding:24px;border:1px solid var(--plaza-line);border-radius:16px;background:var(--plaza-surface)}.public-detail-heading{display:flex;align-items:center;gap:20px;margin-bottom:24px}.public-detail-heading h1{margin:0;font-size:24px;line-height:32px;}.public-detail .detail-layout{height:calc(100vh - 240px)}.public-app-version{padding:3px 7px;color:var(--plaza-muted);font-size:11px;line-height:18px;}
+.public-detail{display:block;width:100%;min-height:100%;margin:0;padding:26px 32px 32px;border:0;border-radius:0;background:var(--plaza-canvas)}.public-detail-heading{display:flex;align-items:center;gap:18px;margin-bottom:20px}.public-detail-heading h1{margin:0;font-size:24px;line-height:32px;}.public-detail .detail-layout{height:calc(100vh - 170px)}.public-app-version{padding:3px 7px;color:var(--plaza-muted);font-size:11px;line-height:18px;}
 .detail-return{min-height:40px;border-color:var(--plaza-brand);background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.detail-return:hover{background:var(--plaza-brand-soft)}
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: var(--plaza-ink); font-size: 17px; font-weight: 650;line-height:26px;}
 .detail-update-link { border: 0; background: none; color: var(--plaza-text); font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }
@@ -1431,9 +1477,9 @@ onUnmounted(() => {
 .publication-source-commit code { color: var(--plaza-text); font-family: Consolas, monospace; overflow-wrap: anywhere; }
 @media(min-width:1780px){.directory-main{--catalog-columns:4}}
 @media(max-width:1120px){.directory-main{--catalog-columns:2}}
-@media(min-width:761px) and (max-height:800px){.directory-main{--catalog-card-height:190px}}
+@media(min-width:761px) and (max-height:800px){.directory-main{--catalog-card-height:210px;padding-top:18px}.catalog-page-head{margin-bottom:14px}.catalog-page-head h1{font-size:24px;line-height:32px}.catalog-sub{margin-top:4px}.search-section{margin-bottom:12px}}
 @media(max-width:900px){.detail-layout{grid-template-columns:minmax(0,1fr);height:75vh;max-height:75vh}.detail-content-scroll{max-height:47vh;padding-right:3px}.detail-actions{max-height:25vh}.public-detail .detail-layout{height:auto;max-height:none}.public-detail .detail-content-scroll,.public-detail .detail-actions{max-height:none;overflow:visible}}
-@media(max-width:760px){.plaza-header{height:auto;min-height:64px;gap:12px;flex-wrap:wrap;padding:12px 16px}.plaza-brand{width:auto;font-size:17px;line-height:26px;}.plaza-modules{order:3;width:100%;gap:4px}.plaza-modules a{min-height:34px;padding:0 12px;font-size:12px;line-height:18px;}.share-button{padding:7px 9px;font-size:12px;line-height:18px;}.share-button .plaza-icon{display:none}.discovery-sidebar{position:static;width:100%;padding:8px 16px;border-right:0;border-bottom:1px solid var(--plaza-line)}.sidebar-title,.sidebar-note{display:none}.discovery-tabs{flex-direction:row}.discovery-tabs button{min-height:40px}.directory-main{width:100%;height:auto;min-height:calc(100% - 170px);margin:0;padding:20px 16px 12px}.catalog-intro h1{font-size:24px;line-height:32px;}.catalog-controls{width:100%;gap:8px}.search-row{width:100%}.search-input{width:auto;flex:1;min-width:0}.catalog-toolbar{gap:18px;margin-bottom:18px}.tag-filter-row{max-height:78px}.public-detail{width:calc(100% - 32px);margin:16px;padding:18px}.public-detail-heading{gap:12px;flex-wrap:wrap}}
+@media(max-width:760px){.directory-main{width:100%;min-height:0;padding:20px 16px 12px}.catalog-page-head{flex-wrap:wrap;gap:10px}.catalog-page-head h1{font-size:24px;line-height:32px;}.catalog-controls{width:100%;gap:8px}.search-row{width:100%}.search-input{width:auto;flex:1;min-width:0}.catalog-usage-filter{order:3}.catalog-sort{margin-left:auto}.tag-filter-row{max-height:78px}.public-detail{width:100%;padding:18px 16px}.public-detail-heading{gap:12px;flex-wrap:wrap}}
 @media(max-width:650px){.directory-main{--catalog-columns:1;--catalog-gap:16px}.publication-main{width:calc(100% - 24px);margin-top:12px}.publication-status-card,.publication-preview{padding:17px 15px}.publication-status-heading h1,.preview-section-heading h2{font-size:17px;line-height:26px;}}
 </style>
 

@@ -72,6 +72,16 @@ try {
   assert.equal((await h.service.list()).total, 2, 'adoption preserves original public visibility');
   await page.screenshot({ path: 'artifacts/ownership-governance.png', fullPage: true });
   await page.getByRole('link', { name: '我的应用', exact: true }).click();
+  await page.getByRole('row').filter({ hasText: target.source.name }).waitFor();
+  await page.setViewportSize({ width: 390, height: 667 });
+  const compactManagement = await page.evaluate(() => {
+    const body = document.querySelector('.el-table__body-wrapper')?.getBoundingClientRect();
+    const footer = document.querySelector('[data-testid="management-pagination"]')?.getBoundingClientRect();
+    return { bodyHeight: body?.height ?? 0, footerBottom: footer?.bottom ?? 0, viewport: innerHeight };
+  });
+  assert.ok(compactManagement.bodyHeight > 0, 'all-menu mobile layout keeps a usable management table body');
+  assert.ok(compactManagement.footerBottom <= compactManagement.viewport + 1, 'all-menu mobile layout keeps pagination reachable');
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page.getByRole('row').filter({ hasText: target.source.name }).getByRole('button', { name: '归属与权限', exact: true }).click();
   await page.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor();
   await select(page, '分享范围', '指定小组');

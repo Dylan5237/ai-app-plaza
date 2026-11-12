@@ -1,14 +1,18 @@
 /* Public product tokens. Keep aligned with docs/design/plaza-ui-ux.md. */
 :root {
-  --plaza-canvas:#f6f5f1;--plaza-surface:#ffffff;--plaza-ink:#202a3b;--plaza-text:#596477;--plaza-muted:#657085;--plaza-line:#e4e6ec;
+  --plaza-canvas:#f8f7f4;--plaza-surface:#ffffff;--plaza-ink:#202a3b;--plaza-text:#596477;--plaza-muted:#657085;--plaza-line:#e4e6ec;
   --plaza-brand:#3e58ce;--plaza-brand-soft:#edf0ff;--plaza-share:#ffc89b;--plaza-share-ink:#613215;
   --plaza-primary-button:var(--plaza-brand);
   --plaza-success:#267154;--plaza-warning:#925a16;--plaza-danger:#b83f4b;
   --plaza-radius:16px;--plaza-control-radius:9px;--plaza-focus:0 0 0 3px var(--plaza-brand);
   --plaza-shadow:0 3px 12px rgb(34 43 64 / 4%);--plaza-motion:180ms;--plaza-hover-delay:120ms;
+  --plaza-font:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
   --el-color-primary:var(--plaza-brand);--el-color-primary-light-3:#7486df;--el-color-primary-light-5:#a0aceb;--el-color-primary-light-7:#c5cdf5;--el-color-primary-light-8:#dce2fb;--el-color-primary-light-9:#edf0ff;--el-color-primary-dark-2:#2d43a8;
   --el-color-success:var(--plaza-success);--el-color-warning:var(--plaza-warning);--el-color-danger:var(--plaza-danger);--el-color-info:var(--plaza-text);
   --el-text-color-primary:var(--plaza-ink);--el-text-color-regular:var(--plaza-text);--el-text-color-secondary:var(--plaza-muted);--el-text-color-placeholder:var(--plaza-muted);--el-border-color:var(--plaza-line);--el-border-radius-base:var(--plaza-control-radius);
+  --el-font-family:var(--plaza-font);--el-component-size:36px;
 }
 .plaza-public{color:var(--plaza-ink);background:var(--plaza-canvas)}
+html,body,#app{width:100%;height:100%;margin:0}
+body{background:var(--plaza-canvas);color:var(--plaza-ink);font-family:var(--plaza-font)}
 :where(button,a,[tabindex]):focus-visible{outline:2px solid var(--plaza-brand);outline-offset:2px}

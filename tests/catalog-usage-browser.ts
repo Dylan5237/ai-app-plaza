@@ -512,6 +512,174 @@ try {
   await page.getByLabel('按作者标签筛选').getByRole('button', { name: '清除筛选', exact: true }).click();
   await waitForCatalog(page);
   await page.screenshot({ path: 'artifacts/catalog-discovery-directory.png' });
+
+  const directRandom = await context.newPage();
+  await directRandom.goto(`${harness.origin}/?discover=random`);
+  await directRandom.getByTestId('wheel-current').waitFor();
+  const directName = (await directRandom.getByTestId('wheel-current').locator('.app-title').innerText()).trim();
+  await directRandom.getByTestId('wheel-current').locator('.app-title').click();
+  await directRandom.getByTestId('app-detail').waitFor();
+  const directDetailUrl = new URL(directRandom.url());
+  assert.equal(directDetailUrl.searchParams.get('discover'), 'random', 'random detail keeps the wheel as its return destination');
+  assert.ok(directDetailUrl.searchParams.get('app'), 'random detail carries a refreshable app id');
+  await directRandom.reload();
+  await directRandom.getByTestId('app-detail').waitFor();
+  assert.ok((await directRandom.getByTestId('app-detail').innerText()).includes(directName), 'refreshing a random detail restores the same app');
+  await directRandom.getByTestId('return-discovery').click();
+  await directRandom.getByTestId('wheel-current').waitFor();
+  const directCatalogRequests: string[] = [];
+  directRandom.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps') directCatalogRequests.push(request.url()); });
+  await directRandom.getByTestId('tab-catalog').click();
+  await directRandom.getByTestId('app-card').first().waitFor();
+  assert.ok(await directRandom.getByTestId('app-card').count() > 0, 'the first switch from a direct wheel loads the catalog');
+  assert.equal(directCatalogRequests.length > 0, true, 'the first catalog view performs a catalog read');
+  assert.equal(new URL(directRandom.url()).searchParams.has('discover'), false, 'switching to the catalog refreshes back into the catalog');
+  await directRandom.reload();
+  await directRandom.getByTestId('app-card').first().waitFor();
+  await directRandom.close();
+
+  // A slow wheel response must not reopen its detail after the user has already returned to the catalog.
+  const slowRandom = await context.newPage();
+  slowRandom.setDefaultTimeout(10000);
+  slowRandom.on('pageerror', (error: Error) => report.errors.push(error.message));
+  let releaseWheel: (() => void) | undefined;
+  let noteWheelRequest: (() => void) | undefined;
+  const wheelGate = new Promise<void>(resolve => { releaseWheel = resolve; });
+  const wheelRequested = new Promise<void>(resolve => { noteWheelRequest = resolve; });
+  await slowRandom.route('**/api/apps/random**', async (route: any) => {
+    noteWheelRequest!();
+    await wheelGate;
+    await route.continue();
+  });
+  await slowRandom.goto(`${harness.origin}/?discover=random&app=${encodeURIComponent(webApps[0].id)}`);
+  await wheelRequested;
+  await slowRandom.getByTestId('tab-catalog').click();
+  await slowRandom.getByTestId('app-card').first().waitFor();
+  releaseWheel!();
+  await slowRandom.waitForTimeout(600);
+  assert.equal(await slowRandom.getByTestId('app-detail').count(), 0, 'a slow wheel response does not reopen a stale detail after navigating away');
+  assert.equal(new URL(slowRandom.url()).searchParams.has('app'), false, 'the abandoned wheel detail does not write its app id back to the URL');
+  await slowRandom.close();
+
+  // Returning from the wheel after a viewport change refetches with the new capacity.
+  const capacityPage = await context.newPage();
+  capacityPage.setDefaultTimeout(10000);
+  capacityPage.on('pageerror', (error: Error) => report.errors.push(error.message));
+  await capacityPage.setViewportSize({ width: 1440, height: 900 });
+  const capacityRequests: string[] = [];
+  capacityPage.on('request', (request: any) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/apps') capacityRequests.push(url.search);
+  });
+  await capacityPage.goto(harness.origin);
+  await capacityPage.getByTestId('app-card').first().waitFor();
+  await capacityPage.waitForLoadState('networkidle');
+  const initialPageSize = Number(new URLSearchParams(capacityRequests.at(-1)!).get('pageSize'));
+  assert.equal(await capacityPage.getByTestId('app-card').count(), initialPageSize, 'the initial catalog page fills the measured capacity');
+  await capacityPage.getByTestId('tab-random').click();
+  await capacityPage.getByTestId('wheel-current').waitFor();
+  await capacityPage.setViewportSize({ width: 1024, height: 720 });
+  const resizedResponsePromise = capacityPage.waitForResponse((response: any) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/apps' && Number(url.searchParams.get('pageSize')) !== initialPageSize;
+  });
+  await capacityPage.getByTestId('tab-catalog').click();
+  const resizedResponse = await resizedResponsePromise;
+  const resizedPageSize = Number(new URL(resizedResponse.url()).searchParams.get('pageSize'));
+  assert.ok(resizedPageSize < initialPageSize, `a smaller viewport lowers the page capacity: ${initialPageSize} -> ${resizedPageSize}`);
+  const expectedFirstPage = Math.min(resizedPageSize, 14);
+  await capacityPage.waitForFunction((size: number) => {
+    const results = document.querySelector('.catalog-results');
+    return results?.getAttribute('aria-busy') === 'false' && results.querySelectorAll('[data-testid="app-card"]').length === size;
+  }, expectedFirstPage);
+  const firstPageIds = await capacityPage.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
+  assert.equal(new Set(firstPageIds).size, firstPageIds.length, 'the refetched first page has no duplicate rows');
+  const secondPageResponse = capacityPage.waitForResponse((response: any) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/apps' && url.searchParams.get('page') === '2';
+  });
+  await capacityPage.getByTestId('pagination').locator('button.btn-next').click();
+  await secondPageResponse;
+  await capacityPage.waitForFunction((size: number) => {
+    const results = document.querySelector('.catalog-results');
+    return results?.getAttribute('aria-busy') === 'false' && results.querySelectorAll('[data-testid="app-card"]').length === size;
+  }, expectedFirstPage);
+  const secondPageIds = await capacityPage.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.map(card => card.dataset.appId));
+  assert.equal(secondPageIds.filter((id: string | undefined) => firstPageIds.includes(id)).length, 0, 'paging after a capacity change does not repeat rows from the refetched first page');
+  await capacityPage.close();
+
+  // Browser Back from a detail opened through the rail restores the catalog body, highlight and URL together.
+  const historyPage = await context.newPage();
+  historyPage.setDefaultTimeout(10000);
+  historyPage.on('pageerror', (error: Error) => report.errors.push(error.message));
+  await historyPage.setViewportSize({ width: 1280, height: 720 });
+  await historyPage.goto(harness.origin);
+  await historyPage.getByTestId('app-card').first().waitFor();
+  await historyPage.getByTestId('app-card').first().locator('.app-title').click();
+  await historyPage.getByTestId('app-detail').waitFor();
+  await historyPage.getByTestId('tab-random').click();
+  await historyPage.getByTestId('wheel-current').waitFor();
+  assert.equal(new URL(historyPage.url()).searchParams.get('discover'), 'random');
+  await historyPage.goBack();
+  await historyPage.getByTestId('app-card').first().waitFor();
+  assert.equal(await historyPage.getByTestId('random-discovery').count(), 0, 'Back from the wheel shows the catalog body again');
+  assert.equal(await historyPage.getByTestId('tab-catalog').getAttribute('aria-current'), 'page', 'Back moves the rail highlight to the catalog');
+  const restoredUrl = new URL(historyPage.url());
+  assert.equal(restoredUrl.searchParams.has('discover'), false, 'Back restores a catalog URL without the wheel parameter');
+  assert.equal(restoredUrl.searchParams.has('app'), false, 'Back does not leave a stale detail id in the URL');
+  await historyPage.close();
+
+  // A suspended Forward handler must not close a newer detail when its wheel request finishes.
+  const interruptedHistory = await context.newPage();
+  interruptedHistory.setDefaultTimeout(10000);
+  interruptedHistory.on('pageerror', (error: Error) => report.errors.push(error.message));
+  let releaseHistoryWheel!: () => void;
+  const historyWheelGate = new Promise<void>(resolve => { releaseHistoryWheel = resolve; });
+  await interruptedHistory.route('**/api/apps/random**', async (route: any) => {
+    await historyWheelGate;
+    await route.continue();
+  });
+  await interruptedHistory.goto(harness.origin);
+  await waitForCatalog(interruptedHistory);
+  const historyCards = await interruptedHistory.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.slice(0, 2).map(card => ({
+    id: card.dataset.appId!, name: card.querySelector('.app-title')!.textContent!.trim(), summary: card.querySelector('.app-summary')!.textContent!.trim(),
+  })));
+  assert.equal(historyCards.length, 2, 'the history race uses two distinct catalog details');
+  const [earlierDetail, newerDetail] = historyCards;
+  assert.notEqual(earlierDetail.id, newerDetail.id);
+  await interruptedHistory.locator(`[data-app-id="${earlierDetail.id}"] .app-title`).click();
+  await interruptedHistory.getByTestId('app-detail').waitFor();
+  const initialHistoryWheel = interruptedHistory.waitForRequest((request: any) => new URL(request.url()).pathname === '/api/apps/random');
+  await interruptedHistory.getByTestId('tab-random').click();
+  await initialHistoryWheel;
+  await interruptedHistory.goBack();
+  await interruptedHistory.locator(`[data-app-id="${newerDetail.id}"]`).waitFor();
+  await interruptedHistory.goForward();
+  await interruptedHistory.getByTestId('random-discovery').waitFor();
+  assert.equal(await interruptedHistory.getByTestId('tab-random').getAttribute('aria-current'), 'page', 'Forward has resumed the wheel view while its read remains pending');
+  await interruptedHistory.goBack();
+  await interruptedHistory.locator(`[data-app-id="${newerDetail.id}"] .app-title`).click();
+  const latestDetail = interruptedHistory.getByTestId('app-detail');
+  await latestDetail.waitFor();
+  assert.equal(await latestDetail.locator('.overview-title-row h2').innerText(), newerDetail.name, 'the newer detail is open before releasing the old requests');
+  const oldWheelResponse = interruptedHistory.waitForResponse((response: any) => new URL(response.url()).pathname === '/api/apps/random');
+  releaseHistoryWheel();
+  const completedWheelResponse = await oldWheelResponse;
+  assert.equal(completedWheelResponse.status(), 200);
+  await completedWheelResponse.finished();
+  await interruptedHistory.waitForLoadState('networkidle');
+  await interruptedHistory.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  const latestDetailUrl = new URL(interruptedHistory.url());
+  assert.equal(latestDetailUrl.searchParams.get('app'), newerDetail.id, 'the newer app id remains in the URL after the old Forward completes');
+  assert.equal(latestDetailUrl.searchParams.has('discover'), false, 'the newer detail retains its catalog return destination');
+  assert.equal(await latestDetail.isVisible(), true, 'the old Forward completion must not close the newer detail');
+  assert.equal(await latestDetail.locator('.overview-title-row h2').innerText(), newerDetail.name, 'detail content still belongs to the newer app');
+  assert.equal(await latestDetail.locator('.overview-summary').innerText(), newerDetail.summary, 'the newer app body remains visible');
+  assert.equal(await interruptedHistory.getByTestId('tab-catalog').getAttribute('aria-current'), 'page', 'the rail remains selected on the newer detail return destination');
+  assert.equal(await interruptedHistory.getByTestId('tab-random').getAttribute('aria-current'), null);
+  await interruptedHistory.close();
+  report.checks.push('Back/Forward/Back while wheel reads are pending preserves the newer detail URL, body and catalog rail selection after the old reads finish');
+
   let randomRequests = 0;
   page.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps/random') randomRequests++; });
   await page.getByTestId('tab-random').click();

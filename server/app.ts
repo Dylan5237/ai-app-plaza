@@ -224,7 +224,8 @@ export async function createApp(config: Config, db: Database) {
   });
   app.get('/api/apps/random', async (request) => {
     const search = z.object({ exclude: z.union([z.string().uuid(), z.array(z.string().uuid()).max(6)]).optional() }).parse(request.query);
-    return service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude, await viewerId(request));
+    const result = await service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude, await viewerId(request));
+    return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
   app.get('/api/tags', async request => ({ tags: await service.tags(await viewerId(request)), maxTagsPerApp: 3 }));
   app.get('/api/apps/:id', async request => service.app(publicationId(request.params), { viewerId: await viewerId(request) }));

@@ -24,6 +24,9 @@ test('browser events persist safe fields, deduplicate retries and exposures, and
   await recordCatalogBaseline(db, config);
   assert.equal(Number((await db.query<any>('SELECT count(*) AS n FROM analytics_baselines')).rows[0].n), 1);
   assert.equal(Number((await db.query<any>('SELECT count(*) AS n FROM analytics_baseline_items')).rows[0].n), 1, 'existing apps form a snapshot, not invented registration events');
+  const randomResponse = await app.inject({ method:'GET', url:'/api/apps/random', headers:{ host:'127.0.0.1:4000' } });
+  assert.equal(randomResponse.statusCode, 200);
+  assert.equal(randomResponse.json().analyticsEnabled, true, 'random discovery receives the server collection switch for direct links');
   const event = { eventId:randomUUID(), eventName:'app_card_exposed', occurredAt:new Date().toISOString(), identityScope:'persistent', visitorId:randomUUID(), sessionId:randomUUID(), viewId:randomUUID(), resultSetId:randomUUID(), appId:seeded.appId, snapshotId:seeded.snapshotId, attributes:{ pageContext:'catalog', entryMode:'catalog', position:1, section:'catalog' } };
   const send = (payload: object) => app.inject({ method:'POST', url:'/api/analytics/events', headers:{ host:'127.0.0.1:4000', origin:config.publicOrigin }, payload });
   assert.equal((await send(event)).statusCode, 200);
@@ -67,6 +70,8 @@ test('collection disabled rejects events and preserves existing catalog response
   assert.equal((await app.inject({ method:'POST',url:'/api/analytics/events',headers:{ host:'127.0.0.1:4000' },payload:{} })).statusCode, 404);
   const response = await app.inject({ method:'GET',url:'/api/apps',headers:{ host:'127.0.0.1:4000' } });
   assert.equal(response.json().analyticsEnabled, undefined);
+  const randomResponse = await app.inject({ method:'GET',url:'/api/apps/random',headers:{ host:'127.0.0.1:4000' } });
+  assert.equal(randomResponse.json().analyticsEnabled, undefined);
 });
 
 test('selected analytics tags use the authenticated viewer catalog scope', async t => {
