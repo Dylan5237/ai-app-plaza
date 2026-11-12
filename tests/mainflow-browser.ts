@@ -219,7 +219,7 @@ try {
     await harness.db.query("UPDATE published_snapshots SET created_at = '2026-01-01T00:00:00Z'");
     await page.goto(harness.origin);
     await page.getByTestId('app-card').first().waitFor();
-    const expectedCards = 6; // Both default desktop viewports show two rows.
+    const expectedCards = viewport.width === 1440 ? 9 : 6; // 1440x900 fits three rows; 1280x720 fits two.
     await page.waitForFunction(count => document.querySelectorAll('[data-testid="app-card"]').length === count, expectedCards);
     const tagPositions = await page.locator('.tag-filter-row .filter-chip').evaluateAll(items => items.map(item => Math.round(item.getBoundingClientRect().top)));
     assert.equal(new Set(tagPositions).size, 1, 'tag filters stay on one line');
