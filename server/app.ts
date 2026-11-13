@@ -227,6 +227,10 @@ export async function createApp(config: Config, db: Database) {
     const result = await service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude, await viewerId(request));
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
   });
+  app.get('/api/apps/smart-search', async (request) => {
+    const search = z.object({ query: z.string().min(1).max(200) }).parse(request.query);
+    return service.smartSearch(search.query, await viewerId(request));
+  });
   app.get('/api/tags', async request => ({ tags: await service.tags(await viewerId(request)), maxTagsPerApp: 3 }));
   app.get('/api/apps/:id', async request => service.app(publicationId(request.params), { viewerId: await viewerId(request) }));
   app.get('/api/apps/:id/publish-contract', async (request) => {

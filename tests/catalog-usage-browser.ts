@@ -280,7 +280,7 @@ try {
     const url = new URL(response.url());
     return url.pathname === '/api/apps' && url.searchParams.get('usage') === 'all' && url.searchParams.get('page') === '1';
   });
-  await page.goto(harness.origin);
+  await page.goto(`${harness.origin}/?discover=catalog`);
   const initialResponse = await initialResponsePromise;
   assert.equal(initialResponse.status(), 200);
   const initial = await initialResponse.json() as ListResponse;
@@ -360,7 +360,7 @@ try {
     const url = new URL(request.url());
     if (url.pathname === '/api/apps') touchLayoutReads.push(url.search);
   });
-  await touchLayout.goto(harness.origin);
+  await touchLayout.goto(`${harness.origin}/?discover=catalog`);
   await waitForCatalog(touchLayout);
   const touchLayoutMetrics = await touchLayout.evaluate(() => {
     const shell = document.querySelector('.directory-shell')!;
@@ -464,7 +464,7 @@ try {
     { name: 'hover', value: 'none' },
     { name: 'any-hover', value: 'hover' },
   ] });
-  await hybridPage.goto(harness.origin);
+  await hybridPage.goto(`${harness.origin}/?discover=catalog`);
   await hybridPage.getByTestId('app-card').first().waitFor();
   await hybridPage.mouse.move(0, 0);
   const hybridRest = await hybridPage.getByTestId('app-card').first().evaluate((el: HTMLElement) => ({
@@ -621,7 +621,7 @@ try {
   await directRandom.getByTestId('app-card').first().waitFor();
   assert.ok(await directRandom.getByTestId('app-card').count() > 0, 'the first switch from a direct wheel loads the catalog');
   assert.equal(directCatalogRequests.length > 0, true, 'the first catalog view performs a catalog read');
-  assert.equal(new URL(directRandom.url()).searchParams.has('discover'), false, 'switching to the catalog refreshes back into the catalog');
+  assert.equal(new URL(directRandom.url()).searchParams.get('discover'), 'catalog', 'switching to the catalog refreshes back into the catalog');
   await directRandom.reload();
   await directRandom.getByTestId('app-card').first().waitFor();
   await directRandom.close();
@@ -659,7 +659,7 @@ try {
     const url = new URL(request.url());
     if (url.pathname === '/api/apps') capacityRequests.push(url.search);
   });
-  await capacityPage.goto(harness.origin);
+  await capacityPage.goto(`${harness.origin}/?discover=catalog`);
   await capacityPage.getByTestId('app-card').first().waitFor();
   await capacityPage.waitForLoadState('networkidle');
   const initialPageSize = Number(new URLSearchParams(capacityRequests.at(-1)!).get('pageSize'));
@@ -701,7 +701,7 @@ try {
   historyPage.setDefaultTimeout(10000);
   historyPage.on('pageerror', (error: Error) => report.errors.push(error.message));
   await historyPage.setViewportSize({ width: 1280, height: 720 });
-  await historyPage.goto(harness.origin);
+  await historyPage.goto(`${harness.origin}/?discover=catalog`);
   await historyPage.getByTestId('app-card').first().waitFor();
   await historyPage.getByTestId('app-card').first().locator('.app-title').click();
   await historyPage.getByTestId('app-detail').waitFor();
@@ -713,7 +713,7 @@ try {
   assert.equal(await historyPage.getByTestId('random-discovery').count(), 0, 'Back from the wheel shows the catalog body again');
   assert.equal(await historyPage.getByTestId('tab-catalog').getAttribute('aria-current'), 'page', 'Back moves the rail highlight to the catalog');
   const restoredUrl = new URL(historyPage.url());
-  assert.equal(restoredUrl.searchParams.has('discover'), false, 'Back restores a catalog URL without the wheel parameter');
+  assert.equal(restoredUrl.searchParams.get('discover'), 'catalog', 'Back restores a catalog URL with the explicit catalog parameter');
   assert.equal(restoredUrl.searchParams.has('app'), false, 'Back does not leave a stale detail id in the URL');
   await historyPage.close();
 
@@ -727,7 +727,7 @@ try {
     await historyWheelGate;
     await route.continue();
   });
-  await interruptedHistory.goto(harness.origin);
+  await interruptedHistory.goto(`${harness.origin}/?discover=catalog`);
   await waitForCatalog(interruptedHistory);
   const historyCards = await interruptedHistory.getByTestId('app-card').evaluateAll((cards: HTMLElement[]) => cards.slice(0, 2).map(card => ({
     id: card.dataset.appId!, name: card.querySelector('.app-title')!.textContent!.trim(), summary: card.querySelector('.app-summary')!.textContent!.trim(),
@@ -759,7 +759,7 @@ try {
   await interruptedHistory.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
   const latestDetailUrl = new URL(interruptedHistory.url());
   assert.equal(latestDetailUrl.searchParams.get('app'), newerDetail.id, 'the newer app id remains in the URL after the old Forward completes');
-  assert.equal(latestDetailUrl.searchParams.has('discover'), false, 'the newer detail retains its catalog return destination');
+  assert.equal(latestDetailUrl.searchParams.get('discover'), 'catalog', 'the newer detail retains its catalog return destination');
   assert.equal(await latestDetail.isVisible(), true, 'the old Forward completion must not close the newer detail');
   assert.equal(await latestDetail.locator('.overview-title-row h2').innerText(), newerDetail.name, 'detail content still belongs to the newer app');
   assert.equal(await latestDetail.locator('.overview-summary').innerText(), newerDetail.summary, 'the newer app body remains visible');
@@ -879,7 +879,7 @@ try {
   touchPage.on('pageerror', (error: Error) => report.errors.push(error.message));
   let touchSamples = 0;
   touchPage.on('request', (request: any) => { if (new URL(request.url()).pathname === '/api/apps/random') touchSamples++; });
-  await touchPage.goto(harness.origin);
+  await touchPage.goto(`${harness.origin}/?discover=catalog`);
   await waitForCatalog(touchPage);
   const touchCatalogLayout = await touchPage.evaluate(() => {
     const cards = Array.from(document.querySelectorAll('[data-testid="app-card"]'));
@@ -927,7 +927,7 @@ try {
     const hybridContext = await hybridBrowser.newContext({ viewport: { width: 1440, height: 900 } });
     const hybridPage = await hybridContext.newPage();
     hybridPage.setDefaultTimeout(10000);
-    await hybridPage.goto(harness.origin);
+    await hybridPage.goto(`${harness.origin}/?discover=catalog`);
     await waitForCatalog(hybridPage);
     await clickUsage(hybridPage, 'platform');
     await hybridPage.mouse.move(0, 0);

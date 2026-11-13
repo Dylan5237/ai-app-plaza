@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 
 const id = z.string().uuid();
 const attributes = z.object({
-  pageContext: z.enum(['catalog', 'random', 'detail', 'publication', 'management']),
+  pageContext: z.enum(['catalog', 'random', 'search', 'detail', 'publication', 'management']),
   entryMode: z.enum(['catalog', 'detail_link', 'publication_link', 'management']),
   trigger: z.enum(['initial', 'search', 'filter', 'pagination', 'manual_refresh', 'layout_refresh', 'random_refresh']).optional(),
   discoveryRequestId: id.optional(),
@@ -21,7 +21,7 @@ const attributes = z.object({
   hasQuery: z.boolean().optional(),
   queryLengthBucket: z.enum(['0', '1-10', '11-50', '51-200']).optional(),
   position: z.number().int().min(1).max(100).optional(),
-  section: z.enum(['catalog', 'random']).optional(),
+  section: z.enum(['catalog', 'random', 'search']).optional(),
   entryContext: z.enum(['card', 'search_result', 'deep_link', 'after_publication', 'management']).optional(),
   entryId: z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/).optional(),
   entryKind: z.enum(['web', 'agent']).optional(),

@@ -45,6 +45,8 @@ test('browser events persist safe fields, deduplicate retries and exposures, and
   assert.equal(rows[0].environment, 'test');
   assert.equal(rows[0].site_instance_id, 'fixture');
   assert.equal(rows.find(row => row.event_id === late.eventId).clock_adjusted, true);
+  const searchExposure = { ...event, eventId: randomUUID(), resultSetId: randomUUID(), attributes: { pageContext: 'search', entryMode: 'catalog', position: 1, section: 'search' } };
+  assert.equal((await send(searchExposure)).statusCode, 200, 'smart-search discovery context is accepted');
   const click = { ...event, eventId:randomUUID(), eventName:'app_entry_clicked', interactionId:randomUUID(), attributes:{ pageContext:'catalog', entryMode:'catalog', entryId:'web', entryKind:'web', placement:'card' } };
   assert.equal((await send(click)).statusCode, 200);
   assert.equal((await send({ ...click, eventId:randomUUID(), interactionId:randomUUID() })).statusCode, 200);

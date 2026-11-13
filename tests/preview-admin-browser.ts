@@ -27,7 +27,7 @@ try {
   const expired = await (await fetch(h.origin + '/api/preview-admin/publications?status=expired')).json() as any;
   assert.equal(expired.total, 1);
   report.checks.push('legacy read API still paginates 25 records, projects safe details, filters expired items');
-  await page.goto(h.origin); await page.getByTestId('app-card').first().waitFor();
+  await page.goto(`${h.origin}/?discover=catalog`); await page.getByTestId('app-card').first().waitFor();
   assert.equal(await page.getByTestId('search-button').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(62, 88, 206)');
   const logo = page.getByRole('link', { name: 'AI 应用广场首页', exact: true });
   await logo.click(); assert.equal(new URL(page.url()).pathname, '/');

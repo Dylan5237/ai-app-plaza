@@ -71,7 +71,7 @@ if (process.argv.includes('--serve')) {
     await mkdir('artifacts', { recursive: true });
     await page.screenshot({ path: 'artifacts/distribution-browser-author-preview.png', fullPage: true });
 
-    await page.goto(harness.origin);
+    await page.goto(`${harness.origin}/?discover=catalog`);
     await page.getByRole('button', { name: '查看 统一分发示例（模拟） 详情' }).click();
     await page.getByTestId('use-agent').click();
     await page.evaluate(() => { (window as any).copiedText = undefined; });

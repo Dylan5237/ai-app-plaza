@@ -122,6 +122,7 @@ export interface PlazaService {
   changeLifecycle(id: string, action: AppLifecycleAction, expectedAppRevision: number, expectedLifecycleRevision: number, viewerId?: string): Promise<AppLifecycleChange>;
   list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all'; usage?: CatalogUsage; sort?: 'updated'; viewerId?: string; management?: boolean }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[]; usageCounts: { platform: number; agent: number } }>;
   random(exclude?: string[], viewerId?: string): Promise<{ items: AppView[]; allShown: boolean }>;
+  smartSearch(query: string, viewerId?: string): Promise<{ items: AppView[]; matches: Record<string, string[]> }>;
   app(id: string, options?: { includeHidden?: boolean; viewerId?: string; management?: boolean }): Promise<AppView>;
   instructions(id: string, entryId: string, options?: { includeHidden?: boolean; viewerId?: string; management?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string; distribution: Record<string, unknown> }>;
   distributionPackage(id: string, assetId: string, viewerId?: string): Promise<{ id: string; sha256: string; bytes: Buffer }>;
@@ -1092,12 +1093,7 @@ export function createService(config: ServiceConfig): PlazaService {
         const alternatives: string[] = [];
         for (const token of group) {
           params.push(token);
-          const placeholder = `$${params.length}`;
-          alternatives.push(`position(${placeholder} in s.search_text) > 0`);
-          alternatives.push(`EXISTS (
-            SELECT 1 FROM jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
-             WHERE position(${placeholder} in lower(tag.value)) > 0
-          )`);
+          alternatives.push(tokenMatchPredicate(`$${params.length}`));
         }
         filters.push(`(${alternatives.join(" OR ")})`);
       }
@@ -1172,6 +1168,51 @@ export function createService(config: ServiceConfig): PlazaService {
         [ids, config.audience, viewerId ?? null],
       );
       return { items: result.rows.map(publicCard), allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
+    },
+
+    async smartSearch(query: string, viewerId?: string) {
+      const text = typeof query === 'string' ? query.trim() : '';
+      if (!text) {
+        throw new DomainError(400, 'VALIDATION_FAILED', 'query 必须是 1 到 200 个字符的文本。');
+      }
+      const tokens = searchTokens(text);
+      // Recall-oriented matching: OR across all tokens (unlike list's group AND), so
+      // natural-language filler words do not zero out the result set.
+      const flatTokens = [...new Set(tokens.flat())].filter(token => token.length >= 2);
+      // Input with no usable keyword (single character, punctuation-only) has no honest
+      // match; return empty instead of degenerating into an unfiltered recency list.
+      if (!flatTokens.length) return { items: [], matches: {} };
+      const params: unknown[] = [config.audience, viewerId ?? null];
+      const alternatives: string[] = [];
+      for (const token of flatTokens) {
+        params.push(token);
+        alternatives.push(tokenMatchPredicate(`$${params.length}`));
+      }
+      // Rank in JS over a wide recency-ordered candidate pool: limiting to the final 8 in
+      // SQL would drop older, highly relevant apps whenever newer apps match any token.
+      const result = await config.db.query<AppRecord>(
+        `${RANDOM_APP_SELECT} WHERE s.audience=$1 AND COALESCE(l.status,'published')='published'
+          AND ${appAccessPredicate('$2::uuid')} AND (${alternatives.join(' OR ')})
+          ORDER BY s.created_at DESC LIMIT 100`,
+        params,
+      );
+      const normalizedQuery = text.normalize('NFKC').toLocaleLowerCase('zh-CN');
+      const hit = (value: string | undefined) => {
+        if (!value) return false;
+        const normalized = value.normalize('NFKC').toLocaleLowerCase('zh-CN');
+        return normalized.length >= 2 && (normalizedQuery.includes(normalized) || flatTokens.some(token => normalized.includes(token)));
+      };
+      const matches: Record<string, string[]> = {};
+      const ranked = result.rows
+        .map(record => {
+          const item = publicCard(record);
+          const matched = [...(item.tags ?? []).filter(hit), ...(hit(item.manifest?.name) ? [item.manifest.name] : [])];
+          matches[item.id] = matched;
+          return { item, relevance: matched.length };
+        })
+        .sort((left, right) => right.relevance - left.relevance)
+        .map(entry => entry.item);
+      return { items: ranked.slice(0, 8), matches };
     },
 
     async app(id, options = {}) {
@@ -1365,6 +1406,16 @@ function safeFailure(error: unknown): { code: string; message: string } {
 
 function notFound(): DomainError {
   return new DomainError(404, "PUBLICATION_NOT_FOUND", "发布记录不存在。");
+}
+
+// Shared keyword predicate for catalog search and smart search: a token matches an app
+// when it appears in the NFKC-normalized search text or in any effective tag (tags are
+// normalized here so full-width spellings still match half-width queries).
+function tokenMatchPredicate(placeholder: string) {
+  return `(position(${placeholder} in s.search_text) > 0 OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
+     WHERE position(${placeholder} in lower(normalize(tag.value, NFKC))) > 0
+  ))`;
 }
 
 function searchTokens(query: string): string[][] {

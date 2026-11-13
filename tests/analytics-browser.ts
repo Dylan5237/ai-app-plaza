@@ -16,7 +16,7 @@ const errors: string[] = [];
 page.on('pageerror', error => errors.push(error.message));
 page.on('response', response => { if (response.url().includes('/api/analytics/events') && !response.ok()) errors.push(`analytics HTTP ${response.status()}`); });
 try {
-  await page.goto(h.origin);
+  await page.goto(`${h.origin}/?discover=catalog`);
   await page.getByTestId('app-card').first().waitFor();
   const read = async () => (await h.db.query<any>('SELECT event_name,app_id,snapshot_id,result_set_id,flow_id,publication_id,attributes FROM analytics_events ORDER BY received_at')).rows;
   for (let attempt=0; attempt<30 && !(await read()).some(row => row.event_name === 'app_card_exposed'); attempt++) await page.waitForTimeout(200);
@@ -93,7 +93,7 @@ try {
   for (let attempt=0; attempt<20 && !(await read()).some(row => row.event_name === 'publication_preview_viewed' && row.attributes.viewerContext === 'management'); attempt++) await page.waitForTimeout(100);
   assert.ok((await read()).some(row => row.event_name === 'publication_preview_viewed' && row.publication_id === draft.id && row.attributes.viewerContext === 'management'), 'management preview has its own context');
   await page.route('**/api/analytics/events', route => route.abort());
-  await page.goto(h.origin);
+  await page.goto(`${h.origin}/?discover=catalog`);
   await page.getByRole('textbox', { name:'搜索应用名称、用途或能力' }).fill('application');
   await page.getByTestId('search-button').click();
   await page.getByTestId('app-card').first().waitFor();

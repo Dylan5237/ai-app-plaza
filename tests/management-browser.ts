@@ -37,7 +37,7 @@ try {
   await page.keyboard.press('Escape'); await page.getByTestId('publish-contract-dialog').waitFor({ state: 'hidden' }); await page.keyboard.press('Escape'); await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
   report.checks.push('admin details, full documents, source, Agent instructions and update prompt all use the existing components and dialogs');
 
-  await page.goto(`${h.origin}/?app=${seeds.update.appId}`); await page.getByTestId('app-detail').waitFor(); assert.equal(await page.getByTestId('publish-update').count(), 0); await page.keyboard.press('Escape'); await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
+  await page.goto(`${h.origin}/?discover=catalog&app=${seeds.update.appId}`); await page.getByTestId('app-detail').waitFor(); assert.equal(await page.getByTestId('publish-update').count(), 0); await page.keyboard.press('Escape'); await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
   await page.getByTestId('share-button').click(); await page.getByTestId('copy-publish-prompt').waitFor(); assert.equal(await page.getByTestId('update-target').count(), 0); assert.equal(await page.getByTestId('publish-contract-dialog').locator('input,textarea').count(), 0);
   assert.equal(await page.getByTestId('publish-contract-dialog').getByRole('link', { name: '查看 GitLab 仓库（统一托管空间）', exact: true }).count(), 1, 'the managed hosting link names its GitLab destination');
   report.checks.push('public plaza has no author update action and first sharing retains the original prompt flow');

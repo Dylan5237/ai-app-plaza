@@ -29,6 +29,7 @@ test('dashboard uses actual events, respects public scope, time and telemetry bo
   await event('catalog_results_viewed',{trigger:'search',hasQuery:true,resultCount:0,discoveryRequestId:randomUUID()});
   await event('catalog_results_viewed',{trigger:'filter',hasQuery:false,resultCount:1,discoveryRequestId:randomUUID()},{session:randomUUID()});
   await event('app_card_exposed',{},selected);
+  await event('app_card_exposed',{pageContext:'search',section:'search'},{...selected,session:randomUUID()});
   await event('app_detail_viewed',{entryContext:'card'},selected);
   await event('app_entry_clicked',{entryKind:'web'},{...selected,heat:true});
   await event('app_entry_clicked',{entryKind:'web'},selected);
@@ -54,7 +55,7 @@ test('dashboard uses actual events, respects public scope, time and telemetry bo
   assert.deepEqual(result.summary,{discoverySessions:1,usageSessions:1,discoveryVisitors:1,sessionOnly:0,searches:null,emptySearches:null,webActions:1,agentActions:1});
   assert.equal(result.apps?.length,1);
   assert.equal(result.apps?.[0].id,published.appId);
-  assert.equal(result.apps?.[0].exposure,1);
+  assert.equal(result.apps?.[0].exposure,2,'exposures from the smart-search tab count like catalog ones');
   assert.equal(result.apps?.[0].details,1);
   assert.equal(result.apps?.[0].webSessions,1);
   assert.equal(result.apps?.[0].agentSessions,1);
