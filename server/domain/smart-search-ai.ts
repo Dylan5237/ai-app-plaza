@@ -6,7 +6,7 @@ export interface SmartSearchCandidate { id: string; name: string; summary: strin
 
 export interface SmartSearchAiRanking { picks: { id: string; why: string }[]; question: string | null }
 
-const SYSTEM_PROMPT = `你是 AI 应用广场的检索助手。用户描述要完成的工作，你从给定候选应用中选择最适用的，并说明理由。
+export const DEFAULT_SMART_SEARCH_PROMPT = `你是 AI 应用广场的检索助手。用户描述要完成的工作，你从给定候选应用中选择最适用的，并说明理由。
 只输出一个 JSON 对象，不要输出其他内容：
 {"picks":[{"id":"候选 id","why":"不超过40个汉字的理由"}],"question":null}
 规则：
@@ -36,6 +36,11 @@ export function sanitizeSmartSearchInput(query: string, candidates: SmartSearchC
   };
 }
 
+/** A super administrator may override the default prompt; strip transport-unsafe characters. */
+export function sanitizeSmartSearchPrompt(template: string): string {
+  return untrusted(template, 6000);
+}
+
 // The model's question is untrusted output too: never relay anything that could coax
 // credentials or lure the user off-site.
 const FORBIDDEN_QUESTION = /(密码|口令|令牌|秘钥|密钥|验证码|身份证|银行卡|token|https?:\/\/|www\.)/i;
@@ -56,7 +61,7 @@ function parseContent(content: string) {
   return JSON.parse(fenced ? fenced[1] : content);
 }
 
-export async function rankSmartSearchCandidates(config: SmartSearchAiConfig, query: string, candidates: SmartSearchCandidate[]): Promise<SmartSearchAiRanking> {
+export async function rankSmartSearchCandidates(config: SmartSearchAiConfig, query: string, candidates: SmartSearchCandidate[], systemPrompt: string = DEFAULT_SMART_SEARCH_PROMPT): Promise<SmartSearchAiRanking> {
   const safe = sanitizeSmartSearchInput(query, candidates);
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -67,7 +72,7 @@ export async function rankSmartSearchCandidates(config: SmartSearchAiConfig, que
       max_tokens: 1000,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: JSON.stringify({ task: safe.query, candidates: safe.candidates }) },
       ],
     }),

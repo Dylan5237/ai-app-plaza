@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { startHarness } from './helpers/harness.js';
+import { startIdentityHarness } from './helpers/identity-fixture.js';
 import { seedTagCatalog } from './helpers/tag-catalog.js';
 import { startLlmFixture } from './helpers/llm-fixture.js';
 
@@ -235,6 +236,57 @@ try {
     await aiPage?.close();
     await aiHarness?.close();
     await llm?.close();
+  }
+
+  // Super administrators configure the system prompt in the admin center; the change
+  // takes effect for subsequent searches and members never see the page.
+  const promptLlm = await startLlmFixture();
+  const promptHarness = await startIdentityHarness('', { superAdminAccount: 'fixture.admin', smartSearchAi: { baseUrl: promptLlm.url, model: 'deepseek-flash', apiKey: 'fixture-key', timeoutMs: 3000 } });
+  let promptPage: Awaited<ReturnType<typeof browser.newPage>> | null = null;
+  let memberPage: Awaited<ReturnType<typeof browser.newPage>> | null = null;
+  try {
+    const promptSeeded = await seedTagCatalog(promptHarness.db, promptHarness.config.audience, ['工时日报'], 600);
+    const promptManifest = { ...promptSeeded.source, name: '工时日报助手', summary: '整理并归档工时日报。', tags: ['工时日报'] };
+    await promptHarness.db.query('UPDATE published_snapshots SET manifest = $2::jsonb, search_text = $3 WHERE id = $1', [promptSeeded.snapshotId, JSON.stringify(promptManifest), '日报 工时 整理']);
+    promptPage = await browser.newPage();
+    promptPage.on('pageerror', error => errors.push(error.message));
+    await promptPage.goto(`${promptHarness.origin}/fixture/portal`);
+    await promptPage.getByRole('button', { name: '以测试名册管理员进入', exact: true }).click();
+    await promptPage.getByRole('button', { name: '退出广场', exact: true }).waitFor();
+    await promptPage.goto(`${promptHarness.origin}/?space=smart-search`);
+    await promptPage.getByRole('heading', { name: '系统提示词', exact: true }).waitFor();
+    assert.match(await promptPage.locator('.status-chip').innerText(), /使用默认/);
+    const editor = promptPage.getByRole('textbox', { name: '系统提示词模板正文' });
+    await editor.fill('浏览器自定义提示：只输出空 JSON。');
+    await promptPage.getByTestId('prompt-save').click();
+    await promptPage.getByText('提示词已保存，后续检索立即生效。').waitFor();
+    assert.match(await promptPage.locator('.status-chip').innerText(), /已自定义/);
+    promptLlm.state.reply = () => ({ picks: [{ id: promptSeeded.appId, why: '自定义理由。' }], question: null });
+    await promptPage.goto(promptHarness.origin);
+    await promptPage.getByRole('textbox', { name: '描述你想完成的任务' }).fill('整理日报');
+    await promptPage.getByRole('button', { name: '发送', exact: true }).click();
+    await promptPage.locator('.smart-search [data-active] .recommendation').first().waitFor();
+    assert.equal(promptLlm.state.requests.at(-1)!.body.messages[0].content, '浏览器自定义提示：只输出空 JSON。', 'a saved prompt reaches the model call');
+    await promptPage.goto(`${promptHarness.origin}/?space=smart-search`);
+    await promptPage.getByTestId('prompt-reset').click();
+    await promptPage.locator('.el-message-box').getByRole('button', { name: '恢复默认', exact: true }).click();
+    await promptPage.getByText('已恢复默认提示词，后续检索立即使用默认模板。').waitFor();
+    assert.match(await promptPage.locator('.status-chip').innerText(), /使用默认/);
+
+    memberPage = await browser.newPage();
+    memberPage.on('pageerror', error => errors.push(error.message));
+    await memberPage.goto(`${promptHarness.origin}/fixture/portal`);
+    await memberPage.getByRole('button', { name: '以测试普通成员进入', exact: true }).click();
+    await memberPage.getByRole('button', { name: '退出广场', exact: true }).waitFor();
+    assert.equal(await memberPage.getByRole('link', { name: '智能查找', exact: true }).count(), 0, 'members do not see the admin entry');
+    await memberPage.goto(`${promptHarness.origin}/?space=smart-search`);
+    await memberPage.getByRole('heading', { name: '当前身份没有此页面权限', exact: true }).waitFor();
+    report.checks.push('prompt-config');
+  } finally {
+    await promptPage?.close();
+    await memberPage?.close();
+    await promptHarness.close();
+    await promptLlm.close();
   }
 
   assert.deepEqual(errors, []);

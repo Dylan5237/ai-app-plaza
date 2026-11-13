@@ -1,5 +1,6 @@
 import { appAccessPredicate, requireAppAction, initializePrivateApplication, accessRecord } from './app-access.js';
 import { rankSmartSearchCandidates, sanitizeModelQuestion, type SmartSearchAiConfig } from './smart-search-ai.js';
+import { effectiveSmartSearchPrompt } from './smart-search-prompt.js';
 import {
   createCipheriv,
   createDecipheriv,
@@ -1233,7 +1234,8 @@ export function createService(config: ServiceConfig): PlazaService {
             const item = publicCard(record);
             return { id: item.id, name: item.manifest?.name ?? '', summary: item.manifest?.summary ?? '', tags: item.tags ?? [] };
           });
-          const ranking = await rankSmartSearchCandidates(ai, text, candidates);
+          const systemPrompt = await effectiveSmartSearchPrompt(config.db);
+          const ranking = await rankSmartSearchCandidates(ai, text, candidates, systemPrompt);
           const byId = new Map(modelRecords.map(record => [record.id, toCard(record)]));
           const matches: Record<string, string[]> = {};
           const reasons: Record<string, string> = {};

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Database } from './domain/database.js';
 import { createAppAccessService } from './domain/app-access.js';
 import { administratorUsers, setAdministrator } from './domain/platform-access.js';
+import { smartSearchPromptView, setSmartSearchPrompt } from './domain/smart-search-prompt.js';
 import type { IdentityHttp } from './identity.js';
 
 export function registerApplicationAccess(app: FastifyInstance, db: Database, audience: string, identity: IdentityHttp) {
@@ -54,5 +55,11 @@ export function registerApplicationAccess(app: FastifyInstance, db: Database, au
     const { confirmed: _, ...input } = mutation.extend({ userId: z.string().uuid(), role: z.enum(['member', 'administrator', 'super_administrator']),
       revision: z.number().int().nonnegative() }).strict().parse(request.body);
     return setAdministrator(db, actorId, input);
+  });
+  app.get('/api/access/smart-search-prompt', async request => smartSearchPromptView(db, await user(request)));
+  app.put('/api/access/smart-search-prompt', async request => {
+    const actorId = await user(request, true);
+    const { confirmed: _, ...input } = mutation.extend({ template: z.string().min(1).max(6000).nullable() }).strict().parse(request.body);
+    return setSmartSearchPrompt(db, actorId, input);
   });
 }
