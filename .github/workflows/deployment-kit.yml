@@ -1,0 +1,26 @@
+name: Tiangong deployment kit
+
+on:
+  pull_request:
+    paths: ['ops/tiangong/**', 'ops/trial/package.py', '.github/workflows/deployment-kit.yml']
+  push:
+    branches: [main]
+    paths: ['ops/tiangong/**', 'ops/trial/package.py', '.github/workflows/deployment-kit.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  offline-deployment-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install isolated runner test tools
+        run: sudo apt-get update && sudo apt-get install -y nginx-light openssl
+      - name: Validate deployment helpers and native proxy contracts
+        env:
+          REQUIRE_NGINX: '1'
+        run: python3 -B -m unittest discover -s ops/tiangong/tests -p 'test_*.py' -v
