@@ -26,7 +26,9 @@ const fallbackActive = path === '/admin'
             ? 'dashboard'
             : space === 'administrators'
               ? 'admins'
-              : discoverTabFromParam(params.get('discover'))
+              : space === 'smart-search'
+                ? 'smart-search'
+                : discoverTabFromParam(params.get('discover'))
 const active = computed(() => props.active || fallbackActive)
 </script>
 
@@ -74,6 +76,9 @@ const active = computed(() => props.active || fallbackActive)
         <button v-if="identity?.user?.identityAdmin" class="rail-item" :class="{ active: active === 'groups' }" type="button" @click="emit('groups')">
           <PlazaIcon name="groups" /><span>成员与小组</span>
         </button>
+        <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'smart-search' }" :aria-current="active === 'smart-search' ? 'page' : undefined" :href="publicPath('/?space=smart-search')">
+          <PlazaIcon name="agent" /><span>智能查找</span>
+        </a>
         <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'admins' }" :aria-current="active === 'admins' ? 'page' : undefined" :href="publicPath('/?space=administrators')">
           <PlazaIcon name="admins" /><span>管理员配置</span>
         </a>

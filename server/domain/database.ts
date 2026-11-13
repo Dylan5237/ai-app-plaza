@@ -233,6 +233,12 @@ const MIGRATIONS = [
     detected_at timestamptz NOT NULL,
     PRIMARY KEY(environment,site_instance_id,publication_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS plaza_smart_search_prompt (
+    purpose text PRIMARY KEY,
+    template text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    updated_by uuid
+  )`,
   ...IDENTITY_SCHEMA,
   ...APP_ACCESS_SCHEMA,
 ];
