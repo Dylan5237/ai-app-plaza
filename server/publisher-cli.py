@@ -146,16 +146,25 @@ SAFE_OPERATION_STATUSES = {"prepared", "project_ready", "commit_ready", "tag_rea
 
 
 class CliError(Exception):
-    def __init__(self, message: str, diagnostic: dict[str, Any] | None = None):
+    def __init__(self, message: str, diagnostic: dict[str, Any] | None = None, *, http_status: int | None = None):
         super().__init__(message)
         self.diagnostic = diagnostic
+        self.http_status = http_status
+
+
+def _local_error(message: str, code: str, rule_id: str, *, field: str | None = None,
+                 path: str | None = None, line: int | None = None, column: int | None = None) -> CliError:
+    return CliError(message, {key: value for key, value in {
+        "code": code, "ruleId": rule_id, "field": field, "path": path, "line": line, "column": column,
+    }.items() if value is not None})
 
 
 def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise CliError("ai-app.json 存在重复字段。")
+            raise _local_error("ai-app.json 存在重复字段。", "MANIFEST_JSON_INVALID", "managed.bundle.manifest_json",
+                               path=MANIFEST_NAME, field="manifest")
         result[key] = value
     return result
 
@@ -165,64 +174,91 @@ def _load_manifest(raw: bytes) -> dict[str, Any]:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_without_duplicates)
     except CliError:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise CliError("ai-app.json 必须是有效 UTF-8 JSON。") from None
-    if not isinstance(value, dict) or value.get("schemaVersion") != "2":
-        raise CliError("ai-app.json 必须使用 schemaVersion 2。")
+    except UnicodeDecodeError:
+        raise _local_error("ai-app.json 必须是有效 UTF-8 JSON。", "MANIFEST_UTF8_INVALID", "managed.bundle.manifest_utf8",
+                           path=MANIFEST_NAME, field="manifest") from None
+    except json.JSONDecodeError as error:
+        raise _local_error("ai-app.json 必须是有效 UTF-8 JSON。", "MANIFEST_JSON_INVALID", "managed.bundle.manifest_json",
+                           path=MANIFEST_NAME, field="manifest", line=error.lineno, column=error.colno) from None
+    if not isinstance(value, dict):
+        raise _local_error("ai-app.json 必须是 JSON 对象。", "MANIFEST_INVALID", "managed.bundle.manifest",
+                           path=MANIFEST_NAME, field="manifest")
+    if value.get("schemaVersion") != "2":
+        raise _local_error("ai-app.json 必须使用 schemaVersion 2。", "SCHEMA_VERSION_UNSUPPORTED", "managed.bundle.schema_version",
+                           path=MANIFEST_NAME, field="schemaVersion")
     app_key = value.get("appKey")
     if not isinstance(app_key, str) or len(app_key) > 64 or not APP_KEY_RE.fullmatch(app_key):
-        raise CliError("ai-app.json 的 appKey 格式无效。")
+        raise _local_error("ai-app.json 的 appKey 格式无效。", "APP_KEY_INVALID", "managed.bundle.app_key",
+                           path=MANIFEST_NAME, field="appKey")
     version = value.get("projectVersion")
     if not isinstance(version, str) or len(version) > 80 or not VERSION_RE.fullmatch(version):
-        raise CliError("ai-app.json 必须填写有效的 projectVersion。")
+        raise _local_error("ai-app.json 必须填写有效的 projectVersion。", "PROJECT_VERSION_INVALID", "managed.bundle.project_version",
+                           path=MANIFEST_NAME, field="projectVersion")
     tags = value.get("tags")
     if not isinstance(tags, list) or len(tags) > 3:
-        raise CliError("单个应用最多 3 个能力标签，请保留核心能力并优先复用已有标签。")
+        raise _local_error("单个应用最多 3 个能力标签，请保留核心能力并优先复用已有标签。", "CAPABILITY_TAGS_INVALID", "managed.bundle.capability_tags",
+                           path=MANIFEST_NAME, field="tags")
     tag_keys: set[str] = set()
     for tag in tags:
         if not isinstance(tag, str) or not tag.strip() or len(tag) > 32:
-            raise CliError("能力标签须为 1 至 32 个字符的非空文本。")
+            raise _local_error("能力标签须为 1 至 32 个字符的非空文本。", "CAPABILITY_TAGS_INVALID", "managed.bundle.capability_tags",
+                               path=MANIFEST_NAME, field="tags")
         key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", tag).strip()).lower()
         if key in tag_keys:
-            raise CliError("标签规范化后不能重复。")
+            raise _local_error("标签规范化后不能重复。", "CAPABILITY_TAGS_INVALID", "managed.bundle.capability_tags",
+                               path=MANIFEST_NAME, field="tags")
         tag_keys.add(key)
     maintainers = value.get("maintainers")
     if not isinstance(maintainers, list) or not maintainers:
-        raise CliError("ai-app.json 必须填写作者中文姓名和英文姓名。")
-    for author in maintainers:
-        if not isinstance(author, dict) or any(
-            not isinstance(author.get(key), str) or not author[key].strip()
-            for key in ("name", "nameEn")
-        ):
-            raise CliError("每位作者都必须填写中文姓名和英文姓名；不会根据 Git 配置推测。")
+        raise _local_error("ai-app.json 必须填写作者中文姓名和英文姓名。", "MAINTAINER_NAME_REQUIRED", "managed.bundle.maintainer_name",
+                           path=MANIFEST_NAME, field="maintainers")
+    for index, author in enumerate(maintainers):
+        field = f"maintainers[{index}]"
+        if not isinstance(author, dict):
+            raise _local_error("每位作者都必须填写中文姓名和英文姓名；不会根据 Git 配置推测。", "MAINTAINER_NAME_REQUIRED", "managed.bundle.maintainer_name",
+                               path=MANIFEST_NAME, field=field)
+        for key in ("name", "nameEn"):
+            if not isinstance(author.get(key), str) or not author[key].strip():
+                raise _local_error("每位作者都必须填写中文姓名和英文姓名；不会根据 Git 配置推测。", "MAINTAINER_NAME_REQUIRED", "managed.bundle.maintainer_name",
+                                   path=MANIFEST_NAME, field=f"{field}.{key}")
     docs = value.get("docs")
     if not isinstance(docs, dict):
-        raise CliError("ai-app.json 必须声明 docs.readme 和 docs.usage。")
+        raise _local_error("ai-app.json 必须声明 docs.readme 和 docs.usage。", "MANIFEST_SCHEMA_INVALID", "managed.bundle.manifest_schema",
+                           path=MANIFEST_NAME, field="docs")
     required = [MANIFEST_NAME]
     for key in ("readme", "usage"):
         required.append(_repo_path(docs.get(key), f"docs.{key}"))
     entries = value.get("entries")
     if not isinstance(entries, list):
-        raise CliError("ai-app.json 的 entries 必须是数组。")
-    for entry in entries:
+        raise _local_error("ai-app.json 的 entries 必须是数组。", "MANIFEST_SCHEMA_INVALID", "managed.bundle.manifest_schema",
+                           path=MANIFEST_NAME, field="entries")
+    for index, entry in enumerate(entries):
         if isinstance(entry, dict) and entry.get("kind") == "agent":
-            required.append(_repo_path(entry.get("instructionsPath"), "entries.instructionsPath"))
+            required.append(_repo_path(entry.get("instructionsPath"), f"entries[{index}].instructionsPath"))
             distribution = entry.get("distribution")
             if distribution is not None:
                 if not isinstance(distribution, dict) or distribution.get("type") not in {"source", "artifact"} or not isinstance(distribution.get("files"), list) or not distribution["files"]:
-                    raise CliError("Agent 分发资料须声明类型及非空文件清单。")
-                required.extend(_repo_path(path, "entries.distribution.files") for path in distribution["files"])
+                    raise _local_error("Agent 分发资料须声明类型及非空文件清单。", "DISTRIBUTION_FILE_INVALID", "managed.bundle.distribution_invalid",
+                                       path=MANIFEST_NAME, field=f"entries[{index}].distribution")
+                required.extend(_repo_path(path, f"entries[{index}].distribution.files[{file_index}]")
+                                for file_index, path in enumerate(distribution["files"]))
     return {"manifest": value, "required": list(dict.fromkeys(required)), "appKey": app_key}
 
 
 def _repo_path(value: Any, label: str) -> str:
+    manifest_field = label.startswith(("docs.", "entries["))
+    field = label if manifest_field else "files[].path"
+    rule_id = "managed.bundle.document_path" if manifest_field else "managed.bundle.file_path"
     if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value or ":" in value:
-        raise CliError(f"{label} 必须是安全的仓库根相对路径。")
+        raise _local_error(f"{label} 必须是安全的仓库根相对路径。", "REPOSITORY_PATH_INVALID", rule_id,
+                           field=field, path=MANIFEST_NAME if manifest_field else None)
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise CliError(f"{label} 包含不允许的字符。")
+        raise _local_error(f"{label} 包含不允许的字符。", "REPOSITORY_PATH_INVALID", rule_id,
+                           field=field, path=MANIFEST_NAME if manifest_field else None)
     pieces = value.split("/")
     if any(piece in ("", ".", "..") for piece in pieces):
-        raise CliError(f"{label} 包含不安全的路径段。")
+        raise _local_error(f"{label} 包含不安全的路径段。", "REPOSITORY_PATH_INVALID", rule_id,
+                           field=field, path=MANIFEST_NAME if manifest_field else None)
     return str(PurePosixPath(*pieces))
 
 
@@ -281,7 +317,7 @@ def _candidate_paths(root: Path) -> set[str]:
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30,
             )
         except (OSError, subprocess.SubprocessError):
-            raise CliError("无法安全读取 Git 文件清单。") from None
+            raise _local_error("无法安全读取 Git 文件清单。", "LOCAL_FILE_LIST_FAILED", "managed.cli.file_list", field="files") from None
         raw_paths = result.stdout.split(b"\0")
         candidates: set[str] = set()
         for raw in raw_paths:
@@ -291,7 +327,8 @@ def _candidate_paths(root: Path) -> set[str]:
                 value = os.fsdecode(raw)
                 path = _repo_path(value, "Git 文件路径")
             except CliError:
-                raise CliError("Git 文件清单包含不能安全上传的路径；未开始上传。") from None
+                raise _local_error("Git 文件清单包含不能安全上传的路径；未开始上传。", "REPOSITORY_PATH_INVALID", "managed.bundle.file_path",
+                                   field="files[].path") from None
             if not _excluded(path):
                 candidates.add(path)
         return candidates
@@ -320,7 +357,8 @@ def _checked_path(root: Path, relative: str, *, required: bool) -> Path | None:
     path = _repo_path(relative, "文件路径")
     if _excluded(path):
         if required:
-            raise CliError(f"必需资料位于凭据或生成目录中，拒绝上传：{path}")
+            raise _local_error(f"必需资料位于凭据或生成目录中，拒绝上传：{path}", "FORBIDDEN_PATH", "managed.bundle.forbidden_path",
+                               path=path, field="files[].path")
         return None
     target = root
     for segment in path.split("/"):
@@ -329,25 +367,31 @@ def _checked_path(root: Path, relative: str, *, required: bool) -> Path | None:
             info = target.lstat()
         except FileNotFoundError:
             if required:
-                raise CliError(f"ai-app.json 引用的资料不存在：{path}") from None
+                code, rule = ("MANIFEST_MISSING", "manifest_missing") if path == MANIFEST_NAME else ("DOCUMENT_MISSING", "document_missing")
+                raise _local_error(f"ai-app.json 引用的资料不存在：{path}", code, f"managed.bundle.{rule}",
+                                   path=path, field="manifest" if path == MANIFEST_NAME else "files[].path") from None
             return None
         except OSError:
             if required:
-                raise CliError(f"无法读取 ai-app.json 引用的资料：{path}") from None
+                raise _local_error(f"无法读取 ai-app.json 引用的资料：{path}", "LOCAL_READ_FAILED", "managed.cli.local_read",
+                                   path=path, field="files[].path") from None
             return None
         if _is_reparse_or_link(target, info):
             if required:
-                raise CliError(f"拒绝跟随符号链接或 Windows junction：{path}")
+                raise _local_error(f"拒绝跟随符号链接或 Windows junction：{path}", "LOCAL_FILE_TYPE_INVALID", "managed.cli.file_type",
+                                   path=path, field="files[].path")
             return None
     try:
         info = target.stat()
     except OSError:
         if required:
-            raise CliError(f"无法读取 ai-app.json 引用的资料：{path}") from None
+            raise _local_error(f"无法读取 ai-app.json 引用的资料：{path}", "LOCAL_READ_FAILED", "managed.cli.local_read",
+                               path=path, field="files[].path") from None
         return None
     if not stat.S_ISREG(info.st_mode):
         if required:
-            raise CliError(f"ai-app.json 引用的资料不是普通文件：{path}")
+            raise _local_error(f"ai-app.json 引用的资料不是普通文件：{path}", "LOCAL_FILE_TYPE_INVALID", "managed.cli.file_type",
+                               path=path, field="files[].path")
         return None
     return target
 
@@ -359,15 +403,18 @@ def _read_file(root: Path, relative: str, *, required: bool) -> bytes | None:
     try:
         before = target.lstat()
         if before.st_size > MAX_FILE_BYTES:
-            raise CliError(f"文件超过单文件 5 MiB 限制：{relative}")
+            raise _local_error(f"文件超过单文件 5 MiB 限制：{relative}", "FILE_SIZE_EXCEEDED", "managed.bundle.file_size",
+                               path=relative, field="files[].content")
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(target, flags)
         try:
             opened = os.fstat(fd)
             if not stat.S_ISREG(opened.st_mode) or _is_reparse_or_link(target, before):
-                raise CliError(f"文件类型在读取时发生变化，拒绝上传：{relative}")
+                raise _local_error(f"文件类型在读取时发生变化，拒绝上传：{relative}", "LOCAL_FILE_CHANGED", "managed.cli.file_changed",
+                                   path=relative, field="files[].path")
             if before.st_ino and opened.st_ino and (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                raise CliError(f"文件在读取时发生变化，拒绝上传：{relative}")
+                raise _local_error(f"文件在读取时发生变化，拒绝上传：{relative}", "LOCAL_FILE_CHANGED", "managed.cli.file_changed",
+                                   path=relative, field="files[].path")
             with os.fdopen(fd, "rb") as stream:
                 fd = -1
                 raw = stream.read(MAX_FILE_BYTES + 1)
@@ -378,10 +425,12 @@ def _read_file(root: Path, relative: str, *, required: bool) -> bytes | None:
         raise
     except OSError:
         if required:
-            raise CliError(f"无法读取文件：{relative}") from None
+            raise _local_error(f"无法读取文件：{relative}", "LOCAL_READ_FAILED", "managed.cli.local_read",
+                               path=relative, field="files[].path") from None
         return None
     if len(raw) > MAX_FILE_BYTES:
-        raise CliError(f"文件超过单文件 5 MiB 限制：{relative}")
+        raise _local_error(f"文件超过单文件 5 MiB 限制：{relative}", "FILE_SIZE_EXCEEDED", "managed.bundle.file_size",
+                           path=relative, field="files[].content")
     return raw
 
 
@@ -1003,7 +1052,7 @@ def _is_essential_source(path: str) -> bool:
 def _collect(root: Path) -> tuple[dict[str, Any], list[dict[str, str]], str, int, int, list[str]]:
     root_info = root.lstat()
     if _is_reparse_or_link(root, root_info) or not stat.S_ISDIR(root_info.st_mode):
-        raise CliError("项目根目录必须是普通目录，不能是符号链接或 junction。")
+        raise _local_error("项目根目录必须是普通目录，不能是符号链接或 junction。", "LOCAL_PROJECT_INVALID", "managed.cli.project", field="project")
     raw_manifest = _read_file(root, MANIFEST_NAME, required=True)
     assert raw_manifest is not None
     decoded = _load_manifest(raw_manifest)
@@ -1018,24 +1067,27 @@ def _collect(root: Path) -> tuple[dict[str, Any], list[dict[str, str]], str, int
         raw = _read_file(root, relative, required=required)
         if raw is None:
             if _is_essential_source(relative):
-                raise CliError(f"必要源码无法安全读取：{relative}；请调整 AI 的项目范围后重试。")
+                raise _local_error(f"必要源码无法安全读取：{relative}；请调整 AI 的项目范围后重试。", "LOCAL_READ_FAILED", "managed.cli.local_read",
+                                   path=relative, field="files[].path")
             skipped.append(relative)
             continue
         if _looks_secret(raw, relative):
             if required or _is_essential_source(relative):
-                raise CliError(f"必要源码或资料疑似包含真实密钥或 token：{relative}；请调整 AI 的项目范围后重试。")
+                raise _local_error(f"必要源码或资料疑似包含真实密钥或 token：{relative}；请调整 AI 的项目范围后重试。", "SECRET_MARKER_FOUND", "managed.bundle.secret_marker",
+                                   path=relative, field="files[].content")
             skipped.append(relative)
             continue
         total += len(raw)
         if total > MAX_TOTAL_BYTES:
-            raise CliError("项目资料超过总计 20 MiB 限制；未开始上传。")
+            raise _local_error("项目资料超过总计 20 MiB 限制；未开始上传。", "BUNDLE_SIZE_EXCEEDED", "managed.bundle.bundle_size", field="files")
         sizes.append((relative, raw))
         if len(sizes) > MAX_FILES:
-            raise CliError("项目资料超过 1000 个文件限制；未开始上传。")
+            raise _local_error("项目资料超过 1000 个文件限制；未开始上传。", "FILE_COUNT_INVALID", "managed.bundle.file_count", field="files")
     present = {name for name, _ in sizes}
     missing = [name for name in decoded["required"] if name not in present]
     if missing:
-        raise CliError(f"必需资料未能安全收集：{missing[0]}")
+        raise _local_error(f"必需资料未能安全收集：{missing[0]}", "LOCAL_READ_FAILED", "managed.cli.local_read",
+                           path=missing[0], field="files[].path")
     digest_parts = {
         "appKey": decoded["appKey"],
         "manifestPath": MANIFEST_NAME,
@@ -1236,6 +1288,7 @@ def _request(origin_parts: tuple[str, str, str, int | None], method: str, path: 
              headers: dict[str, str], body: bytes | None = None) -> tuple[int, bytes]:
     normalized, scheme, host, port = origin_parts
     connection: http.client.HTTPConnection
+    response_status: int | None = None
     try:
         if scheme == "https":
             connection = http.client.HTTPSConnection(host, port=port, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -1244,16 +1297,19 @@ def _request(origin_parts: tuple[str, str, str, int | None], method: str, path: 
         try:
             connection.request(method, urlparse(normalized).path + path, body=body, headers=headers)
             response = connection.getresponse()
+            response_status = response.status
             response_body = response.read(MAX_RESPONSE_BYTES + 1)
             if len(response_body) > MAX_RESPONSE_BYTES:
-                raise CliError("门户响应超过允许大小。")
+                raise CliError("门户响应超过允许大小。", {"code": "PORTAL_RESPONSE_INVALID", "ruleId": "managed.cli.portal_response"},
+                               http_status=response_status)
             return response.status, response_body
         finally:
             connection.close()
     except CliError:
         raise
     except (OSError, http.client.HTTPException, TimeoutError):
-        raise CliError("门户连接失败或超时；receipt 已保留，请使用相同项目内容重试。") from None
+        raise CliError("门户连接失败或超时；receipt 已保留，请使用相同项目内容重试。",
+                       {"code": "PORTAL_UNAVAILABLE", "ruleId": "managed.cli.portal"}, http_status=response_status) from None
 
 
 def _json_response(raw: bytes) -> dict[str, Any]:
@@ -1308,8 +1364,11 @@ def _safe_diagnostic_field(value: Any) -> str | None:
     return None
 
 
-def _fallback_diagnostic(code: str = "VALIDATION_FAILED", rule_id: str = "managed.cli.validation_failed") -> dict[str, str]:
-    return {"code": code, "ruleId": rule_id, "suggestion": "按对应字段提示修正资料后重新校验。"}
+def _fallback_diagnostic(code: str = "PORTAL_DIAGNOSTICS_UNAVAILABLE", rule_id: str = "managed.cli.portal_diagnostics",
+                         *, suggestion: str | None = None) -> dict[str, str]:
+    return {"code": code, "ruleId": rule_id, "suggestion": suggestion or (
+        "门户未提供可安全展示的字段诊断。请保留当前资料，请门户维护人核对预检接口、部署版本和服务端日志后再重试。"
+    )}
 
 
 def _sanitize_server_diagnostics(raw: bytes) -> list[dict[str, Any]]:
@@ -1350,8 +1409,18 @@ def _sanitize_server_diagnostics(raw: bytes) -> list[dict[str, Any]]:
             "每个应用最多使用 3 个非空且规范化后唯一的标签。",
             "使用有效的 MAJOR.MINOR.PATCH 版本号。",
             "修正 JSON 语法并移除重复键后重新校验。",
+            "向作者确认并填写双语姓名，不要根据 GitLab 或 Git 配置推测。",
+            "将安装与升级步骤修订为广场分发包，重新校验。",
+            "补齐可用的安装依赖后重新校验。",
+            "补齐清单中的必要文件后重新校验。",
+            "移除凭据或本地配置路径。",
+            "检查文件大小、LFS 指针及疑似凭据后重新校验。",
+            "从当前目录标签列表中选择规范名称后重新校验。",
+            "删除凭据或私钥，改用安全的外部存储后重新校验。",
         }:
             result["suggestion"] = suggestion
+        elif not safe_path and not safe_field:
+            result["suggestion"] = "门户返回了该校验规则，但未提供可安全展示的字段或路径。请保留当前资料，请门户维护人核对服务端诊断后再修正并重试。"
         else:
             result["suggestion"] = "按对应字段提示修正资料后重新校验。"
         sanitized.append(result)
@@ -1359,59 +1428,52 @@ def _sanitize_server_diagnostics(raw: bytes) -> list[dict[str, Any]]:
 
 
 def _local_diagnostic(error: CliError) -> dict[str, Any]:
-    if error.diagnostic:
-        value = dict(error.diagnostic)
-        path_value = _safe_diagnostic_path(value.get("path"))
-        field_value = _safe_diagnostic_field(value.get("field"))
-        result = {"code": value.get("code", "LOCAL_VALIDATION_FAILED"),
-                  "ruleId": value.get("ruleId", "managed.cli.local_validation")}
-        if path_value:
-            result["path"] = path_value
-        if field_value:
-            result["field"] = field_value
-        for key in ("line", "column"):
-            number = value.get(key)
-            if isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= 1_000_000:
-                result[key] = number
-        result["suggestion"] = "修正本地资料后重新校验。"
-        return result
-
-    message = str(error)
-    code, rule_id, field_value = "LOCAL_VALIDATION_FAILED", "managed.cli.local_validation", None
-    if "疑似包含真实密钥或 token" in message:
-        code, rule_id = "SECRET_MARKER_FOUND", "managed.bundle.secret_marker"
-    elif "最多 3 个" in message or "标签规范化后不能重复" in message or "能力标签须" in message:
-        code, rule_id, field_value = "CAPABILITY_TAGS_INVALID", "managed.bundle.capability_tags", "tags"
-    elif "超过总计 20 MiB" in message:
-        code, rule_id = "BUNDLE_SIZE_EXCEEDED", "managed.bundle.bundle_size"
-    elif "超过单文件 5 MiB" in message:
-        code, rule_id = "FILE_SIZE_EXCEEDED", "managed.bundle.file_size"
-    elif "不是有效 UTF-8 JSON" in message:
-        code, rule_id, field_value = "MANIFEST_UTF8_INVALID", "managed.bundle.manifest_utf8", "manifest"
-    elif "重复字段" in message or "必须是有效 UTF-8 JSON" in message:
-        code, rule_id, field_value = "MANIFEST_JSON_INVALID", "managed.bundle.manifest_json", "manifest"
-    elif "schemaVersion 2" in message:
-        code, rule_id, field_value = "SCHEMA_VERSION_UNSUPPORTED", "managed.bundle.schema_version", "schemaVersion"
-    elif "projectVersion" in message:
-        code, rule_id, field_value = "PROJECT_VERSION_INVALID", "managed.bundle.project_version", "projectVersion"
-    elif "appKey" in message:
-        code, rule_id, field_value = "APP_KEY_INVALID", "managed.bundle.app_key", "appKey"
-
-    path_value = None
-    if code == "SECRET_MARKER_FOUND":
-        candidate = re.search(r"：([^；]+)", message)
-        path_value = _safe_diagnostic_path(candidate.group(1).strip()) if candidate else None
-    elif message.startswith(("必要源码无法安全读取：", "必要源码或资料疑似包含真实密钥或 token：", "必需资料未能安全收集：")):
-        candidate = re.search(r"：([^；]+)", message)
-        path_value = _safe_diagnostic_path(candidate.group(1).strip()) if candidate else None
-    if field_value:
-        field_value = _safe_diagnostic_field(field_value)
-    result: dict[str, Any] = {"code": code, "ruleId": rule_id}
+    value = dict(error.diagnostic or {})
+    if not value:
+        for option, field in (("--origin", "origin"), ("--project", "project"),
+                              ("--managed-app-id", "managedAppId"), ("--expected-revision", "expectedAppRevision")):
+            if str(error).startswith(option):
+                value = {"code": "LOCAL_ARGUMENT_INVALID", "ruleId": "managed.cli.arguments", "field": field}
+                break
+    code = value.get("code", "LOCAL_VALIDATION_FAILED")
+    suggestions = {
+        "MAINTAINER_NAME_REQUIRED": "向作者确认中文姓名和英文全名或完整拼音，并在 maintainers 中为每位作者填写 name 和 nameEn；不要从 Git/GitLab 配置推测。",
+        "MANIFEST_UTF8_INVALID": "将 ai-app.json 保存为有效 UTF-8 文本后重新校验。",
+        "MANIFEST_JSON_INVALID": "修正 ai-app.json 的 JSON 语法并移除重复字段；如有行列位置，按该位置检查。",
+        "MANIFEST_INVALID": "将 ai-app.json 改为符合发布契约的 JSON 对象后重新校验。",
+        "MANIFEST_SCHEMA_INVALID": "按所列字段核对 ai-app.json：docs 需声明 readme 和 usage，entries 需为入口数组。",
+        "SCHEMA_VERSION_UNSUPPORTED": "将 ai-app.json 升级到 schemaVersion 2 后重新校验。",
+        "APP_KEY_INVALID": "在 ai-app.json 的 appKey 中使用小写字母、数字和单个连字符，总长度不超过 64。",
+        "PROJECT_VERSION_INVALID": "在 projectVersion 中填写有效的 MAJOR.MINOR.PATCH，可带 v 前缀和合法预发布号。",
+        "CAPABILITY_TAGS_INVALID": "在 tags 中保留最多 3 个非空且规范化后唯一的标签，每项为 1 至 32 个字符。",
+        "REPOSITORY_PATH_INVALID": "将所列字段改为项目根目录下的安全相对路径；使用 / 分隔，不含 ..、绝对路径或 URL。",
+        "MANIFEST_MISSING": "在 --project 指定的项目根目录中补齐 ai-app.json，或修正 --project 后重新校验。",
+        "DOCUMENT_MISSING": "补齐所列相对路径的文件，或修正 ai-app.json 中 docs/entries 的引用后重新校验。",
+        "DISTRIBUTION_FILE_INVALID": "为该 Agent 的 distribution 声明 type（source 或 artifact）及非空 files 文件路径清单。",
+        "FORBIDDEN_PATH": "将必需的共享资料放在允许发布的项目目录内，并修正 Manifest 引用；不要上传凭据或本地配置。",
+        "SECRET_MARKER_FOUND": "检查所列文件，移除真实凭据并改用运行时配置，或调整项目范围后重新校验；不要关闭密钥检查。",
+        "FILE_SIZE_EXCEEDED": "精简所列文件至不超过 5 MiB，或调整项目范围后重新校验。",
+        "BUNDLE_SIZE_EXCEEDED": "精简发布项目范围，使文件总大小不超过 20 MiB 后重新校验。",
+        "FILE_COUNT_INVALID": "精简发布项目范围，使文件数量不超过 1000 后重新校验。",
+        "LOCAL_READ_FAILED": "检查本地文件是否存在、读取权限和项目范围，保持必需源码与共享说明完整后重新校验。",
+        "LOCAL_FILE_TYPE_INVALID": "将必需资料放在项目内的普通文件中并修正引用，不要使用符号链接或 Windows junction。",
+        "LOCAL_FILE_CHANGED": "等待文件写入完成，确认文件未被替换后重新校验。",
+        "LOCAL_FILE_LIST_FAILED": "检查项目 Git 状态与本地读取权限，确认文件清单可读取后重新校验。",
+        "LOCAL_PROJECT_INVALID": "将 --project 指向可读取的普通项目目录，路径不能经过符号链接或 Windows junction。",
+        "LOCAL_ARGUMENT_INVALID": "核对所列命令参数与 --help；--project 使用可读取的绝对目录，--origin 使用门户入口地址。",
+    }
+    path_value = _safe_diagnostic_path(value.get("path"))
+    field_value = _safe_diagnostic_field(value.get("field"))
+    result: dict[str, Any] = {"code": code, "ruleId": value.get("ruleId", "managed.cli.local_validation")}
     if path_value:
         result["path"] = path_value
     if field_value:
         result["field"] = field_value
-    result["suggestion"] = "修正本地资料后重新校验。"
+    for key in ("line", "column"):
+        number = value.get(key)
+        if isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= 1_000_000:
+            result[key] = number
+    result["suggestion"] = suggestions.get(code, "本地检查未完成；请核对命令参数、项目资料与本地读取权限后重新校验。")
     return result
 
 
@@ -1863,6 +1925,38 @@ def _publish_output(details: dict[str, Any], complete: bool) -> dict[str, Any]:
     return _recovery_required_output(managed_id=details.get("managedAppId"))
 
 
+def _validation_failure(stage: str, diagnostics: list[dict[str, Any]], *, http_status: int | None = None) -> int:
+    result: dict[str, Any] = {"status": "validation_failed", "published": False, "sourceUploaded": False,
+                              "stage": stage, "diagnostics": diagnostics}
+    if http_status is not None:
+        result["httpStatus"] = http_status
+    _print_json(result)
+    return 2
+
+
+def _portal_http_suggestion(status: int) -> str:
+    if status in (404, 405):
+        return (f"预检接口返回 HTTP {status}。请核对 --origin 是否为门户入口并获取当前官方发布工具；"
+                "请门户维护人核对挂载路径、代理路由与部署版本后重试，无需先修改项目资料。")
+    if status in (401, 403):
+        return (f"门户拒绝访问预检接口（HTTP {status}）。请核对门户访问方式；"
+                "请门户维护人检查接口访问策略和代理配置，无需先修改项目资料。")
+    if status == 413:
+        return ("预检请求被以 HTTP 413 拒绝。请门户维护人核对代理和接口的请求大小限制；"
+                "再按确认后的限制调整发布范围并重试。")
+    if status == 429:
+        return "预检接口返回 HTTP 429。请稍后重试；若持续出现，请门户维护人核对接口限流配置，无需先修改项目资料。"
+    if 300 <= status < 400:
+        return (f"预检接口返回 HTTP {status}，工具未跟随跳转。请核对 --origin 的最终门户入口；"
+                "请门户维护人检查代理跳转和路由配置，无需先修改项目资料。")
+    if status >= 500:
+        return (f"预检接口返回 HTTP {status}。请稍后重试；若持续失败，请门户维护人按发生时间核对网关错误日志，"
+                "检查请求体临时目录权限与上游服务；"
+                "当前响应不能确定具体故障原因，无需先修改项目资料。")
+    return (f"预检接口返回 HTTP {status}，未获得约定的预检结果。请保留当前资料，"
+            "请门户维护人核对接口、部署版本和服务端日志后重试。")
+
+
 def _run_validate(origin_parts: tuple[str, str, str, int | None], candidate: dict[str, Any]) -> int:
     try:
         status, raw = _request(
@@ -1870,10 +1964,16 @@ def _run_validate(origin_parts: tuple[str, str, str, int | None], candidate: dic
             {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"},
             json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
         )
-    except CliError:
-        _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
-                     "diagnostics": [_fallback_diagnostic("PORTAL_UNAVAILABLE", "managed.cli.portal")]})
-        return 2
+    except CliError as error:
+        if error.diagnostic and error.diagnostic.get("code") == "PORTAL_RESPONSE_INVALID":
+            return _validation_failure("portal_response", [_fallback_diagnostic(
+                "PORTAL_RESPONSE_INVALID", "managed.cli.portal_response",
+                suggestion="门户响应超过允许大小，未获得有效预检结果。请门户维护人核对预检接口、代理和部署版本；请保留当前资料后重试。",
+            )], http_status=error.http_status)
+        return _validation_failure("portal_response" if error.http_status is not None else "portal_request", [_fallback_diagnostic(
+            "PORTAL_UNAVAILABLE", "managed.cli.portal",
+            suggestion="未能完成门户预检请求，无法确认预检结果。请检查 --origin、网络连通性和门户可用性后重试；若持续失败，请门户维护人核对服务与代理。",
+        )], http_status=error.http_status)
     if status == 200:
         try:
             response = _json_response(raw)
@@ -1890,16 +1990,26 @@ def _run_validate(origin_parts: tuple[str, str, str, int | None], candidate: dic
             _print_json({"status": "validated", "published": False, "sourceUploaded": False,
                          "fileCount": file_count, "totalBytes": total_bytes})
             return 0
-        _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
-                     "diagnostics": [_fallback_diagnostic()]})
-        return 2
+        return _validation_failure("portal_response", [_fallback_diagnostic(
+            "PORTAL_RESPONSE_INVALID", "managed.cli.portal_response",
+            suggestion="门户返回 HTTP 200，但响应不是约定的有效预检结果。请保留当前资料，请门户维护人核对预检接口、代理和部署版本后重试。",
+        )], http_status=status)
     if status == 400:
-        _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
-                     "diagnostics": _sanitize_server_diagnostics(raw)})
-        return 2
-    _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
-                 "diagnostics": [_fallback_diagnostic("PORTAL_REJECTED", "managed.cli.portal")]})
-    return 2
+        return _validation_failure("portal_validation", _sanitize_server_diagnostics(raw), http_status=status)
+    server_code = _response_error_code(raw)
+    known_actions = {
+        (403, "HOST_DENIED"): "请维护人比对门户配置的 PUBLIC_ORIGIN 与代理转发的 Host 后重新预检。",
+        (403, "ORIGIN_DENIED"): "请维护人核对代理转发的 Origin 与门户的同源配置后重新预检。",
+        (429, "UPLOAD_BUSY"): "其他上传正在占用处理名额，请等待后用原项目重新预检。",
+        (429, "RATE_LIMITED"): "门户已触发访问频率限制，请等待限流窗口结束后用原项目重新预检。",
+        (503, "MANAGED_PUBLISH_DISABLED"): "当前广场未启用统一托管发布。请维护人启用并核对发布服务，再用原项目重新预检。",
+    }
+    action = known_actions.get((status, server_code))
+    diagnostic = _fallback_diagnostic("PORTAL_REJECTED", "managed.cli.portal",
+                                      suggestion=action or _portal_http_suggestion(status))
+    if action and server_code:
+        diagnostic["serverCode"] = server_code
+    return _validation_failure("portal_response", [diagnostic], http_status=status)
 
 
 def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
@@ -2209,9 +2319,7 @@ def _run(args: argparse.Namespace) -> int:
                 receipt["responseKnown"] = True
                 receipt["knownRequestRejection"] = True
                 store.save(receipt)
-                _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
-                             "diagnostics": _sanitize_server_diagnostics(raw)})
-                return 2
+                return _validation_failure("portal_validation", _sanitize_server_diagnostics(raw), http_status=status)
             if status == 409 and error_code in {"REVISION_CONFLICT", "VERSION_NOT_NEWER"}:
                 receipt["responseKnown"] = True
                 receipt["knownRequestRejection"] = True
@@ -2246,8 +2354,7 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     except CliError as error:
         if validation_mode:
-            _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
-                         "diagnostics": [_local_diagnostic(error)]})
+            return _validation_failure("local_validation", [_local_diagnostic(error)])
         elif args.status:
             _print_json({"status": "receipt_error", "handoffState": "recovery_required",
                          "publicationStatus": "unknown"})
@@ -2258,8 +2365,9 @@ def _run(args: argparse.Namespace) -> int:
         return 2
     except OSError:
         if validation_mode:
-            _print_json({"status": "validation_failed", "published": False, "sourceUploaded": False,
-                         "diagnostics": [_fallback_diagnostic("LOCAL_READ_FAILED", "managed.cli.local_read")]})
+            return _validation_failure("local_validation", [_local_diagnostic(
+                _local_error("本地读取失败。", "LOCAL_READ_FAILED", "managed.cli.local_read"),
+            )])
         elif args.status:
             _print_json({"status": "receipt_error", "handoffState": "recovery_required",
                          "publicationStatus": "unknown"})

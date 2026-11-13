@@ -251,6 +251,53 @@ test("managed validation is repeatable, localized, redacted, and has no table or
   assert.equal(gitlabWriteCount(portal), writesBefore);
 });
 
+test("managed validation uses safe compatible request and manifest field locators", async t => {
+  const portal = await startPortal();
+  t.after(() => portal.close());
+  const before = await tableSnapshot(portal.db);
+  const privateProperty = 'PRIVATE_PROPERTY_SENTINEL';
+  const privateValue = 'PRIVATE_VALUE_SENTINEL';
+  for (const [file, field] of [
+    [{ path: 42, content: '' }, 'files[0].path'],
+    [{ path: 'README.md', content: { [privateProperty]: privateValue } }, 'files[0].content'],
+    [{ path: 'README.md', content: '', [privateProperty]: privateValue }, 'files[0]'],
+  ] as const) {
+    const result = await request(portal, 'POST', '/api/managed-publications/validate', {
+      ...makeCandidate(), files: [file],
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.json.error?.code, 'INVALID_REQUEST');
+    assert.equal(result.json.error?.diagnostics?.[0]?.field, field);
+    assert.ok(!result.text.includes(privateProperty) && !result.text.includes(privateValue));
+  }
+  const unknownRequest = await request(portal, 'POST', '/api/managed-publications/validate', {
+    ...makeCandidate(), [privateProperty]: privateValue,
+  });
+  assert.equal(unknownRequest.json.error?.diagnostics?.[0]?.field, 'request');
+  assert.ok(!unknownRequest.text.includes(privateProperty) && !unknownRequest.text.includes(privateValue));
+
+  for (const [patch, field] of [
+    [{ maintainers: [] }, 'maintainers'],
+    [{ name: { [privateProperty]: privateValue } }, 'name'],
+    [{ examples: [{ request: '测试', expectedResult: 42 }] }, 'examples[0].expectedResult'],
+    [{ examples: [{ request: '测试', expectedResult: '完成', [privateProperty]: privateValue }] }, 'examples[0]'],
+  ] as const) {
+    const candidate = makeCandidate();
+    const files = candidate.files as Array<{ path: string; content: string }>;
+    const source = JSON.parse(Buffer.from(files[0]!.content, 'base64').toString('utf8'));
+    replaceFile(candidate, 'ai-app.json', 'ai-app.json', JSON.stringify({ ...source, ...patch }));
+    const result = await request(portal, 'POST', '/api/managed-publications/validate', candidate);
+    assert.equal(result.status, 400);
+    assert.equal(result.json.error?.diagnostics?.[0]?.code, 'MANIFEST_SCHEMA_INVALID');
+    assert.equal(result.json.error?.diagnostics?.[0]?.path, 'ai-app.json');
+    assert.equal(result.json.error?.diagnostics?.[0]?.field, field);
+    assert.ok(!result.text.includes(privateProperty) && !result.text.includes(privateValue));
+  }
+  assert.deepEqual(await tableSnapshot(portal.db), before);
+  assert.deepEqual(portal.dbWrites, []);
+  assert.equal(portal.gitlab.state.requests.length, 0);
+});
+
 test("receipt returns the original preview for its owner and rejects another key or mismatched publication hash", async t => {
   const portal = await startPortal();
   t.after(() => portal.close());

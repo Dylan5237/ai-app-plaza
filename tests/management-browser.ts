@@ -34,12 +34,20 @@ try {
   await page.getByTestId('read-source').click(); await page.getByTestId('detail-source-dialog').waitFor(); await page.getByTestId('detail-source-dialog').locator('.el-dialog__headerbtn').click();
   await page.getByTestId('use-agent').click(); await page.getByTestId('copy-agent-prompt').click(); assert.match(await page.evaluate(() => (window as any).copiedText), /Agent/); await page.keyboard.press('Escape'); await page.getByTestId('agent-instruction-dialog').waitFor({ state: 'hidden' });
   await page.getByTestId('publish-update').click(); await page.getByTestId('update-target').waitFor(); assert.match(await page.getByTestId('update-target').innerText(), /当前 v1\.0\.0/); await page.getByTestId('copy-publish-prompt').click(); assert.match(await page.evaluate(() => (window as any).copiedText), /fixture-docpilot-update/);
+  assert.match(await page.getByTestId('update-target').innerText(), /补齐资料[\s\S]*预检[\s\S]*通过后上传/);
+  assert.match(await page.evaluate(() => (window as any).copiedText), /本次仅运行预检时不执行 --status 或 --recover/);
   await page.keyboard.press('Escape'); await page.getByTestId('publish-contract-dialog').waitFor({ state: 'hidden' }); await page.keyboard.press('Escape'); await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
   report.checks.push('admin details, full documents, source, Agent instructions and update prompt all use the existing components and dialogs');
 
   await page.goto(`${h.origin}/?app=${seeds.update.appId}`); await page.getByTestId('app-detail').waitFor(); assert.equal(await page.getByTestId('publish-update').count(), 0); await page.keyboard.press('Escape'); await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
   await page.getByTestId('share-button').click(); await page.getByTestId('copy-publish-prompt').waitFor(); assert.equal(await page.getByTestId('update-target').count(), 0); assert.equal(await page.getByTestId('publish-contract-dialog').locator('input,textarea').count(), 0);
   assert.equal(await page.getByTestId('publish-contract-dialog').getByRole('link', { name: '查看 GitLab 仓库（统一托管空间）', exact: true }).count(), 1, 'the managed hosting link names its GitLab destination');
+  assert.match(await page.getByTestId('managed-share-intro').innerText(), /补齐资料并预检[\s\S]*通过后按本次授权上传/);
+  assert.match(await page.getByTestId('publish-contract-dialog').locator('.share-steps').innerText(), /先补齐必需信息并预检，再上传/);
+  await page.getByTestId('copy-publish-prompt').click();
+  const firstPrompt = await page.evaluate(() => (window as any).copiedText);
+  assert.match(firstPrompt, /必需项补齐前不运行预检或上传/);
+  assert.match(firstPrompt, /本次仅运行预检时不执行 --status 或 --recover/);
   report.checks.push('public plaza has no author update action and first sharing retains the original prompt flow');
 
   await page.goto(h.origin + '/admin'); await page.getByTestId('management-tab-uploads').click(); await page.getByText('fixture-prepared-placeholder', { exact: true }).first().waitFor(); assert.equal(await page.getByRole('button', { name: '收录', exact: true }).isDisabled(), true);

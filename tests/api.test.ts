@@ -6,6 +6,65 @@ import { createApp } from '../server/app.js';
 import { openDatabase } from '../server/domain/database.js';
 import { DEFAULT_TAG, manifest, startGitLabFixture, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 import type { Config } from '../server/config.js';
+import type { AppView } from '../server/domain/service.js';
+import { manifestJson } from '../server/domain/manifest.js';
+import { publishContract } from '../server/publish-contract.js';
+
+test('managed first and update contracts keep preparation, preflight and receipt recovery in their own stages', async t => {
+  const current: AppView = {
+    id: 'fixture-app', revision: 3, manifest: manifestJson(JSON.stringify(manifest()), 'sample-1'), tags: ['文档处理'], version: '1.0.0',
+    createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z', documents: {},
+    source: { projectId: '123', projectUrl: 'https://gitlab.example.invalid/fixture/app', commitSha: SHA, manifestPath: 'ai-app.json', tag: DEFAULT_TAG },
+  };
+  const target = { managedAppId: 'fixture-managed-app', projectId: '123', appKey: 'sample-1' };
+  for (const publicBasePath of ['', '/plaza']) for (const withIdentity of [false, true]) for (const update of [false, true]) {
+    await t.test(`${publicBasePath || '/'} / identity ${withIdentity} / ${update ? 'update' : 'first'}`, async () => {
+      const config: Parameters<typeof publishContract>[0] = {
+        publicOrigin: 'https://plaza.example.invalid:8443', publicBasePath, gitlabUrl: 'https://gitlab.example.invalid', audience: '合成测试',
+        managedPublishing: { groupId: '63', groupPath: 'fixture/apps', token: 'fixture-server-only-token' },
+        ...(withIdentity ? { tiangong: { userinfoUrl: 'https://portal.example.invalid/findByToken', successCode: 'ok', tokenStorageKey: 'fixture-token',
+          allowedUserTypes: ['03'], sessionHours: 1, identityAdmins: [] } } : {}),
+      };
+      const contract = await publishContract(config, update ? current : undefined, update ? target : undefined);
+      assert.equal(contract.mode, 'managed');
+      assert.ok('managed' in contract);
+      const origin = `${config.publicOrigin}${publicBasePath}`;
+      assert.equal(contract.managed.publisherUrl, `${origin}/api/publisher-cli.py`);
+      assert.equal(contract.managed.validationUrl, `${origin}/api/managed-publications/validate`);
+      assert.equal(contract.managed.receiptUrl, `${origin}/api/managed-publications/receipt`);
+      const prompt = contract.prompt;
+      const preparation = prompt.indexOf('1. 先完成资料准备');
+      const preflight = prompt.indexOf('5. 资料齐全后');
+      const submission = prompt.indexOf('6. 预检通过');
+      const handoff = prompt.indexOf('7. 只有工具确认');
+      assert.ok(preparation >= 0 && preparation < preflight && preflight < submission && submission < handoff);
+      const authorDeclaration = prompt.indexOf('任一缺失时先向我询问');
+      assert.ok(authorDeclaration >= preparation && authorDeclaration < preflight, 'author declarations must be requested before preflight');
+      assert.match(prompt.slice(preparation, preflight), /必需项补齐前不运行预检或上传/);
+      assert.match(prompt.slice(preparation, preflight), /不把 maintainers: \[\]/);
+      assert.match(prompt, /--validate 已包含本地检查/);
+      assert.match(prompt, /本次仅运行预检时不执行 --status 或 --recover/);
+      assert.match(prompt, /不能猜成天宫身份、版本、tag 或 Release 问题/);
+      assert.match(prompt, /只有问题已修正或服务恢复后才重试/);
+      assert.match(prompt, /已有本次授权时直接继续，不新增重复确认/);
+      assert.match(prompt, /正式命令若仍停在本地资料检查，按第5条修正，不查回执/);
+      assert.match(prompt, /只有正式提交请求已发出或工具报告已有原提交记录/);
+      assert.match(prompt, /不调用确认接口或代我点击确认/);
+      assert.match(prompt, /receipt 已安全保存、status 为 preview_ready 且取得有效 previewUrl/);
+      assert.ok(!prompt.includes(config.managedPublishing!.token));
+      const preflightLine = prompt.slice(preflight, prompt.indexOf('\n', preflight));
+      const submissionLine = prompt.slice(submission, prompt.indexOf('\n', submission));
+      for (const line of [preflightLine, submissionLine]) assert.ok(line.includes(`--origin "${origin}"`), 'every runnable command retains the complete portal prefix');
+      assert.ok(preflightLine.includes('--validate'));
+      assert.doesNotMatch(preflightLine, /--managed-app-id|--expected-revision/);
+      if (update) {
+        assert.ok(submissionLine.includes(`--managed-app-id "${target.managedAppId}"`));
+        assert.equal(submissionLine.includes('--expected-revision 3'), withIdentity);
+        if (withIdentity) assert.ok(!prompt.includes(`GET ${origin}/api/apps/${current.id}`), 'private updates use the maintenance page revision without sending browser identity to the Host');
+      } else assert.doesNotMatch(submissionLine, /--managed-app-id|--expected-revision/);
+    });
+  }
+});
 
 test('HTTP publication -> confirmation -> catalog -> usage, with boundary failures', async t => {
   const gitlab = await startGitLabFixture();
