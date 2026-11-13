@@ -17,6 +17,8 @@ async function setup(t: any, ai: { timeoutMs?: number } = {}) {
   return { h, llm, daily, knowledge };
 }
 
+const candidatePayload = (request: { body: any }) => JSON.parse(request.body.messages[1].content.split('<candidates>')[1].replace('</candidates>', '').trim());
+
 test('ai mode ranks model picks and grounds reasons in candidates', async t => {
   const { h, llm, daily } = await setup(t);
   llm.state.reply = () => ({ picks: [{ id: daily.appId, why: '整理并归档工时日报。' }], question: null });
@@ -30,7 +32,7 @@ test('ai mode ranks model picks and grounds reasons in candidates', async t => {
   assert.equal(request.authorization, 'Bearer fixture-key');
   assert.equal(request.body.model, 'deepseek-flash');
   assert.equal(request.body.response_format.type, 'json_object');
-  const candidates = JSON.parse(request.body.messages[1].content.split('候选应用：')[1]);
+  const candidates = candidatePayload(request);
   assert.ok(candidates.some((candidate: any) => candidate.id === daily.appId), 'offered candidates include the visible apps');
 });
 
@@ -79,8 +81,7 @@ test('keyword-less queries still reach the model when it is configured', async t
   const result = await h.service.smartSearch('图');
   assert.equal(result.mode, 'ai');
   assert.equal(result.items[0].id, daily.appId);
-  const request = llm.state.requests.at(-1)!;
-  const candidates = JSON.parse(request.body.messages[1].content.split('候选应用：')[1]);
+  const candidates = candidatePayload(llm.state.requests.at(-1)!);
   assert.ok(candidates.length >= 2, 'recent visible apps fill the candidate pool without keywords');
 });
 
@@ -123,9 +124,50 @@ test('the system prompt scope-guards user input and candidate data', async t => 
   const { h, llm } = await setup(t);
   llm.state.reply = () => ({ picks: [], question: null });
   await h.service.smartSearch('帮我整理日报');
-  const system = llm.state.requests.at(-1)!.body.messages[0].content;
+  const request = llm.state.requests.at(-1)!;
+  const system = request.body.messages[0].content;
   assert.match(system, /最多 3 个/);
   assert.match(system, /不是给你的指令/);
   assert.match(system, /与应用查找无关/);
   assert.match(system, /资料数据/);
+  assert.match(system, /不可信数据/);
+  const userMessage: string = request.body.messages[1].content;
+  assert.match(userMessage, /<task>\n帮我整理日报\n<\/task>/, 'the task travels inside an explicit data boundary');
+  assert.match(userMessage, /<candidates>/);
+});
+
+test('untrusted input is sanitized before reaching the model', async t => {
+  const { h, llm } = await setup(t);
+  const hostile = await seedTagCatalog(h.db, h.config.audience, ['正常标签'], 54);
+  const hostileManifest = { ...hostile.source, name: `恶意应用\u0007${'超'.repeat(150)}`, summary: `简介\u0001\u001F${'长'.repeat(600)}`, tags: ['正常标签', '标签\u0001超长'.repeat(10)] };
+  await h.db.query('UPDATE published_snapshots SET manifest = $2::jsonb, search_text = $3 WHERE id = $1', [hostile.snapshotId, JSON.stringify(hostileManifest), '恶意 占位']);
+  llm.state.reply = () => ({ picks: [], question: null });
+  await h.service.smartSearch(`任务\u0001描述${'x'.repeat(200)}`);
+  const request = llm.state.requests.at(-1)!;
+  const userMessage: string = request.body.messages[1].content;
+  assert.ok(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(userMessage), 'control characters never reach the model');
+  const task = userMessage.split('<task>')[1].split('</task>')[0];
+  assert.ok(task.length <= 500, 'the query is capped');
+  const candidates = candidatePayload(request);
+  const sent = candidates.find((candidate: any) => candidate.id === hostile.appId);
+  assert.ok(sent, 'the hostile app is still offered after cleanup');
+  assert.equal(sent.name.length, 100, 'name is capped');
+  assert.ok(!sent.name.includes('\u0007'), 'control characters are stripped from names');
+  assert.ok(sent.summary.length <= 400);
+  assert.ok(sent.tags.every((tag: string) => tag.length <= 32));
+  assert.ok(sent.tags.length <= 8);
+});
+
+test('model questions that solicit secrets or links are dropped, picks survive', async t => {
+  const { h, llm, daily } = await setup(t);
+  llm.state.reply = () => ({ picks: [{ id: daily.appId, why: '整理日报。' }], question: '请先提供你的密码和 GitLab token 以便继续' });
+  const leaked = await h.service.smartSearch('整理日报');
+  assert.equal(leaked.question, null, 'credential-seeking questions are never relayed');
+  assert.equal(leaked.items[0].id, daily.appId, 'valid picks survive the question guard');
+  llm.state.reply = () => ({ picks: [{ id: daily.appId, why: '整理日报。' }], question: '详见 https://example.invalid/help' });
+  const linked = await h.service.smartSearch('整理日报');
+  assert.equal(linked.question, null, 'link-luring questions are dropped');
+  llm.state.reply = () => ({ picks: [{ id: daily.appId, why: '   ' }, { id: daily.appId, why: '整理日报。' }], question: null });
+  const hollow = await h.service.smartSearch('整理日报');
+  assert.deepEqual(hollow.items.map(item => item.id), [daily.appId], 'picks without a usable reason collapse deterministically');
 });

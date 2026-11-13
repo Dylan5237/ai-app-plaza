@@ -210,6 +210,15 @@ try {
     assert.match(lastQuery, /帮我整理日报/, 'the follow-up keeps the original task');
     assert.match(lastQuery, /补充：已有工作记录/, 'the follow-up carries the answer');
 
+    // Model output (reasons and questions) is untrusted: it must render as plain text.
+    llm.state.reply = () => ({ picks: [{ id: aiSeeded.appId, why: '<img src=x onerror="window.__plazaXss=1">整理工时日报。' }], question: '需要 <script>window.__plazaXss=2</script> 补充材料吗？' });
+    await aiPage.getByRole('button', { name: '新对话', exact: true }).click();
+    await aiComposer.fill('整理日报');
+    await aiPage.getByRole('button', { name: '发送', exact: true }).click();
+    await aiPage.getByText('<img src=x onerror="window.__plazaXss=1">整理工时日报。').waitFor();
+    await aiPage.getByText('需要 <script>window.__plazaXss=2</script> 补充材料吗？').waitFor();
+    assert.equal(await aiPage.evaluate(() => (window as any).__plazaXss), undefined, 'model output never executes as HTML');
+
     // Model failure degrades to keyword results: the model is really called, fails,
     // and only the keyword-matching app is returned — no unrelated padding.
     llm.state.status = 503;

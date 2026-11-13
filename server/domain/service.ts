@@ -1,5 +1,5 @@
 import { appAccessPredicate, requireAppAction, initializePrivateApplication, accessRecord } from './app-access.js';
-import { rankSmartSearchCandidates, type SmartSearchAiConfig } from './smart-search-ai.js';
+import { rankSmartSearchCandidates, sanitizeModelQuestion, type SmartSearchAiConfig } from './smart-search-ai.js';
 import {
   createCipheriv,
   createDecipheriv,
@@ -1240,14 +1240,15 @@ export function createService(config: ServiceConfig): PlazaService {
           const items: AppView[] = [];
           for (const pick of ranking.picks) {
             const card = byId.get(pick.id);
-            // Only ids from the offered candidates are allowed; duplicates collapse.
-            if (!card || reasons[pick.id]) continue;
+            // Only ids from the offered candidates are allowed; duplicates and picks
+            // without a usable reason collapse deterministically instead of failing open.
+            if (!card || reasons[pick.id] || !pick.why.trim()) continue;
             items.push(card.item);
             matches[pick.id] = card.matched;
-            reasons[pick.id] = pick.why;
+            reasons[pick.id] = pick.why.trim();
             if (items.length >= 3) break;
           }
-          return { mode: 'ai' as const, items, matches, reasons, question: ranking.question };
+          return { mode: 'ai' as const, items, matches, reasons, question: sanitizeModelQuestion(ranking.question) };
         } catch {
           // Model unavailable or its reply was unusable: answer with the keyword path below.
         }
