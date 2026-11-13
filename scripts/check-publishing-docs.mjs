@@ -96,6 +96,23 @@ async function main() {
       }
     }
   }
+  for (const name of ['docs/integration/publishing.md', 'docs/ops/publishing-validation-recovery.md']) {
+    const content = await readFile(resolve(root, name), 'utf8');
+    assert.match(content, /https:\/\/plaza\.example\.invalid\/plaza/, name + ': 应说明完整门户前缀');
+    assert.match(content, /maintainers: \[\]/, name + ': 应阻止空作者资料进入预检');
+    assert.match(content, /仅预检[^\n]*(?:不执行|不查回执)/, name + ': 应将预检失败与回执恢复分开');
+    assert.match(content, /只有正式提交请求已发出|只用于正式提交请求已发出/, name + ': 应限定恢复命令的适用阶段');
+    assert.doesNotMatch(content, /origin 必须是[^\n]*无业务路径/, name + ': 不得误导移除部署前缀');
+    for (const token of await parseDocument(resolve(root, name))) {
+      if (token.type !== 'fence') continue;
+      for (const command of token.content.split('\n').filter(line => /^\s*python\s/.test(line))) {
+        const modes = command.match(/--(?:dry-run|validate|status|recover)\b/g) ?? [];
+        assert.ok(modes.length <= 1, name + ': CLI 模式互斥: ' + command);
+        if (modes.length) assert.doesNotMatch(command, /--managed-app-id|--expected-revision/, name + ': 更新定位参数仅用于正式提交');
+      }
+    }
+  }
+  console.log('PASS preparation, complete portal prefixes and stage-specific recovery guidance');
   console.log('PASS runtime Schema reference and ' + linkCount + ' local links in ' + documents.length + ' documents');
 }
 

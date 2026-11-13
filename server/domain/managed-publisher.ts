@@ -1197,6 +1197,26 @@ function safeDiagnosticField(value: unknown): string | undefined {
   return value;
 }
 
+function manifestSchemaField(pointer: string | undefined): string | undefined {
+  if (!pointer?.startsWith('/')) return undefined;
+  const allowed = new Set([
+    'schemaVersion', 'appKey', 'name', 'summary', 'projectVersion', 'tags', 'maintainers', 'nameEn',
+    'capabilities', 'scenarios', 'inputs', 'outputs', 'examples', 'request', 'expectedResult',
+    'requirements', 'limitations', 'docs', 'readme', 'usage', 'entries', 'primaryEntry',
+    'id', 'kind', 'label', 'url', 'instructionsPath', 'compatibility', 'artifacts', 'sha256',
+    'distribution', 'type', 'files', 'delivery',
+  ]);
+  const parts = pointer.slice(1).split('/');
+  if (parts.length > 8) return undefined;
+  let field = '';
+  for (const part of parts) {
+    if (/^(?:0|[1-9]\d{0,2})$/.test(part) && field) field += `[${part}]`;
+    else if (allowed.has(part)) field += `${field ? '.' : ''}${part}`;
+    else return undefined;
+  }
+  return safeDiagnosticField(field);
+}
+
 function manifestFailure(error: unknown, manifestPath: string, text: string, serverGitLabToken: string): DomainError {
   if (!(error instanceof DomainError) || error.statusCode !== 400) throw error;
   const message = error.message;
@@ -1228,7 +1248,7 @@ function manifestFailure(error: unknown, manifestPath: string, text: string, ser
   } else if (message.startsWith("Manifest 不符合 ai-app.json 契约")) {
     code = "MANIFEST_SCHEMA_INVALID"; ruleId = "manifest_schema";
     const candidate = message.match(/（([^（）]{1,128})）/)?.[1];
-    field = safeDiagnosticField(candidate) ?? "manifest";
+    field = manifestSchemaField(candidate) ?? "manifest";
     safeMessage = "Manifest 不符合 ai-app.json 契约。";
   } else if (message.startsWith("请求中的 appKey")) {
     code = "APP_KEY_MISMATCH"; ruleId = "app_key_mismatch"; field = "appKey";

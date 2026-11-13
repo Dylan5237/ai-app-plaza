@@ -42,14 +42,14 @@ const idValue = z.string().uuid();
 
 function managedRequestField(path: PropertyKey[]): string | undefined {
   const allowed = new Set(['appKey', 'manifestPath', 'files', 'path', 'content', 'managedAppId', 'expectedAppRevision']);
-  if (!path.length) return undefined;
-  const parts: string[] = [];
-  for (const part of path.slice(0, 8)) {
-    if (typeof part === 'number' && Number.isInteger(part) && part >= 0 && part < 1000) parts.push(String(part));
-    else if (typeof part === 'string' && allowed.has(part)) parts.push(part);
+  if (!path.length || path.length > 8) return undefined;
+  let field = '';
+  for (const part of path) {
+    if (typeof part === 'number' && Number.isInteger(part) && part >= 0 && part < 1000 && field) field += `[${part}]`;
+    else if (typeof part === 'string' && allowed.has(part)) field += `${field ? '.' : ''}${part}`;
     else return undefined;
   }
-  return parts.join('.');
+  return field;
 }
 
 function parseManagedCandidate(value: unknown) {

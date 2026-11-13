@@ -1375,13 +1375,13 @@ onUnmounted(() => {
       <div v-if="publishContract" class="share-flow">
         <p v-if="publishContract.updateTarget" class="share-intro" data-testid="update-target">
           {{ publishContract.updateTarget.name }} · 当前 {{ formatVersion(publishContract.updateTarget.version) }}<br>
-          让项目 Agent 准备新版本，再由你预览确认。应用链接保持不变。
+          {{ publishContract.mode === 'managed' ? '让项目 Agent 补齐资料、准备新版本并预检，通过后上传，再由你预览确认。' : '让项目 Agent 准备新版本，再由你预览确认。' }}应用链接保持不变。
         </p>
-        <p v-else-if="publishContract.mode === 'managed'" class="share-intro" data-testid="managed-share-intro">把提示词交给当前项目的 AI，它会整理并上传源码与应用资料，再由你预览确认。无需提前创建 GitLab 仓库。</p>
+        <p v-else-if="publishContract.mode === 'managed'" class="share-intro" data-testid="managed-share-intro">把提示词交给当前项目的 AI，它会补齐资料并预检，通过后按本次授权上传，再由你预览确认。无需提前创建 GitLab 仓库。</p>
         <p v-else class="share-intro">把发布提示词交给你的 Agent，由 Agent 提交应用资料，再由你预览确认。</p>
         <ol class="share-steps">
           <li><strong>{{ shareAppId ? '复制更新提示词' : '复制发布提示词' }}</strong><span>{{ shareAppId ? '自动带入项目与应用信息。' : '包含资料规范与发布步骤。' }}</span></li>
-          <li><strong>交给项目 Agent</strong><span>{{ publishContract.mode === 'managed' ? '自动整理上传，返回预览链接。' : '准备资料和版本 Release，提交预览。' }}</span></li>
+          <li><strong>交给项目 Agent</strong><span>{{ publishContract.mode === 'managed' ? '先补齐必需信息并预检，再上传并返回预览。' : '准备资料和版本 Release，提交预览。' }}</span></li>
           <li><strong>预览并确认</strong><span>{{ shareAppId ? '核对版本变化与内容，确认更新。' : '核对公开内容，确认收录。' }}</span></li>
         </ol>
         <div class="publish-prompt-wrap">
