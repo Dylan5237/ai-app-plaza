@@ -19,7 +19,12 @@ const attributes = z.object({
   usageType: z.enum(['all', 'platform', 'agent']).optional(),
   selectedTags: z.array(z.string().min(1).max(64)).max(12).optional(),
   hasQuery: z.boolean().optional(),
-  queryLengthBucket: z.enum(['0', '1-10', '11-50', '51-200']).optional(),
+  queryLengthBucket: z.enum(['0', '1-10', '11-50', '51-200', '201-500']).optional(),
+  searchMode: z.enum(['ai', 'basic']).optional(),
+  suggested: z.boolean().optional(),
+  durationMs: z.number().int().min(0).max(60000).optional(),
+  followUp: z.boolean().optional(),
+  questionPending: z.boolean().optional(),
   position: z.number().int().min(1).max(100).optional(),
   section: z.enum(['catalog', 'random', 'search']).optional(),
   entryContext: z.enum(['card', 'search_result', 'deep_link', 'after_publication', 'management']).optional(),
@@ -37,7 +42,7 @@ const attributes = z.object({
 
 export const browserEvent = z.object({
   eventId: id,
-  eventName: z.enum(['portal_viewed', 'catalog_results_viewed', 'app_card_exposed', 'app_detail_viewed', 'app_entry_clicked', 'prompt_copy_result', 'portal_operation_failed', 'publish_panel_viewed', 'publication_preview_viewed']),
+  eventName: z.enum(['portal_viewed', 'catalog_results_viewed', 'smart_search_completed', 'app_card_exposed', 'app_detail_viewed', 'app_entry_clicked', 'prompt_copy_result', 'portal_operation_failed', 'publish_panel_viewed', 'publication_preview_viewed']),
   occurredAt: z.iso.datetime({ offset: true }),
   identityScope: z.enum(['persistent', 'session_only']),
   visitorId: id.nullable(), sessionId: id, viewId: id,
@@ -48,6 +53,7 @@ export const browserEvent = z.object({
   const required: Record<string, string[]> = {
     portal_viewed: [],
     catalog_results_viewed: ['resultSetId', 'attributes.trigger', 'attributes.discoveryRequestId', 'attributes.resultCount', 'attributes.renderedCount', 'attributes.page', 'attributes.pageSize', 'attributes.usageType', 'attributes.hasQuery', 'attributes.queryLengthBucket'],
+    smart_search_completed: ['resultSetId', 'attributes.searchMode', 'attributes.resultCount', 'attributes.durationMs', 'attributes.hasQuery', 'attributes.queryLengthBucket'],
     app_card_exposed: ['appId', 'snapshotId', 'resultSetId', 'attributes.position', 'attributes.section'],
     app_detail_viewed: ['appId', 'snapshotId', 'attributes.entryContext'],
     app_entry_clicked: ['appId', 'snapshotId', 'interactionId', 'attributes.entryId', 'attributes.entryKind', 'attributes.placement'],

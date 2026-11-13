@@ -38,6 +38,12 @@ test('dashboard uses actual events, respects public scope, time and telemetry bo
   await event('app_entry_clicked',{entryKind:'web'},{appId:hidden.appId,snapshotId:hidden.snapshotId,heat:true,session:randomUUID()});
   await event('app_entry_clicked',{entryKind:'web'},{...selected,heat:true,site:'other'});
   await event('app_entry_clicked',{entryKind:'web'},{...selected,heat:true,time:'2026-11-04T05:00:00Z'});
+  // Smart-search activity carries no app scope; the query text itself is never recorded.
+  await event('smart_search_completed',{pageContext:'search',searchMode:'ai',resultCount:2,durationMs:1200,followUp:false,questionPending:false});
+  await event('smart_search_completed',{pageContext:'search',searchMode:'ai',resultCount:0,durationMs:900,followUp:false,questionPending:true},{session:randomUUID()});
+  await event('smart_search_completed',{pageContext:'search',searchMode:'ai',resultCount:0,durationMs:700,followUp:false,questionPending:false},{session:randomUUID()});
+  await event('smart_search_completed',{pageContext:'search',searchMode:'basic',resultCount:1,durationMs:50,followUp:true,questionPending:false},{session:randomUUID()});
+  await event('smart_search_completed',{pageContext:'search',searchMode:'ai',resultCount:1,durationMs:800,followUp:false,questionPending:false},{site:'other'});
   const facts = [
     {eventName:'publication_state_changed',toState:'registered',registrationKind:'new',appId:published.appId},
     {eventName:'publication_state_changed',toState:'registered',registrationKind:'new',appId:hidden.appId},
@@ -52,7 +58,7 @@ test('dashboard uses actual events, respects public scope, time and telemetry bo
   if (result.status !== 'available') return;
   assert.equal(result.partial,true);
   assert.equal(result.start,'2026-11-05T04:00:00.000Z');
-  assert.deepEqual(result.summary,{discoverySessions:1,usageSessions:1,discoveryVisitors:1,sessionOnly:0,searches:null,emptySearches:null,webActions:1,agentActions:1});
+  assert.deepEqual(result.summary,{discoverySessions:1,usageSessions:1,discoveryVisitors:1,sessionOnly:0,searches:4,emptySearches:1,aiSearches:3,followUpSearches:1,questionSearches:1,webActions:1,agentActions:1},'smart-search counts are site-scoped; questions are not empty results');
   assert.equal(result.apps?.length,1);
   assert.equal(result.apps?.[0].id,published.appId);
   assert.equal(result.apps?.[0].exposure,2,'exposures from the smart-search tab count like catalog ones');

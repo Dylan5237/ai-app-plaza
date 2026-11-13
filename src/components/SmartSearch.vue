@@ -4,6 +4,13 @@ import { ElButton, ElInput } from 'element-plus'
 import CatalogCard from './CatalogCard.vue'
 import PlazaIcon from './PlazaIcon.vue'
 import { apiRequest } from '../lib/api.js'
+import { track, uuid } from '../lib/analytics.js'
+import { rotateSuggestions } from '../lib/suggestions.ts'
+
+function lengthBucket(text) {
+  const length = [...text.trim()].length
+  return length === 0 ? '0' : length <= 10 ? '1-10' : length <= 50 ? '11-50' : length <= 200 ? '51-200' : '201-500'
+}
 
 const props = defineProps({ active: { type: Boolean, default: true } })
 const emit = defineEmits(['detail', 'primary', 'tag', 'return', 'results'])
@@ -12,8 +19,26 @@ const task = ref('')
 const messages = ref([])
 const searching = ref(false)
 const expandedOthers = ref({})
+const suggestedPrompts = ref([])
 const thread = ref(null)
 const input = ref(null)
+
+// Suggested task descriptions for the empty state; a random subset rotates in each
+// conversation so the page never feels like a wall of examples.
+const PROMPT_POOL = [
+  '把已有的工作记录整理成日报',
+  '把一份 Word 文档转换成 Markdown',
+  '生成会议纪要并提取待办事项',
+  '整理知识库文档并归档',
+  '写一份接口文档草稿',
+  '排查一段代码里的性能问题',
+  '给新同事准备入职资料清单',
+  '把一段需求描述拆成可执行的开发任务',
+]
+function pickSuggestions() {
+  suggestedPrompts.value = rotateSuggestions(PROMPT_POOL)
+}
+pickSuggestions()
 let searchToken = 0
 let savedThreadScroll = 0
 // When the assistant asked a clarifying question, the next reply continues that task.
@@ -40,10 +65,12 @@ function newConversation() {
   searching.value = false
   expandedOthers.value = {}
   pendingQuestionTask = null
+  pickSuggestions()
 }
 
-async function runSearch(text, display = text) {
+async function runSearch(text, display = text, followUp = false, suggested = false) {
   const token = ++searchToken
+  const startedAt = Date.now()
   searching.value = true
   scrollBottom()
   try {
@@ -52,16 +79,26 @@ async function runSearch(text, display = text) {
     if (token !== searchToken) return
     searching.value = false
     const question = typeof result.question === 'string' ? result.question.trim() : ''
+    const resultSetId = uuid()
     // A pending question replaces the empty state: the task is not concluded yet.
     if (!result.items?.length && !question) {
-      messages.value.push({ kind: 'empty', taskSummary: display, payload: text })
-      emit('results', [])
+      messages.value.push({ kind: 'empty', taskSummary: display, payload: text, resultSetId, followUp, suggested })
+      emit('results', [], resultSetId)
     } else if (result.items?.length) {
       messages.value.push({
         kind: 'results', taskSummary: display, payload: text, mode: result.mode === 'ai' ? 'ai' : 'basic',
+        resultSetId, followUp, suggested,
         candidates: result.items.map(item => ({ app: item, matched: result.matches?.[item.id] || [], why: result.reasons?.[item.id] || '' })),
       })
-      emit('results', result.items)
+      emit('results', result.items, resultSetId)
+    }
+    if (resultSetId) {
+      track('smart_search_completed', {
+        pageContext: 'search', entryMode: 'catalog', searchMode: result.mode === 'ai' ? 'ai' : 'basic',
+        resultCount: result.items?.length || 0, hasQuery: true, queryLengthBucket: lengthBucket(text),
+        durationMs: Math.min(60000, Date.now() - startedAt), followUp, questionPending: Boolean(question),
+        ...(suggested ? { suggested: true } : {}),
+      }, { resultSetId })
     }
     // The follow-up context only survives while the question stays unanswered.
     pendingQuestionTask = question ? text : null
@@ -71,19 +108,34 @@ async function runSearch(text, display = text) {
     if (token !== searchToken) return
     searching.value = false
     pendingQuestionTask = null
-    messages.value.push({ kind: 'error', taskSummary: display, payload: text, message: error.message || '检索暂时不可用，请重试。' })
+    messages.value.push({ kind: 'error', taskSummary: display, payload: text, followUp, suggested, message: error.message || '检索暂时不可用，请重试。' })
     scrollBottom()
   }
 }
 
-function submit() {
+function submit(fromSuggestion = false) {
   const text = task.value.trim()
   if (!text || searching.value) return
   messages.value.push({ kind: 'user', text })
   task.value = ''
   // A pending clarifying question keeps its task as context for this answer.
+  const followUp = Boolean(pendingQuestionTask)
   const sent = pendingQuestionTask ? `${pendingQuestionTask}\n补充：${text}` : text
-  void runSearch(sent, text)
+  void runSearch(sent, text, followUp, fromSuggestion)
+}
+
+function applySuggestion(text) {
+  if (searching.value) return
+  // A suggestion starts a fresh task; it must not inherit a pending question.
+  pendingQuestionTask = null
+  if (task.value.trim()) {
+    // Never discard an unsubmitted draft: place the suggestion in the composer instead.
+    task.value = text
+    void nextTick(() => input.value?.focus())
+    return
+  }
+  task.value = text
+  submit(true)
 }
 
 function onEnter(event) {
@@ -134,9 +186,10 @@ async function revalidateResults() {
     else candidates.push(candidate)
   }
   if (!dropped) return
-  if (!candidates.length) messages.value[index] = { kind: 'empty', taskSummary: message.taskSummary }
+  if (!candidates.length) messages.value[index] = { kind: 'empty', taskSummary: message.taskSummary, payload: message.payload, resultSetId: message.resultSetId, followUp: message.followUp, suggested: message.suggested }
   else message.candidates = candidates
-  emit('results', candidates.map(candidate => candidate.app))
+  // Keep the original result-set id so refreshed exposures stay linked to the completion event.
+  emit('results', candidates.map(candidate => candidate.app), message.resultSetId)
 }
 
 onMounted(() => window.addEventListener('focus', revalidateResults))
@@ -155,6 +208,9 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
         <span class="hero-mark"><PlazaIcon name="agent" /></span>
         <h2>你想完成什么工作？</h2>
         <p>直接描述任务和已有材料，不用先知道工具名称。</p>
+        <div class="suggestions" aria-label="试试这些任务">
+          <button v-for="suggestion in suggestedPrompts" :key="suggestion" type="button" class="suggested-prompt" data-testid="suggested-prompt" @click="applySuggestion(suggestion)">{{ suggestion }}</button>
+        </div>
       </div>
 
       <template v-for="(m, i) in messages" :key="i">
@@ -163,7 +219,7 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
         <div v-else-if="m.kind === 'error'" class="msg assistant">
           <div class="msg-label"><small>广场助手</small></div>
           <p class="msg-text">{{ m.message }}</p>
-          <div class="inline-actions"><el-button text size="small" @click="runSearch(m.payload ?? m.taskSummary)">重试</el-button><el-button text size="small" @click="emit('return')">回到目录</el-button></div>
+          <div class="inline-actions"><el-button text size="small" @click="runSearch(m.payload ?? m.taskSummary, m.taskSummary, m.followUp === true, m.suggested === true)">重试</el-button><el-button text size="small" @click="emit('return')">回到目录</el-button></div>
         </div>
 
         <div v-else-if="m.kind === 'empty'" class="msg assistant" :class="{ stale: draftDirty() && i === messages.length - 1 }">
@@ -236,6 +292,10 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
 .hero-mark :deep(svg) { width: 28px; height: 28px; }
 .empty-hero h2 { margin: 18px 0 10px; font-size: 23px; color: var(--plaza-ink); }
 .empty-hero p { margin: 0; color: var(--plaza-muted); font-size: 13px; }
+.suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 560px; margin: 22px auto 0; }
+.suggested-prompt { padding: 7px 14px; border: 1px solid var(--plaza-line); border-radius: 999px; background: var(--plaza-surface); color: var(--plaza-text); font: inherit; font-size: 12.5px; cursor: pointer; transition: border-color .12s, color .12s, box-shadow .12s; }
+.suggested-prompt:hover { border-color: var(--plaza-brand); color: var(--plaza-brand); box-shadow: 0 2px 8px -4px rgb(28 37 51 / .2); }
+.suggested-prompt:focus-visible { outline: 2px solid var(--plaza-brand); outline-offset: 1px; }
 .msg { flex: none; width: 100%; min-width: 0; padding: 14px 0; margin-bottom: 12px; }
 .msg.user { width: fit-content; max-width: 85%; margin-left: auto; padding: 12px 18px; border-radius: 14px 14px 4px 14px; background: var(--plaza-brand-soft); }
 .msg.user p { margin: 0; color: var(--plaza-ink); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }

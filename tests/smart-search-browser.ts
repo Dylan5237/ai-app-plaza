@@ -7,7 +7,7 @@ import { seedTagCatalog } from './helpers/tag-catalog.js';
 import { startLlmFixture } from './helpers/llm-fixture.js';
 
 const report: { status: string; checks: string[]; error?: string } = { status: 'RUNNING', checks: [] };
-const harness = await startHarness();
+const harness = await startHarness(1, 'memory://', { analytics: { environment: 'local', siteInstanceId: 'smart-search-browser' } });
 
 let seededIndex = 0;
 async function seedApp(name: string, tags: string[], searchText: string) {
@@ -35,6 +35,12 @@ const errors: string[] = [];
 try {
   const page = await browser.newPage();
   page.on('pageerror', error => errors.push(error.message));
+  const analyticsEvents: any[] = [];
+  page.on('request', request => {
+    if (request.url().endsWith('/api/analytics/events')) {
+      try { analyticsEvents.push(request.postDataJSON()); } catch { /* non-JSON body */ }
+    }
+  });
 
   // Default homepage is smart search; rail highlights it and the URL stays clean.
   await page.goto(harness.origin);
@@ -43,6 +49,26 @@ try {
   assert.equal(new URL(page.url()).searchParams.has('discover'), false, 'the smart-search default keeps the URL free of a discover parameter');
   assert.equal(await page.getByTestId('tab-catalog').getAttribute('aria-current'), null);
   report.checks.push('default-home');
+
+  // The empty state offers rotating task suggestions; clicking one starts the search
+  // immediately and the completion event records that it came from a suggestion.
+  assert.equal(await page.getByTestId('suggested-prompt').count(), 3, 'three suggestions rotate in the empty state');
+  for (let attempt = 0; attempt < 50 && !analyticsEvents.some(event => event.eventName === 'portal_viewed'); attempt++) await page.waitForTimeout(100);
+  assert.ok(analyticsEvents.some(event => event.eventName === 'portal_viewed'), 'analytics initializes before the suggestion click');
+  const suggestionText = (await page.getByTestId('suggested-prompt').first().innerText()).trim();
+  await page.getByTestId('suggested-prompt').first().click();
+  await page.locator('.smart-search .msg.user').filter({ hasText: suggestionText }).waitFor();
+  let completion: any = null;
+  for (let attempt = 0; attempt < 50 && !completion; attempt++) {
+    completion = analyticsEvents.find(event => event.eventName === 'smart_search_completed');
+    if (!completion) await page.waitForTimeout(100);
+  }
+  assert.ok(completion, 'the suggestion search reports smart_search_completed');
+  assert.equal(completion.attributes.suggested, true, 'suggestion-originated searches are marked');
+  assert.equal(completion.attributes.searchMode, 'basic');
+  assert.equal(completion.attributes.followUp, false);
+  assert.ok(Number.isInteger(completion.attributes.resultCount));
+  report.checks.push('suggested-prompts');
 
   // URL semantics for the other discovery tabs.
   await page.goto(`${harness.origin}/?discover=random`);
@@ -72,6 +98,15 @@ try {
   assert.equal(await page.locator('.smart-search [data-active] .recommendation').count(), 2);
   assert.deepEqual(await names(), [daily.name, knowledge.name], 'matched apps rank by matched-term count');
   await page.getByRole('button', { name: '收起其他匹配应用', exact: true }).click();
+  // The completion event and the card exposures of the same round share one result-set id.
+  const roundCompletion = analyticsEvents.filter(event => event.eventName === 'smart_search_completed').at(-1);
+  assert.ok(roundCompletion?.resultSetId, 'the round reported its completion');
+  let linked = false;
+  for (let attempt = 0; attempt < 50 && !linked; attempt++) {
+    linked = analyticsEvents.some(event => event.eventName === 'app_card_exposed' && event.resultSetId === roundCompletion.resultSetId);
+    if (!linked) await page.waitForTimeout(100);
+  }
+  assert.ok(linked, 'search exposures share the completion event result-set id');
   report.checks.push('basic-search-ranking');
 
   // A query with no usable keyword answers with the honest empty state, not filler.
@@ -95,6 +130,7 @@ try {
   // Errors surface with a retry that recovers.
   await page.route('**/api/apps/smart-search*', route => route.abort('failed'));
   await page.getByRole('button', { name: '新对话', exact: true }).click();
+  assert.equal(await page.getByTestId('suggested-prompt').count(), 3, 'a new conversation re-offers rotating suggestions');
   await composer.fill('整理日报');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.getByText('暂时无法连接应用广场服务，请稍后重试。').waitFor();

@@ -209,9 +209,10 @@ async function loadRandom({ revalidating = false } = {}) {
   }
 }
 
-async function onSearchResults(items) {
+async function onSearchResults(items, resultSetId = uuid()) {
   searchResultItems.value = items
-  smartSearchResultSetId = uuid()
+  // The search component owns the result-set id so search completion and exposures share it.
+  smartSearchResultSetId = resultSetId
   await nextTick()
   void observeCards()
 }
