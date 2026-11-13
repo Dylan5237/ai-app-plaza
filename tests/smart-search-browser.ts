@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { startHarness } from './helpers/harness.js';
 import { seedTagCatalog } from './helpers/tag-catalog.js';
+import { startLlmFixture } from './helpers/llm-fixture.js';
 
 const report: { status: string; checks: string[]; error?: string } = { status: 'RUNNING', checks: [] };
 const harness = await startHarness();
@@ -57,7 +58,7 @@ try {
   await composer.fill('把已有工作记录整理成日报');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.locator('.smart-search .recommendation').first().waitFor();
-  await page.getByText('尚未接入智能服务，当前为基础检索：按关键词匹配，不代表对任务的理解。').waitFor();
+  await page.getByText('当前为基础检索：按关键词匹配，不代表对任务的理解。').waitFor();
   assert.equal(await page.getByText('上一轮结果', { exact: true }).count(), 0, 'fresh results are not marked as the previous round');
   const names = () => page.locator('.smart-search [data-active] .recommendation').evaluateAll(nodes => nodes.map(node => node.querySelector('.app-title')?.textContent?.trim()));
   assert.deepEqual(await names(), [daily.name], 'the best match renders first and secondary matches stay unmounted until expanded');
@@ -167,6 +168,65 @@ try {
   assert.equal(await page.locator(`.smart-search [data-active] [data-app-id="${knowledge.id}"]`).count(), 1, 'remaining results stay visible');
   await page.unroute(`**/api/apps/${daily.id}`);
   report.checks.push('focus-revalidates-results');
+
+  // AI mode: a configured model ranks results, writes reasons and may ask one
+  // clarifying question; the follow-up reply continues the original task.
+  let llm: Awaited<ReturnType<typeof startLlmFixture>> | null = null;
+  let aiHarness: Awaited<ReturnType<typeof startHarness>> | null = null;
+  let aiPage: Awaited<ReturnType<typeof browser.newPage>> | null = null;
+  try {
+    llm = await startLlmFixture();
+    aiHarness = await startHarness(1, 'memory://', { smartSearchAi: { baseUrl: llm.url, model: 'deepseek-flash', apiKey: 'fixture-key', timeoutMs: 3000 } });
+    const aiSeeded = await seedTagCatalog(aiHarness.db, aiHarness.config.audience, ['工时日报'], 500);
+    const aiManifest = { ...aiSeeded.source, name: '工时日报助手', summary: '按可核验事实整理、归档企业微信工时日报。', tags: ['工时日报'], entries: [{ id: 'web', kind: 'web', label: '打开平台', url: 'https://example.invalid/ai' }], primaryEntry: 'web' };
+    await aiHarness.db.query('UPDATE published_snapshots SET manifest = $2::jsonb, search_text = $3 WHERE id = $1', [aiSeeded.snapshotId, JSON.stringify(aiManifest), '日报 工时 记录 整理 企业微信']);
+    // An unrelated recent app must never pad AI or degraded results.
+    const aiOther = await seedTagCatalog(aiHarness.db, aiHarness.config.audience, ['会议纪要'], 501);
+    const otherManifest = { ...aiOther.source, name: '纪要生成工具', summary: '生成会议纪要。', tags: ['会议纪要'] };
+    await aiHarness.db.query('UPDATE published_snapshots SET manifest = $2::jsonb, search_text = $3 WHERE id = $1', [aiOther.snapshotId, JSON.stringify(otherManifest), '会议 纪要 语音']);
+    aiPage = await browser.newPage();
+    aiPage.on('pageerror', error => errors.push(error.message));
+    const aiComposer = aiPage.getByRole('textbox', { name: '描述你想完成的任务' });
+    await aiPage.goto(aiHarness.origin);
+    llm.state.reply = () => ({ picks: [{ id: aiSeeded.appId, why: '按可核验事实整理并归档日报。' }], question: null });
+    await aiComposer.fill('把工作记录变成日报');
+    await aiPage.getByRole('button', { name: '发送', exact: true }).click();
+    await aiPage.getByText('由内网智能服务理解任务后推荐；理由依据应用资料，仍请以详情为准。').waitFor();
+    await aiPage.getByText('按可核验事实整理并归档日报。').waitFor();
+    assert.equal(await aiPage.locator(`.smart-search [data-active] [data-app-id="${aiSeeded.appId}"]`).count(), 1);
+    assert.equal(llm.state.requests.at(-1)!.body.model, 'deepseek-flash');
+
+    llm.state.reply = () => ({ picks: [], question: '已有工作记录，还是需要先收集？' });
+    await aiPage.getByRole('button', { name: '新对话', exact: true }).click();
+    await aiComposer.fill('帮我整理日报');
+    await aiPage.getByRole('button', { name: '发送', exact: true }).click();
+    await aiPage.getByText('已有工作记录，还是需要先收集？').waitFor();
+    assert.equal(await aiPage.getByText('没有匹配结果').count(), 0, 'a clarifying question is not presented as a concluded empty search');
+    llm.state.reply = () => ({ picks: [{ id: aiSeeded.appId, why: '整理已有记录即可。' }], question: null });
+    await aiComposer.fill('已有工作记录');
+    await aiPage.getByRole('button', { name: '发送', exact: true }).click();
+    await aiPage.locator('.smart-search [data-active] .recommendation').first().waitFor();
+    const lastQuery = llm.state.requests.at(-1)!.body.messages[1].content;
+    assert.match(lastQuery, /帮我整理日报/, 'the follow-up keeps the original task');
+    assert.match(lastQuery, /补充：已有工作记录/, 'the follow-up carries the answer');
+
+    // Model failure degrades to keyword results: the model is really called, fails,
+    // and only the keyword-matching app is returned — no unrelated padding.
+    llm.state.status = 503;
+    const requestsBefore = llm.state.requests.length;
+    await aiPage.getByRole('button', { name: '新对话', exact: true }).click();
+    await aiComposer.fill('工时日报');
+    await aiPage.getByRole('button', { name: '发送', exact: true }).click();
+    await aiPage.getByText('当前为基础检索：按关键词匹配，不代表对任务的理解。').waitFor();
+    assert.equal(llm.state.requests.length, requestsBefore + 1, 'the failed model call actually happened');
+    assert.equal(await aiPage.locator('.smart-search [data-active] .recommendation').count(), 1, 'degraded results contain only the keyword hit');
+    assert.equal(await aiPage.locator(`.smart-search [data-active] [data-app-id="${aiOther.appId}"]`).count(), 0, 'unrelated recent apps are not padded in');
+    report.checks.push('ai-mode');
+  } finally {
+    await aiPage?.close();
+    await aiHarness?.close();
+    await llm?.close();
+  }
 
   assert.deepEqual(errors, []);
   report.status = 'PASS';

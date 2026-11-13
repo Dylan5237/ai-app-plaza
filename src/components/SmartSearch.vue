@@ -16,6 +16,8 @@ const thread = ref(null)
 const input = ref(null)
 let searchToken = 0
 let savedThreadScroll = 0
+// When the assistant asked a clarifying question, the next reply continues that task.
+let pendingQuestionTask = null
 
 const submittedTask = computed(() => [...messages.value].reverse().find(message => message.kind === 'user')?.text ?? '')
 const hasResults = () => messages.value.some(m => m.kind === 'results' || m.kind === 'empty')
@@ -37,9 +39,10 @@ function newConversation() {
   task.value = ''
   searching.value = false
   expandedOthers.value = {}
+  pendingQuestionTask = null
 }
 
-async function runSearch(text) {
+async function runSearch(text, display = text) {
   const token = ++searchToken
   searching.value = true
   scrollBottom()
@@ -48,21 +51,27 @@ async function runSearch(text) {
     const result = await apiRequest(`/api/apps/smart-search?${params}`)
     if (token !== searchToken) return
     searching.value = false
-    if (!result.items?.length) {
-      messages.value.push({ kind: 'empty', taskSummary: text })
+    const question = typeof result.question === 'string' ? result.question.trim() : ''
+    // A pending question replaces the empty state: the task is not concluded yet.
+    if (!result.items?.length && !question) {
+      messages.value.push({ kind: 'empty', taskSummary: display, payload: text })
       emit('results', [])
-    } else {
+    } else if (result.items?.length) {
       messages.value.push({
-        kind: 'results', taskSummary: text,
-        candidates: result.items.map(item => ({ app: item, matched: result.matches?.[item.id] || [] })),
+        kind: 'results', taskSummary: display, payload: text, mode: result.mode === 'ai' ? 'ai' : 'basic',
+        candidates: result.items.map(item => ({ app: item, matched: result.matches?.[item.id] || [], why: result.reasons?.[item.id] || '' })),
       })
       emit('results', result.items)
     }
+    // The follow-up context only survives while the question stays unanswered.
+    pendingQuestionTask = question ? text : null
+    if (question) messages.value.push({ kind: 'question', text: question })
     scrollBottom()
   } catch (error) {
     if (token !== searchToken) return
     searching.value = false
-    messages.value.push({ kind: 'error', taskSummary: text, message: error.message || '检索暂时不可用，请重试。' })
+    pendingQuestionTask = null
+    messages.value.push({ kind: 'error', taskSummary: display, payload: text, message: error.message || '检索暂时不可用，请重试。' })
     scrollBottom()
   }
 }
@@ -72,7 +81,9 @@ function submit() {
   if (!text || searching.value) return
   messages.value.push({ kind: 'user', text })
   task.value = ''
-  void runSearch(text)
+  // A pending clarifying question keeps its task as context for this answer.
+  const sent = pendingQuestionTask ? `${pendingQuestionTask}\n补充：${text}` : text
+  void runSearch(sent, text)
 }
 
 function onEnter(event) {
@@ -88,6 +99,9 @@ function cancelSearch() {
 }
 
 function editTask(text) {
+  // Editing the requirement starts a fresh round; the old question context must not
+  // leak into the resubmitted task.
+  pendingQuestionTask = null
   task.value = text
   void nextTick(() => input.value?.focus())
 }
@@ -149,7 +163,7 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
         <div v-else-if="m.kind === 'error'" class="msg assistant">
           <div class="msg-label"><small>广场助手</small></div>
           <p class="msg-text">{{ m.message }}</p>
-          <div class="inline-actions"><el-button text size="small" @click="runSearch(m.taskSummary)">重试</el-button><el-button text size="small" @click="emit('return')">回到目录</el-button></div>
+          <div class="inline-actions"><el-button text size="small" @click="runSearch(m.payload ?? m.taskSummary)">重试</el-button><el-button text size="small" @click="emit('return')">回到目录</el-button></div>
         </div>
 
         <div v-else-if="m.kind === 'empty'" class="msg assistant" :class="{ stale: draftDirty() && i === messages.length - 1 }">
@@ -158,9 +172,15 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
           <div class="inline-actions"><span v-if="draftDirty() && i === messages.length - 1" class="stale-tag">上一轮结果</span><el-button text size="small" @click="editTask(m.taskSummary)">调整描述</el-button><el-button text size="small" @click="emit('return')">回到目录</el-button></div>
         </div>
 
+        <div v-else-if="m.kind === 'question'" class="msg assistant">
+          <div class="msg-label"><small>广场助手</small></div>
+          <p class="msg-text">{{ m.text }}</p>
+        </div>
+
         <div v-else-if="m.kind === 'results'" class="msg assistant results" :class="{ stale: draftDirty() && i === messages.length - 1 }" :data-active="i === activeResultsIndex ? 'true' : null">
           <div class="msg-label"><small>广场助手</small></div>
-          <el-alert title="尚未接入智能服务，当前为基础检索：按关键词匹配，不代表对任务的理解。" type="info" :closable="false" show-icon class="basic-banner" />
+          <el-alert v-if="m.mode === 'ai'" title="由内网智能服务理解任务后推荐；理由依据应用资料，仍请以详情为准。" type="success" :closable="false" show-icon class="basic-banner" />
+          <el-alert v-else title="当前为基础检索：按关键词匹配，不代表对任务的理解。" type="info" :closable="false" show-icon class="basic-banner" />
           <div class="result-context">
             <span class="result-task">{{ m.taskSummary }}</span>
             <span v-if="draftDirty() && i === messages.length - 1" class="stale-tag">上一轮结果</span>
@@ -173,7 +193,8 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
                 <div class="rec-reason">
                   <div class="reason-block">
                     <strong>为什么出现</strong>
-                    <p v-if="c.matched.length">命中：{{ c.matched.join('、') }}。</p>
+                    <p v-if="c.why">{{ c.why }}</p>
+                    <p v-else-if="c.matched.length">命中：{{ c.matched.join('、') }}。</p>
                     <p>{{ c.app.manifest?.summary || '暂无应用简介。' }}</p>
                   </div>
                   <p class="reason-hint">适用条件、入口与版本以详情为准；推荐不代表效果承诺。</p>
@@ -198,7 +219,7 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
         <el-input ref="input" v-model="task" class="composer-input" maxlength="200" placeholder="描述目标、已有材料与必要条件" aria-label="描述你想完成的任务" clearable @keydown.enter="onEnter" />
         <el-button type="primary" class="composer-send" :disabled="!task.trim() || searching" @click="submit()">发送</el-button>
       </div>
-      <p class="composer-hint">输入会用于站内检索；不会上传到外部服务。</p>
+      <p class="composer-hint">输入会用于站内检索与内网智能推荐；不会上传到外部互联网。</p>
     </div>
   </section>
 </template>

@@ -219,11 +219,11 @@ test('smart search returns basic-mode results ranked by matched terms', async t 
 
   // A query with no usable keyword (single character) must not degenerate into an
   // unfiltered recency list presented as matches.
-  assert.deepEqual(await h.service.smartSearch('图'), { items: [], matches: {} }, 'single-character queries return no fabricated matches');
+  assert.deepEqual(await h.service.smartSearch('图'), { mode: 'basic', items: [], matches: {}, reasons: {}, question: null }, 'single-character queries return no fabricated matches');
   assert.deepEqual((await search('？？？')).body.items, [], 'punctuation-only queries return no fabricated matches');
 
   assert.equal((await fetch(`${h.origin}/api/apps/smart-search`)).status, 400);
-  assert.equal((await fetch(`${h.origin}/api/apps/smart-search?query=${encodeURIComponent('a'.repeat(201))}`)).status, 400);
+  assert.equal((await fetch(`${h.origin}/api/apps/smart-search?query=${encodeURIComponent('a'.repeat(501))}`)).status, 400);
   await assert.rejects(h.service.smartSearch(''), /query/);
 });
 
