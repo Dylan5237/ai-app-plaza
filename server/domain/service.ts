@@ -1245,7 +1245,7 @@ export function createService(config: ServiceConfig): PlazaService {
             items.push(card.item);
             matches[pick.id] = card.matched;
             reasons[pick.id] = pick.why;
-            if (items.length >= 5) break;
+            if (items.length >= 3) break;
           }
           return { mode: 'ai' as const, items, matches, reasons, question: ranking.question };
         } catch {

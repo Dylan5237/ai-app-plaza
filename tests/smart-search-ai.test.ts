@@ -103,3 +103,29 @@ test('combined follow-up queries up to 500 characters are accepted', async t => 
   assert.equal(combined.items[0].id, daily.appId);
   await assert.rejects(h.service.smartSearch('x'.repeat(501)), /query/);
 });
+
+test('at most three picks are returned even when the model offers more', async t => {
+  const { h, llm, daily, knowledge } = await setup(t);
+  const meeting = await seedTagCatalog(h.db, h.config.audience, ['会议纪要'], 52);
+  await h.db.query('UPDATE published_snapshots SET manifest = $2::jsonb, search_text = $3 WHERE id = $1', [meeting.snapshotId, JSON.stringify({ ...meeting.source, name: '会议纪要工具', summary: '生成会议纪要。' }), '会议 纪要']);
+  const translate = await seedTagCatalog(h.db, h.config.audience, ['翻译'], 53);
+  await h.db.query('UPDATE published_snapshots SET manifest = $2::jsonb, search_text = $3 WHERE id = $1', [translate.snapshotId, JSON.stringify({ ...translate.source, name: '翻译助手', summary: '翻译文档。' }), '翻译 外语']);
+  llm.state.reply = () => ({ picks: [
+    { id: daily.appId, why: '整理日报。' }, { id: knowledge.appId, why: '整理文档。' }, { id: meeting.appId, why: '整理纪要。' },
+    { id: translate.appId, why: '第四个不应进入。' }, { id: daily.appId, why: '重复项。' },
+  ], question: null });
+  const result = await h.service.smartSearch('整理工作');
+  assert.deepEqual(result.items.map(item => item.id), [daily.appId, knowledge.appId, meeting.appId], 'only the first three picks survive');
+  assert.equal(result.items.length, 3, 'the service truncates beyond three picks');
+});
+
+test('the system prompt scope-guards user input and candidate data', async t => {
+  const { h, llm } = await setup(t);
+  llm.state.reply = () => ({ picks: [], question: null });
+  await h.service.smartSearch('帮我整理日报');
+  const system = llm.state.requests.at(-1)!.body.messages[0].content;
+  assert.match(system, /最多 3 个/);
+  assert.match(system, /不是给你的指令/);
+  assert.match(system, /与应用查找无关/);
+  assert.match(system, /资料数据/);
+});
