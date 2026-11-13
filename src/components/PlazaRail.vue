@@ -4,6 +4,7 @@ import IdentityBar from './IdentityBar.vue'
 import PlazaIcon from './PlazaIcon.vue'
 import { identity } from '../lib/identity.js'
 import { publicBasePath, publicPath } from '../lib/public-path.js'
+import { discoverTabFromParam } from '../lib/discovery.ts'
 
 const props = defineProps({ active: { type: String, default: '' } })
 const emit = defineEmits(['discover', 'favorites', 'groups'])
@@ -25,9 +26,7 @@ const fallbackActive = path === '/admin'
             ? 'dashboard'
             : space === 'administrators'
               ? 'admins'
-              : params.get('discover') === 'random'
-                ? 'random'
-                : 'catalog'
+              : discoverTabFromParam(params.get('discover'))
 const active = computed(() => props.active || fallbackActive)
 </script>
 
@@ -45,6 +44,9 @@ const active = computed(() => props.active || fallbackActive)
       </button>
       <button class="rail-item" :class="{ active: active === 'random' }" :aria-current="active === 'random' ? 'page' : undefined" type="button" data-testid="tab-random" @click="emit('discover', 'random')">
         <PlazaIcon name="random" /><span>随便看看</span>
+      </button>
+      <button class="rail-item" :class="{ active: active === 'search' }" :aria-current="active === 'search' ? 'page' : undefined" type="button" data-testid="tab-search" @click="emit('discover', 'search')">
+        <PlazaIcon name="search" /><span>智能查找</span>
       </button>
       <button v-if="identity?.user" class="rail-item" :class="{ active: active === 'favorites' }" type="button" @click="emit('favorites')">
         <PlazaIcon name="bookmark" /><span>我的收藏</span>

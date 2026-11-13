@@ -46,9 +46,9 @@ export async function startIdentityHarness(basePath = '', options: { analytics?:
   // Explicit test-only portal page, not a production route or authentication fallback.
   app.get('/fixture/portal', async (_request, reply) => reply.type('text/html').send(`<!doctype html><html lang="zh"><head><meta charset="UTF-8"><title>合成天宫测试门户</title></head><body>
     <h1>合成天宫测试门户</h1><p>仅用于本地身份与小组验证，不连接真实账号。</p>
-    <button onclick="localStorage.setItem('fixture-sky-token','fixture-admin');location.href='${basePath}/'">以测试名册管理员进入</button>
-    <button onclick="localStorage.setItem('fixture-sky-token','fixture-member');location.href='${basePath}/'">以测试普通成员进入</button>
-    <button onclick="localStorage.removeItem('fixture-sky-token');location.href='${basePath}/'">以访客进入</button></body></html>`));
+    <button onclick="localStorage.setItem('fixture-sky-token','fixture-admin');location.href='${basePath}/?discover=catalog'">以测试名册管理员进入</button>
+    <button onclick="localStorage.setItem('fixture-sky-token','fixture-member');location.href='${basePath}/?discover=catalog'">以测试普通成员进入</button>
+    <button onclick="localStorage.removeItem('fixture-sky-token');location.href='${basePath}/?discover=catalog'">以访客进入</button></body></html>`));
   await app.listen({ port, host: '127.0.0.1' });
   const headers = (extra: Record<string, string> = {}) => ({ host: new URL(origin).host, origin, ...extra });
   const login = async (token: string, session?: string, switchAccount = false) => {

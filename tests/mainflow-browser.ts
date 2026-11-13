@@ -181,7 +181,7 @@ try {
     page.setDefaultTimeout(10000);
     await installDetailFixtureRoute(page);
     if (viewport.width === 1440) {
-      await page.goto(harness.origin);
+      await page.goto(`${harness.origin}/?discover=catalog`);
       await page.getByTestId('share-button').click();
       await page.getByTestId('copy-publish-prompt').click();
       assert.ok((await page.evaluate(() => (window as any).copiedText)).includes('/api/publications'));
@@ -217,7 +217,7 @@ try {
       }
     }
     await harness.db.query("UPDATE published_snapshots SET created_at = '2026-01-01T00:00:00Z'");
-    await page.goto(harness.origin);
+    await page.goto(`${harness.origin}/?discover=catalog`);
     await page.getByTestId('app-card').first().waitFor();
     const expectedCards = viewport.width === 1440 ? 9 : 6; // 1440x900 fits three rows; 1280x720 fits two.
     await page.waitForFunction(count => document.querySelectorAll('[data-testid="app-card"]').length === count, expectedCards);
@@ -361,7 +361,7 @@ try {
     data.tags = [...data.tags, ...Array.from({ length: 25 }, (_, i) => `额外标签${i + 1}`)];
     await route.fulfill({ response, json: data });
   });
-  await tagPage.goto(harness.origin);
+  await tagPage.goto(`${harness.origin}/?discover=catalog`);
   await tagPage.getByTestId('tag-more').waitFor();
   assert.ok(await tagPage.getByTestId('app-card').first().evaluate(card => card.querySelector('.app-card-footer')!.getBoundingClientRect().bottom <= card.getBoundingClientRect().bottom - 4), 'long title keeps the footer inside the card');
   assert.ok(await tagPage.locator('.tag-filter-row').evaluate(el => el.scrollWidth <= el.clientWidth), 'tag row has no horizontal scrollbar');
@@ -396,7 +396,7 @@ try {
     { width: 390, height: 400, columns: 1 },
   ]) {
     await layoutPage.setViewportSize({ width: view.width, height: view.height });
-    if (layoutPage.url() === 'about:blank') await layoutPage.goto(harness.origin);
+    if (layoutPage.url() === 'about:blank') await layoutPage.goto(`${harness.origin}/?discover=catalog`);
     await layoutPage.waitForLoadState('networkidle');
     await layoutPage.waitForFunction(() => document.querySelector('.catalog-results')?.getAttribute('aria-busy') === 'false');
     await layoutPage.getByTestId('pagination').getByText('1', { exact: true }).click();

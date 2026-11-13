@@ -1,4 +1,5 @@
 import { appAccessPredicate, requireAppAction, initializePrivateApplication, accessRecord } from './app-access.js';
+import { rankSmartSearchCandidates, sanitizeModelQuestion, type SmartSearchAiConfig } from './smart-search-ai.js';
 import {
   createCipheriv,
   createDecipheriv,
@@ -104,6 +105,7 @@ export interface ServiceConfig {
   staticDir?: string;
   analytics?: Config['analytics'];
   applicationIdentity?: boolean;
+  smartSearchAi?: SmartSearchAiConfig;
 }
 
 export interface PlazaService {
@@ -122,6 +124,7 @@ export interface PlazaService {
   changeLifecycle(id: string, action: AppLifecycleAction, expectedAppRevision: number, expectedLifecycleRevision: number, viewerId?: string): Promise<AppLifecycleChange>;
   list(options?: { query?: string; tags?: string[]; page?: number; pageSize?: number; includeHidden?: boolean; lifecycleStatus?: AppLifecycleStatus | 'all'; usage?: CatalogUsage; sort?: 'updated'; viewerId?: string; management?: boolean }): Promise<{ items: AppView[]; total: number; page: number; pageSize: number; tags: string[]; usageCounts: { platform: number; agent: number } }>;
   random(exclude?: string[], viewerId?: string): Promise<{ items: AppView[]; allShown: boolean }>;
+  smartSearch(query: string, viewerId?: string): Promise<{ mode: 'ai' | 'basic'; items: AppView[]; matches: Record<string, string[]>; reasons: Record<string, string>; question: string | null }>;
   app(id: string, options?: { includeHidden?: boolean; viewerId?: string; management?: boolean }): Promise<AppView>;
   instructions(id: string, entryId: string, options?: { includeHidden?: boolean; viewerId?: string; management?: boolean }): Promise<{ text: string; compatibility: string[]; source: AppSource; instructionsPath: string; version: string; distribution: Record<string, unknown> }>;
   distributionPackage(id: string, assetId: string, viewerId?: string): Promise<{ id: string; sha256: string; bytes: Buffer }>;
@@ -1092,12 +1095,7 @@ export function createService(config: ServiceConfig): PlazaService {
         const alternatives: string[] = [];
         for (const token of group) {
           params.push(token);
-          const placeholder = `$${params.length}`;
-          alternatives.push(`position(${placeholder} in s.search_text) > 0`);
-          alternatives.push(`EXISTS (
-            SELECT 1 FROM jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
-             WHERE position(${placeholder} in lower(tag.value)) > 0
-          )`);
+          alternatives.push(tokenMatchPredicate(`$${params.length}`));
         }
         filters.push(`(${alternatives.join(" OR ")})`);
       }
@@ -1172,6 +1170,99 @@ export function createService(config: ServiceConfig): PlazaService {
         [ids, config.audience, viewerId ?? null],
       );
       return { items: result.rows.map(publicCard), allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
+    },
+
+    async smartSearch(query: string, viewerId?: string) {
+      // Follow-up answers continue a previous task, so the 500-character budget covers
+      // one combined "task + 补充" turn, not just a single typed message.
+      const text = typeof query === 'string' ? query.trim() : '';
+      if (!text || text.length > 500) {
+        throw new DomainError(400, 'VALIDATION_FAILED', 'query 必须是 1 到 500 个字符的文本。');
+      }
+      const tokens = searchTokens(text);
+      // Recall-oriented matching: OR across all tokens (unlike list's group AND), so
+      // natural-language filler words do not zero out the result set.
+      const flatTokens = [...new Set(tokens.flat())].filter(token => token.length >= 2);
+      const ai = config.smartSearchAi;
+      // Without a model and without a usable keyword there is no honest match; return
+      // empty instead of degenerating into an unfiltered recency list.
+      if (!flatTokens.length && !ai) return { mode: 'basic' as const, items: [], matches: {}, reasons: {}, question: null };
+      // Keyword recall keeps a wide 100-app pool: the keyword path (and any degradation
+      // from the model path) must not lose older, highly relevant apps to recency.
+      const params: unknown[] = [config.audience, viewerId ?? null];
+      const keywordRecords: AppRecord[] = [];
+      if (flatTokens.length) {
+        const alternatives: string[] = [];
+        for (const token of flatTokens) {
+          params.push(token);
+          alternatives.push(tokenMatchPredicate(`$${params.length}`));
+        }
+        const hits = await config.db.query<AppRecord>(
+          `${RANDOM_APP_SELECT} WHERE s.audience=$1 AND COALESCE(l.status,'published')='published'
+            AND ${appAccessPredicate('$2::uuid')} AND (${alternatives.join(' OR ')})
+            ORDER BY s.created_at DESC LIMIT 100`,
+          params,
+        );
+        keywordRecords.push(...hits.rows);
+      }
+      // For the model, top up the candidates with recent apps so semantic matches do not
+      // depend on sharing keywords with the task. Fill apps never enter keyword results.
+      let modelRecords = keywordRecords;
+      if (ai && keywordRecords.length < 40) {
+        const fill = await config.db.query<AppRecord>(
+          `${RANDOM_APP_SELECT} WHERE s.audience=$1 AND COALESCE(l.status,'published')='published'
+            AND ${appAccessPredicate('$2::uuid')} AND NOT (a.id=ANY($3::uuid[]))
+            ORDER BY s.created_at DESC LIMIT ${40 - keywordRecords.length}`,
+          [config.audience, viewerId ?? null, keywordRecords.map(record => record.id)],
+        );
+        modelRecords = [...keywordRecords.slice(0, 40), ...fill.rows];
+      }
+      const normalizedQuery = text.normalize('NFKC').toLocaleLowerCase('zh-CN');
+      const hit = (value: string | undefined) => {
+        if (!value) return false;
+        const normalized = value.normalize('NFKC').toLocaleLowerCase('zh-CN');
+        return normalized.length >= 2 && (normalizedQuery.includes(normalized) || flatTokens.some(token => normalized.includes(token)));
+      };
+      const toCard = (record: AppRecord) => {
+        const item = publicCard(record);
+        return { item, matched: [...(item.tags ?? []).filter(hit), ...(hit(item.manifest?.name) ? [item.manifest.name] : [])] };
+      };
+      if (ai && modelRecords.length) {
+        try {
+          const candidates = modelRecords.map(record => {
+            const item = publicCard(record);
+            return { id: item.id, name: item.manifest?.name ?? '', summary: item.manifest?.summary ?? '', tags: item.tags ?? [] };
+          });
+          const ranking = await rankSmartSearchCandidates(ai, text, candidates);
+          const byId = new Map(modelRecords.map(record => [record.id, toCard(record)]));
+          const matches: Record<string, string[]> = {};
+          const reasons: Record<string, string> = {};
+          const items: AppView[] = [];
+          for (const pick of ranking.picks) {
+            const card = byId.get(pick.id);
+            // Only ids from the offered candidates are allowed; duplicates and picks
+            // without a usable reason collapse deterministically instead of failing open.
+            if (!card || reasons[pick.id] || !pick.why.trim()) continue;
+            items.push(card.item);
+            matches[pick.id] = card.matched;
+            reasons[pick.id] = pick.why.trim();
+            if (items.length >= 3) break;
+          }
+          return { mode: 'ai' as const, items, matches, reasons, question: sanitizeModelQuestion(ranking.question) };
+        } catch {
+          // Model unavailable or its reply was unusable: answer with the keyword path below.
+        }
+      }
+      const matches: Record<string, string[]> = {};
+      const ranked = keywordRecords
+        .map(record => {
+          const card = toCard(record);
+          matches[card.item.id] = card.matched;
+          return { item: card.item, relevance: card.matched.length };
+        })
+        .sort((left, right) => right.relevance - left.relevance)
+        .map(entry => entry.item);
+      return { mode: 'basic' as const, items: ranked.slice(0, 8), matches, reasons: {}, question: null };
     },
 
     async app(id, options = {}) {
@@ -1367,9 +1458,19 @@ function notFound(): DomainError {
   return new DomainError(404, "PUBLICATION_NOT_FOUND", "发布记录不存在。");
 }
 
+// Shared keyword predicate for catalog search and smart search: a token matches an app
+// when it appears in the NFKC-normalized search text or in any effective tag (tags are
+// normalized here so full-width spellings still match half-width queries).
+function tokenMatchPredicate(placeholder: string) {
+  return `(position(${placeholder} in s.search_text) > 0 OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements_text(${EFFECTIVE_TAGS}) AS tag(value)
+     WHERE position(${placeholder} in lower(normalize(tag.value, NFKC))) > 0
+  ))`;
+}
+
 function searchTokens(query: string): string[][] {
   if (typeof query !== "string") throw new DomainError(400, "VALIDATION_FAILED", "query 必须是文本。");
-  if (query.length > 200) throw new DomainError(400, "VALIDATION_FAILED", "query 不能超过 200 个字符。");
+  if (query.length > 500) throw new DomainError(400, "VALIDATION_FAILED", "query 不能超过 500 个字符。");
   const normalized = query.normalize("NFKC").toLocaleLowerCase("zh-CN");
   const groups: string[][] = [];
   let word = "";

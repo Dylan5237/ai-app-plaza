@@ -11,19 +11,21 @@ import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
 import CatalogCard from '../components/CatalogCard.vue'
 import CatalogWheel from '../components/CatalogWheel.vue'
+import SmartSearch from '../components/SmartSearch.vue'
 import FavoriteButton from '../components/FavoriteButton.vue'
 import { apiRequest } from '../lib/api.js'
 import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
+import { discoverTabFromParam } from '../lib/discovery.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
-const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, discover: { type: String, default: '' } })
+const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
 const emit = defineEmits(['return', 'discover'])
 let disposed = false
 defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel, selectDiscovery })
 
-const discoveryTab = ref(props.discover === 'random' || new URLSearchParams(location.search).get('discover') === 'random' ? 'random' : 'catalog')
+const discoveryTab = ref(props.discover || discoverTabFromParam(new URLSearchParams(location.search).get('discover')))
 const randomItems = ref([])
 const randomIndex = ref(0)
 const randomLoading = ref(false)
@@ -32,7 +34,9 @@ const randomError = ref('')
 const randomAllShown = ref(false)
 let randomLoaded = false
 let randomRequestSequence = 0
-const scrollPositions = { catalog: 0, random: 0 }
+const scrollPositions = { catalog: 0, random: 0, search: 0 }
+const searchResultItems = ref([])
+let smartSearchResultSetId = null
 let measurementEnabled = false
 let portalViewed = false
 let publicationFlowId = null
@@ -43,11 +47,11 @@ let exposureObserver
 let exposureGeneration = 0
 const exposureTimers = new Map()
 const exposed = new Set()
-function pageContext() { return detailVisible.value ? 'detail' : discoveryTab.value === 'random' ? 'random' : 'catalog' }
+function pageContext() { return detailVisible.value ? 'detail' : discoveryTab.value === 'random' ? 'random' : discoveryTab.value === 'search' ? 'search' : 'catalog' }
 function entryMode() { return detailOriginUrl ? 'catalog' : new URLSearchParams(location.search).has('app') ? 'detail_link' : 'catalog' }
 function eventAttributes(extra = {}) { return { pageContext: pageContext(), entryMode: entryMode(), ...extra } }
 function appEvent(app) { return app?.id && app?.snapshotId ? { appId: app.id, snapshotId: app.snapshotId } : null }
-function resultContext() { const id = discoveryTab.value === 'random' ? randomResultSetId : resultSetId; return id ? { resultSetId: id } : {} }
+function resultContext() { const id = discoveryTab.value === 'random' ? randomResultSetId : discoveryTab.value === 'search' ? smartSearchResultSetId : resultSetId; return id ? { resultSetId: id } : {} }
 function recordFailure(operationKind, error) {
   const allowed = ['NOT_FOUND', 'RATE_LIMITED', 'INVALID_REQUEST', 'SERVICE_UNAVAILABLE']
   const safeErrorCode = allowed.includes(error?.code) ? error.code : error?.status ? 'UNKNOWN_ERROR' : 'NETWORK_ERROR'
@@ -74,10 +78,11 @@ async function observeCards() {
   await nextTick()
   if (generation !== exposureGeneration || document.hidden || detailVisible.value) return
   const random = discoveryTab.value === 'random'
-  const resultId = random ? randomResultSetId : resultSetId
-  const list = random ? randomItems.value : apps.value
+  const isSearch = discoveryTab.value === 'search'
+  const resultId = random ? randomResultSetId : isSearch ? smartSearchResultSetId : resultSetId
+  const list = random ? randomItems.value : isSearch ? searchResultItems.value : apps.value
   if (!resultId || !directoryMain.value) return
-  const selector = random ? '[data-testid="wheel-current"] [data-testid="app-card"]' : '.catalog-results [data-testid="app-card"]'
+  const selector = random ? '[data-testid="wheel-current"] [data-testid="app-card"]' : isSearch ? '.smart-search [data-active] .recommendation [data-testid="app-card"]' : '.catalog-results [data-testid="app-card"]'
   const cards = [...directoryMain.value.querySelectorAll(selector)]
   exposureObserver = new IntersectionObserver(entries => {
     for (const entry of entries) {
@@ -93,7 +98,7 @@ async function observeCards() {
         exposureTimers.delete(card)
         if (document.hidden || detailVisible.value || !card.isConnected || exposed.has(key)) return
         exposed.add(key)
-        track('app_card_exposed', eventAttributes({ position, section: random ? 'random' : 'catalog' }), { ...context, resultSetId: resultId })
+        track('app_card_exposed', eventAttributes({ position, section: random ? 'random' : isSearch ? 'search' : 'catalog' }), { ...context, resultSetId: resultId })
       }, 1000))
     }
   }, { threshold: [.5] })
@@ -112,8 +117,8 @@ let primaryRequestSequence = 0
 
 function shell() { return directoryMain.value?.closest('.directory-shell') }
 
-async function selectDiscovery(tab, { syncUrl = true } = {}) {
-  if (!['catalog', 'random'].includes(tab)) return
+async function selectDiscovery(tab, { syncUrl = true, refresh = false } = {}) {
+  if (!['catalog', 'random', 'search'].includes(tab)) return
   scrollPositions[discoveryTab.value] = shell()?.scrollTop || 0
   if (detailVisible.value) closeDetail()
   discoveryTab.value = tab
@@ -121,6 +126,7 @@ async function selectDiscovery(tab, { syncUrl = true } = {}) {
   if (syncUrl) {
     const url = new URL(location.href)
     if (tab === 'random') url.searchParams.set('discover', 'random')
+    else if (tab === 'catalog') url.searchParams.set('discover', 'catalog')
     else url.searchParams.delete('discover')
     url.searchParams.delete('app')
     url.searchParams.delete('space')
@@ -132,7 +138,9 @@ async function selectDiscovery(tab, { syncUrl = true } = {}) {
     const previousPageSize = pageSize.value
     updateCatalogPageSize(false)
     if (!catalogLoaded) await loadCatalog({ trigger: 'initial' })
+    else if (refresh) await loadCatalog()
     else if (pageSize.value !== previousPageSize) await loadCatalog({ trigger: 'layout_refresh' })
+    else if (catalogViewPending) { catalogViewPending = false; fireCatalogView('initial') }
   }
   if (shell()) shell().scrollTop = scrollPositions[tab]
   if (tab === 'random' && !randomLoaded) await loadRandom()
@@ -201,9 +209,18 @@ async function loadRandom({ revalidating = false } = {}) {
   }
 }
 
+async function onSearchResults(items) {
+  searchResultItems.value = items
+  smartSearchResultSetId = uuid()
+  await nextTick()
+  void observeCards()
+}
+
 async function filterFromWheel(tag) {
   await selectDiscovery('catalog')
-  toggleTag(tag)
+  // Apply the advertised filter, do not toggle: a tag that is already active in the
+  // catalog must stay selected when chosen again from a recommendation card.
+  if (!selectedTags.value.includes(tag)) toggleTag(tag)
 }
 
 async function usePrimary(app) {
@@ -298,6 +315,10 @@ let measuredCardLayout = ''
 let measuredCardHeight = 0
 let catalogReady = false
 let catalogLoaded = false
+// The search homepage preloads the catalog for instant switching; catalog_results_viewed
+// must only fire once the catalog is actually the visible surface, so the event is
+// deferred here until the user first switches to the catalog tab.
+let catalogViewPending = false
 const catalogLoading = ref(false)
 const catalogError = ref('')
 const catalogNotice = ref('')
@@ -372,6 +393,10 @@ function formatVersion(value) {
 }
 
 
+function fireCatalogView(trigger, queryLength = [...query.value.trim()].length) {
+  if (resultSetId && discoveryRequestId) track('catalog_results_viewed', eventAttributes({ trigger, discoveryRequestId, resultCount: total.value, renderedCount: apps.value.length, page: page.value, pageSize: pageSize.value, usageType: selectedUsage.value, selectedTags: [...selectedTags.value], hasQuery: queryLength > 0, queryLengthBucket: queryLength === 0 ? '0' : queryLength <= 10 ? '1-10' : queryLength <= 50 ? '11-50' : '51-200' }), { resultSetId })
+}
+
 async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' } = {}) {
   const requestSequence = ++catalogRequestSequence
   catalogLoading.value = true
@@ -404,8 +429,10 @@ async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' 
       if (measurementEnabled && !portalViewed) { track('portal_viewed', eventAttributes()); portalViewed = true }
       await nextTick()
       if (requestSequence !== catalogRequestSequence) return
-      const length = [...trimmedQuery].length
-      if (resultSetId && discoveryRequestId) track('catalog_results_viewed', eventAttributes({ trigger, discoveryRequestId, resultCount: total.value, renderedCount: apps.value.length, page: page.value, pageSize: pageSize.value, usageType: selectedUsage.value, selectedTags: [...selectedTags.value], hasQuery: length > 0, queryLengthBucket: length === 0 ? '0' : length <= 10 ? '1-10' : length <= 50 ? '11-50' : '51-200' }), { resultSetId })
+      catalogViewPending = false
+      // Report the query that produced this result set, not what the input holds now.
+      if (discoveryTab.value === 'catalog') fireCatalogView(trigger, [...trimmedQuery].length)
+      else catalogViewPending = true
       void observeCards()
     }
   } catch (error) {
@@ -627,7 +654,7 @@ function returnFromDetail() {
 }
 
 async function applyDiscoveryFromUrl() {
-  const tab = new URLSearchParams(location.search).get('discover') === 'random' ? 'random' : 'catalog'
+  const tab = discoverTabFromParam(new URLSearchParams(location.search).get('discover'))
   if (tab === discoveryTab.value) return
   discoveryTab.value = tab
   emit('discover', tab)
@@ -637,7 +664,8 @@ async function applyDiscoveryFromUrl() {
     updateCatalogPageSize(false)
     if (!catalogLoaded) await loadCatalog({ trigger: 'initial' })
     else if (pageSize.value !== previousPageSize) await loadCatalog({ trigger: 'layout_refresh' })
-  } else if (!randomLoaded) {
+    else if (catalogViewPending) { catalogViewPending = false; fireCatalogView('initial') }
+  } else if (tab === 'random' && !randomLoaded) {
     await loadRandom()
   }
   void observeCards()
@@ -880,9 +908,9 @@ async function handleHashChange() {
   publicationLoading.value = false
   if (props.management) return
   await nextTick()
-  updateCatalogPageSize(false)
   catalogReady = true
-  await loadCatalog()
+  // Exiting a publication confirmation lands on the catalog with refreshed entries.
+  await selectDiscovery('catalog', { refresh: true })
 }
 
 function publicationPath(id) {
@@ -984,9 +1012,9 @@ async function returnToCatalog() {
   selectedTags.value = []
   page.value = 1
   await nextTick()
-  updateCatalogPageSize(false)
   catalogReady = true
-  await loadCatalog()
+  // Returning from a publication confirmation lands on the catalog with refreshed entries.
+  await selectDiscovery('catalog', { refresh: true })
   if (appId) {
     catalogNotice.value = '目录已刷新，以下为已收录应用的最新详情。'
     await openApp(appId, { entryContext: 'after_publication' })
@@ -1011,8 +1039,11 @@ onMounted(async () => {
     await selectDiscovery('random', { syncUrl: false })
     if (appId && discoveryTab.value === 'random' && new URLSearchParams(location.search).get('app') === appId) await openApp(appId)
   } else {
+    // The smart-search default still preloads the catalog: the list response initializes
+    // analytics and author tags, and the tab switch becomes instant. catalog_results_viewed
+    // is deferred until the catalog actually becomes visible.
     await loadCatalog({ trigger: 'initial' })
-    if (appId && discoveryTab.value === 'catalog' && new URLSearchParams(location.search).get('app') === appId) await openApp(appId)
+    if (appId && discoveryTab.value !== 'random' && new URLSearchParams(location.search).get('app') === appId) await openApp(appId)
   }
 })
 
@@ -1160,6 +1191,7 @@ onUnmounted(() => {
         </div>
         <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
       </header>
+      <SmartSearch v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" />
       <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
@@ -1227,7 +1259,7 @@ onUnmounted(() => {
       @close="closeDetail"
     >
       <header v-if="!props.management" class="public-detail-heading">
-        <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ props.personalReturn ? '返回我的收藏' : detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : '返回应用目录' }}</button>
+        <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ props.personalReturn ? '返回我的收藏' : detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : discoveryTab === 'search' ? '返回智能查找' : '返回应用目录' }}</button>
         <h1 tabindex="-1" ref="detailHeading">应用详情</h1>
       </header>
       <template v-if="props.management" #header>

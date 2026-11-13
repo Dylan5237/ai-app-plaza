@@ -33,7 +33,7 @@ export async function getOperationsDashboard(db: Database, settings: AnalyticsSe
   const from = `FROM analytics_events WHERE environment=$1 AND site_instance_id=$2
     AND effective_at >= $3::timestamptz AND effective_at < $4::timestamptz
     AND app_id=ANY($5::uuid[])
-    AND attributes->>'pageContext' IN ('catalog','random','detail')
+    AND attributes->>'pageContext' IN ('catalog','random','search','detail')
     AND COALESCE(attributes->>'entryContext','') NOT IN ('management','after_publication')`;
   const summary = (await db.query<any>(`SELECT
     COUNT(DISTINCT session_id) FILTER (WHERE ${discovery}) AS discovery_sessions,
@@ -57,7 +57,7 @@ export async function getOperationsDashboard(db: Database, settings: AnalyticsSe
     LEFT JOIN catalog_app_lifecycle l ON l.app_id=a.id
     JOIN analytics_events e ON e.app_id=a.id AND e.environment=$1 AND e.site_instance_id=$2
       AND e.effective_at >= $3::timestamptz AND e.effective_at < $4::timestamptz
-      AND e.attributes->>'pageContext' IN ('catalog','random','detail')
+      AND e.attributes->>'pageContext' IN ('catalog','random','search','detail')
       AND COALESCE(e.attributes->>'entryContext','') NOT IN ('management','after_publication')
     WHERE a.id=ANY($5::uuid[]) AND COALESCE(l.status,'published')='published'
     GROUP BY a.id,s.manifest ORDER BY exposure DESC, a.id LIMIT 50`, params)).rows.map(row => ({

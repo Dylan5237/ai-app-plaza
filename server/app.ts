@@ -74,7 +74,8 @@ export async function createApp(config: Config, db: Database) {
   parseHttpsOrigin(config.httpsOrigin, config);
   parseTrustedProxyIp(config.trustedProxyIp);
   const service = createService({ db, gitlabUrl: config.gitlabUrl, publicOrigin: config.publicOrigin, publicBasePath: basePath, secret: config.secret, audience: config.audience,
-    distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir, analytics: config.analytics, applicationIdentity: !!config.tiangong });
+    distributionDir: resolve(config.dataDir || 'artifacts/plaza-local', 'distribution'), staticDir: config.staticDir, analytics: config.analytics, applicationIdentity: !!config.tiangong,
+    smartSearchAi: config.smartSearchAi });
   const managed = config.managedPublishing ? createManagedPublisher({ db, service, gitlabUrl: config.gitlabUrl, gitlabToken: config.managedPublishing.token, groupId: config.managedPublishing.groupId, secret: config.secret, analytics: config.analytics }) : undefined;
   // No request/body/header logging: publication links and GitLab credentials are capabilities.
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 30_000, trustProxy: false,
@@ -226,6 +227,11 @@ export async function createApp(config: Config, db: Database) {
     const search = z.object({ exclude: z.union([z.string().uuid(), z.array(z.string().uuid()).max(6)]).optional() }).parse(request.query);
     const result = await service.random(typeof search.exclude === 'string' ? [search.exclude] : search.exclude, await viewerId(request));
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
+  });
+  app.get('/api/apps/smart-search', async (request) => {
+    // 500 characters accommodates one combined follow-up turn (task + 补充答复).
+    const search = z.object({ query: z.string().min(1).max(500) }).parse(request.query);
+    return service.smartSearch(search.query, await viewerId(request));
   });
   app.get('/api/tags', async request => ({ tags: await service.tags(await viewerId(request)), maxTagsPerApp: 3 }));
   app.get('/api/apps/:id', async request => service.app(publicationId(request.params), { viewerId: await viewerId(request) }));

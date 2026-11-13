@@ -105,7 +105,7 @@ try {
       await page.getByTestId('publish-contract-dialog').waitFor({ state: 'hidden' });
       await page.keyboard.press('Escape');
       await page.getByTestId('app-detail').waitFor({ state: 'hidden' });
-      await page.goto(h.origin);
+      await page.goto(`${h.origin}/?discover=catalog`);
       await page.getByTestId('share-button').click();
       await page.getByTestId('copy-publish-prompt').waitFor();
       assert.equal(await page.getByTestId('update-target').count(), 0, 'first publication does not retain a previously selected update target');

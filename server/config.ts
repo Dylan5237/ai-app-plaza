@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import { resolve } from 'node:path';
 import { parseHttpsOrigin, parseTrustedProxyIp } from './public-origins.js';
 import { tiangongConfig, type TiangongConfig } from './domain/tiangong-identity.js';
+import type { SmartSearchAiConfig } from './domain/smart-search-ai.js';
 
 export interface Config {
   host: string; port: number; publicOrigin: string; gitlabUrl: string;
@@ -19,6 +20,7 @@ export interface Config {
   trustedProxyIp?: string;
   analytics?: { environment: 'production' | 'test' | 'local'; siteInstanceId: string };
   analyticsRetention?: { environment: 'production' | 'test' | 'local'; siteInstanceId: string };
+  smartSearchAi?: SmartSearchAiConfig;
 }
 
 function origin(value: string, name: string) {
@@ -149,6 +151,19 @@ export async function loadConfig(env = process.env): Promise<Config> {
   }
   if (tiangong && httpsOrigin) throw new Error('天宫身份模式需以门户同源地址作为唯一 PUBLIC_ORIGIN，不同时启用 PLAZA_HTTPS_ORIGIN');
   const analyticsEnabled = env.PLAZA_ANALYTICS_ENABLED === '1';
+  let smartSearchAi: SmartSearchAiConfig | undefined;
+  const aiValues = [env.PLAZA_SMART_SEARCH_BASE_URL, env.PLAZA_SMART_SEARCH_MODEL, env.PLAZA_SMART_SEARCH_API_KEY];
+  if (aiValues.some(Boolean)) {
+    if (!aiValues.every(Boolean)) throw new Error('智能检索需同时配置 PLAZA_SMART_SEARCH_BASE_URL、PLAZA_SMART_SEARCH_MODEL 与 PLAZA_SMART_SEARCH_API_KEY');
+    let aiUrl: URL;
+    try { aiUrl = new URL(env.PLAZA_SMART_SEARCH_BASE_URL!); }
+    catch { throw new Error('PLAZA_SMART_SEARCH_BASE_URL 必须是 HTTP(S) 地址'); }
+    if (!['http:', 'https:'].includes(aiUrl.protocol) || aiUrl.search || aiUrl.hash) throw new Error('PLAZA_SMART_SEARCH_BASE_URL 必须是无查询参数的 HTTP(S) 地址');
+    if (env.PLAZA_SMART_SEARCH_API_KEY!.length > 8192 || /[\r\n\u0000]/.test(env.PLAZA_SMART_SEARCH_API_KEY!)) throw new Error('PLAZA_SMART_SEARCH_API_KEY 格式无效');
+    const timeoutMs = Number(env.PLAZA_SMART_SEARCH_TIMEOUT_MS || 8000);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30000) throw new Error('PLAZA_SMART_SEARCH_TIMEOUT_MS 必须是 1000 到 30000 的整数');
+    smartSearchAi = { baseUrl: env.PLAZA_SMART_SEARCH_BASE_URL!.replace(/\/+$/, ''), model: env.PLAZA_SMART_SEARCH_MODEL!, apiKey: env.PLAZA_SMART_SEARCH_API_KEY!, timeoutMs };
+  }
   const analyticsEnvironment = env.PLAZA_ANALYTICS_ENVIRONMENT || (local ? 'local' : 'production');
   const analyticsSite = env.PLAZA_ANALYTICS_SITE_ID || 'plaza';
   if (!['production', 'test', 'local'].includes(analyticsEnvironment) || !/^[a-zA-Z0-9_-]{1,64}$/.test(analyticsSite)) {
@@ -163,7 +178,8 @@ export async function loadConfig(env = process.env): Promise<Config> {
     analyticsRetention: { environment: analyticsEnvironment as 'production' | 'test' | 'local', siteInstanceId: analyticsSite },
     ...(analyticsEnabled ? { analytics: { environment: analyticsEnvironment as 'production' | 'test' | 'local', siteInstanceId: analyticsSite } } : {}),
     ...(env.PLAZA_LOCAL_MANAGEMENT === '1' ? { localManagement: true } : {}),
-    ...(env.PLAZA_INTRANET_MANAGEMENT === '1' ? { intranetManagement: true } : {}) };
+    ...(env.PLAZA_INTRANET_MANAGEMENT === '1' ? { intranetManagement: true } : {}),
+    ...(smartSearchAi ? { smartSearchAi } : {}) };
   assertManagementConfig(config);
   return config;
 }

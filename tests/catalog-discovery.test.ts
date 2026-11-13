@@ -178,3 +178,72 @@ test('random sampling returns at most six card rows without transferring catalog
   assert.ok(batch.items.every(item => Object.keys(item.documents).length === 0));
   assert.ok(returnedBytes < 256 * 1024, `small card selection transferred ${returnedBytes} bytes instead of catalog documents`);
 });
+
+test('smart search returns basic-mode results ranked by matched terms', async t => {
+  const h = await startHarness();
+  t.after(() => h.close());
+  const daily = await seedTagCatalog(h.db, h.config.audience, ['工时日报', '企业微信'], 20);
+  const dailyManifest = { ...daily.source, name: '工时日报助手', summary: '按可核验事实整理、补填、归档企业微信工时日报。' };
+  await h.db.query('UPDATE published_snapshots SET search_text = $2, manifest = $3::jsonb WHERE id = $1', [daily.snapshotId, '日报 工时 记录 整理 归档 企业微信 helper', JSON.stringify(dailyManifest)]);
+  const mcp = await seedTagCatalog(h.db, h.config.audience, ['MCP', '禅道'], 21);
+  const mcpManifest = { ...mcp.source, name: 'zentao-mcp', summary: '让 AI 工作流通过 MCP 与 CLI 管理禅道需求。' };
+  await h.db.query('UPDATE published_snapshots SET search_text = $2, manifest = $3::jsonb WHERE id = $1', [mcp.snapshotId, 'mcp 禅道 需求 需求管理 zentao workflow', JSON.stringify(mcpManifest)]);
+  const offline = await seedTagCatalog(h.db, h.config.audience, ['日报'], 22);
+  await h.db.query("INSERT INTO catalog_app_lifecycle (app_id, status, revision, updated_at) VALUES ($1, 'offline', 2, now())", [offline.appId]);
+  await seedTagCatalog(h.db, 'other-audience', ['工时日报'], 23);
+
+  const search = async (query: string) => {
+    const res = await fetch(`${h.origin}/api/apps/smart-search?${new URLSearchParams({ query })}`);
+    return { status: res.status, body: res.status === 200 ? await res.json() as any : null };
+  };
+
+  const dailyResult = await search('把已有工作记录整理成日报');
+  assert.equal(dailyResult.status, 200);
+  assert.ok(dailyResult.body.items.length >= 1, 'the daily-report app matches the natural-language task');
+  assert.ok(dailyResult.body.items.some((item: any) => item.id === daily.appId), '工时日报助手 is returned');
+  assert.equal(dailyResult.body.items[0].id, daily.appId, 'the best-matching app ranks first');
+  const dailyMatches = dailyResult.body.matches[daily.appId] || [];
+  assert.ok(dailyMatches.length > 0, 'matched terms are returned for the daily-report app');
+  assert.ok(dailyMatches.includes('工时日报') || dailyMatches.includes('企业微信'), `matched terms include a tag: ${JSON.stringify(dailyMatches)}`);
+  assert.ok(!dailyResult.body.items.some((item: any) => item.id === offline.appId), 'offline apps are excluded');
+  assert.ok(!dailyResult.body.items.some((item: any) => item.id === mcp.appId), 'unrelated apps are not returned for a daily-report task');
+
+  const mcpResult = await search('通过 MCP 管理禅道需求');
+  assert.equal(mcpResult.status, 200);
+  assert.ok(mcpResult.body.items.some((item: any) => item.id === mcp.appId));
+  assert.ok((mcpResult.body.matches[mcp.appId] || []).some((term: string) => term.includes('MCP') || term.includes('禅道')));
+
+  const noMatch = await search('完全不相关的查询词组 xyzabc');
+  assert.equal(noMatch.status, 200);
+  assert.equal(noMatch.body.items.length, 0);
+
+  // A query with no usable keyword (single character) must not degenerate into an
+  // unfiltered recency list presented as matches.
+  assert.deepEqual(await h.service.smartSearch('图'), { mode: 'basic', items: [], matches: {}, reasons: {}, question: null }, 'single-character queries return no fabricated matches');
+  assert.deepEqual((await search('？？？')).body.items, [], 'punctuation-only queries return no fabricated matches');
+
+  assert.equal((await fetch(`${h.origin}/api/apps/smart-search`)).status, 400);
+  assert.equal((await fetch(`${h.origin}/api/apps/smart-search?query=${encodeURIComponent('a'.repeat(501))}`)).status, 400);
+  await assert.rejects(h.service.smartSearch(''), /query/);
+});
+
+test('smart search ranks older relevant apps above newer generic matches and normalizes full-width tags', async t => {
+  const h = await startHarness();
+  t.after(() => h.close());
+  const relevant = await seedTagCatalog(h.db, h.config.audience, ['ＡＩ日报'], 30);
+  const relevantManifest = { ...relevant.source, name: 'ＡＩ日报助手', summary: '整理已有工作记录并生成日报。' };
+  await h.db.query("UPDATE published_snapshots SET search_text = $2, manifest = $3::jsonb, created_at = '2026-01-01T00:00:00Z' WHERE id = $1",
+    [relevant.snapshotId, '日报 整理 记录', JSON.stringify(relevantManifest)]);
+  // Nine newer apps that each match only the generic bigram 整理.
+  for (let index = 31; index <= 39; index++) {
+    const generic = await seedTagCatalog(h.db, h.config.audience, ['其他能力'], index);
+    await h.db.query("UPDATE published_snapshots SET search_text = $2, created_at = $3 WHERE id = $1",
+      [generic.snapshotId, '通用整理材料', `2026-02-${String(index - 30).padStart(2, '0')}T00:00:00Z`]);
+  }
+
+  const result = await h.service.smartSearch('整理日报');
+  assert.ok(result.items.some(item => item.id === relevant.appId), 'the older highly relevant app is not truncated away by newer generic matches');
+  assert.equal(result.items[0].id, relevant.appId, 'relevance outranks recency');
+  assert.ok(result.items.length <= 8, 'at most eight results are returned');
+  assert.ok((result.matches[relevant.appId] || []).includes('ＡＩ日报'), 'full-width tags match half-width queries via NFKC');
+});

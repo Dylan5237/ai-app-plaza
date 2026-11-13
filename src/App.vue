@@ -11,12 +11,13 @@ import AdministrationCenter from './pages/AdministrationCenter.vue'
 import { identity } from './lib/identity.js'
 import { publicBasePath, publicPath } from './lib/public-path.js'
 import { primaryAction } from './lib/catalog.ts'
+import { discoverTabFromParam } from './lib/discovery.ts'
 
 const showPrototype = computed(() => new URLSearchParams(window.location.search).get('prototype') === '1')
 const showManagement = computed(() => ['/admin', '/private-previews'].includes(window.location.pathname.slice(publicBasePath().length).replace(/\/$/, '')))
 const showGroups = ref(false)
 const showPersonal = ref(false), detailFromPersonal = ref(false), directory = ref(null)
-const discoverView = ref(new URLSearchParams(location.search).get('discover') === 'random' ? 'random' : 'catalog')
+const discoverView = ref(discoverTabFromParam(new URLSearchParams(location.search).get('discover')))
 let personalFocus = null
 let initialPersonalPending = new URLSearchParams(location.search).get('space') === 'favorites'
 const center = new URLSearchParams(location.search).get('space') || ''
@@ -60,18 +61,23 @@ function openGroups() {
   if (showManagement.value || isCenter) { location.assign(publicPath('/?space=groups')); return }
   showGroups.value = true; showPersonal.value = false
 }
+function discoverTarget(tab) {
+  if (tab === 'random') return publicPath('/?discover=random')
+  if (tab === 'catalog') return publicPath('/?discover=catalog')
+  return publicPath('/')
+}
 function showDiscovery(tab) {
   discoverView.value = tab
   const preview = new URLSearchParams(location.hash.replace(/^#/, '')).has('publish')
   if (preview || showManagement.value || isCenter) {
-    location.assign(publicPath(tab === 'random' ? '/?discover=random' : '/'))
+    location.assign(discoverTarget(tab))
     return
   }
   showGroups.value = false
   showPersonal.value = false
   detailFromPersonal.value = false
   if (directory.value) { void directory.value.selectDiscovery(tab); return }
-  location.assign(publicPath(tab === 'random' ? '/?discover=random' : '/'))
+  location.assign(discoverTarget(tab))
 }
 async function usePersonalApp(app) {
   if (primaryAction(app).entry?.kind === 'agent') await openPersonalApp(app.id)
@@ -93,7 +99,7 @@ async function usePersonalApp(app) {
       </template>
       <template v-else>
         <AppManagement v-show="!showGroups && !showPersonal" v-if="showManagement && !detailFromPersonal" :key="identity.epoch" />
-        <ToolDirectory v-show="!showGroups && !showPersonal" v-else :key="identity.epoch" ref="directory" :personal-return="detailFromPersonal" :discover="discoverView" @discover="discoverView = $event" @return="returnToPersonal" />
+        <ToolDirectory v-show="!showGroups && !showPersonal" v-else :key="identity.epoch" ref="directory" :personal-return="detailFromPersonal" :discover="discoverView" :visible="!showGroups && !showPersonal" @discover="discoverView = $event" @return="returnToPersonal" />
       </template>
     </div>
   </div>
