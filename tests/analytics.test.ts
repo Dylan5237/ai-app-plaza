@@ -47,6 +47,12 @@ test('browser events persist safe fields, deduplicate retries and exposures, and
   assert.equal(rows.find(row => row.event_id === late.eventId).clock_adjusted, true);
   const searchExposure = { ...event, eventId: randomUUID(), resultSetId: randomUUID(), attributes: { pageContext: 'search', entryMode: 'catalog', position: 1, section: 'search' } };
   assert.equal((await send(searchExposure)).statusCode, 200, 'smart-search discovery context is accepted');
+  const searchEvent = { eventId: randomUUID(), eventName: 'smart_search_completed', occurredAt: new Date().toISOString(), identityScope: 'persistent', visitorId: event.visitorId, sessionId: event.sessionId, viewId: event.viewId, resultSetId: randomUUID(),
+    attributes: { pageContext: 'search', entryMode: 'catalog', searchMode: 'ai', resultCount: 2, hasQuery: true, queryLengthBucket: '11-50', durationMs: 1500, followUp: false, questionPending: false } };
+  assert.equal((await send(searchEvent)).statusCode, 200, 'smart-search completion is accepted');
+  assert.equal((await send({ ...searchEvent, eventId: randomUUID(), attributes: { ...searchEvent.attributes, searchMode: 'other' } })).statusCode, 400, 'unknown search modes are rejected');
+  assert.equal((await send({ ...searchEvent, eventId: randomUUID(), attributes: { ...searchEvent.attributes, query: 'raw search text' } })).statusCode, 400, 'raw search text is still rejected');
+  assert.equal((await send({ ...searchEvent, eventId: randomUUID(), attributes: { ...searchEvent.attributes, resultCount: undefined } })).statusCode, 400, 'completions must carry their result count');
   const click = { ...event, eventId:randomUUID(), eventName:'app_entry_clicked', interactionId:randomUUID(), attributes:{ pageContext:'catalog', entryMode:'catalog', entryId:'web', entryKind:'web', placement:'card' } };
   assert.equal((await send(click)).statusCode, 200);
   assert.equal((await send({ ...click, eventId:randomUUID(), interactionId:randomUUID() })).statusCode, 200);

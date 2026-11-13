@@ -54,7 +54,7 @@ const cards = computed(() => {
   return [
     { label:'公开应用发现会话', value:n(s.discoverySessions), note:`${n(s.discoveryVisitors)} 个匿名档案 · 不含搜索筛选`, icon:'search' },
     { label:'使用意向会话', value:n(s.usageSessions), note:`公开应用发现会话占比 ${pct(s.usageSessions,s.discoverySessions)}`, icon:'agent' },
-    { label:'主动搜索', value:'—', note:'结果范围无法区分，暂不可计算', icon:'catalog' },
+    { label:'主动搜索', value:n(s.searches), note:`空结果 ${pct(s.emptySearches,s.searches)} · AI 模式 ${pct(s.aiSearches,s.searches)} · 追问 ${n(s.questionSearches)} · 续答 ${n(s.followUpSearches)}`, icon:'search' },
     { label:'在架应用', value:n(data.value?.supply?.available), note:'当前公开且上架', icon:'operations' },
   ]
 })

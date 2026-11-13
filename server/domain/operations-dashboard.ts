@@ -48,6 +48,17 @@ export async function getOperationsDashboard(db: Database, settings: AnalyticsSe
     COUNT(DISTINCT session_id) FILTER (WHERE ${usage}) AS usage_sessions
     ${from} GROUP BY day ORDER BY day`, params)).rows.map(row => ({ day:row.day,
       discoverySessions:Number(row.discovery_sessions), usageSessions:Number(row.usage_sessions) }));
+  // Smart-search activity carries no app scope (queries are never recorded verbatim),
+  // so it is counted independently of the public app scope.
+  const searchStats = (await db.query<any>(`SELECT
+    COUNT(*) AS searches,
+    COUNT(*) FILTER (WHERE (attributes->>'resultCount')::int = 0 AND COALESCE(attributes->>'questionPending','false') <> 'true') AS empty_searches,
+    COUNT(*) FILTER (WHERE attributes->>'searchMode'='ai') AS ai_searches,
+    COUNT(*) FILTER (WHERE attributes->>'followUp'='true') AS follow_up_searches,
+    COUNT(*) FILTER (WHERE attributes->>'questionPending'='true') AS question_searches
+    FROM analytics_events WHERE environment=$1 AND site_instance_id=$2
+      AND effective_at >= $3::timestamptz AND effective_at < $4::timestamptz
+      AND event_name='smart_search_completed'`, params.slice(0, 4))).rows[0];
   const apps = appScopeAvailable ? (await db.query<any>(`SELECT a.id, s.manifest->>'name' AS name,
     COUNT(*) FILTER (WHERE e.event_name='app_card_exposed') AS exposure,
     COUNT(DISTINCT e.session_id) FILTER (WHERE e.event_name='app_detail_viewed' AND e.attributes->>'entryContext' IN ('card','search_result','deep_link')) AS details,
@@ -77,7 +88,8 @@ export async function getOperationsDashboard(db: Database, settings: AnalyticsSe
     partial:start!==requestedStart, appScopeAvailable,
     summary:{ discoverySessions:appScopeAvailable?Number(summary.discovery_sessions):null, usageSessions:appScopeAvailable?Number(summary.usage_sessions):null,
       discoveryVisitors:appScopeAvailable?Number(summary.discovery_visitors):null, sessionOnly:appScopeAvailable?Number(summary.session_only):null,
-      searches:null, emptySearches:null,
+      searches:Number(searchStats.searches), emptySearches:Number(searchStats.empty_searches),
+      aiSearches:Number(searchStats.ai_searches), followUpSearches:Number(searchStats.follow_up_searches), questionSearches:Number(searchStats.question_searches),
       webActions:appScopeAvailable?Number(summary.web_actions):null, agentActions:appScopeAvailable?Number(summary.agent_actions):null },
     days:appScopeAvailable?days:null, apps,
     supply:supply ? { available:Number(supply.available), newApps:Number(supply.new_apps), updates:Number(supply.updates) } : null,
