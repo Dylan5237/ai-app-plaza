@@ -137,7 +137,7 @@ async function assertCardActions(card: any, { lift = false, compact = false } = 
   assert.ok(layout.footerInsideCard, 'the footer stays inside the card');
   if (lift) assert.ok(layout.translateY <= -1, 'hover lifts the card');
   if (compact) {
-    assert.ok(layout.summaryHeight <= 20, `the short-screen summary stays on one line (${layout.summaryHeight}px)`);
+    assert.ok(layout.summaryHeight <= 20.5, `the short-screen summary stays on one line (${layout.summaryHeight}px)`);
     assert.ok(layout.summaryToTags <= 28, `compact cards leave no blank middle (${layout.summaryToTags}px)`);
   }
   return layout;

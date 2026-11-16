@@ -42,7 +42,7 @@ const attributes = z.object({
 
 export const browserEvent = z.object({
   eventId: id,
-  eventName: z.enum(['portal_viewed', 'catalog_results_viewed', 'smart_search_completed', 'app_card_exposed', 'app_detail_viewed', 'app_entry_clicked', 'prompt_copy_result', 'portal_operation_failed', 'publish_panel_viewed', 'publication_preview_viewed']),
+  eventName: z.enum(['portal_viewed', 'catalog_results_viewed', 'smart_search_completed', 'app_card_exposed', 'app_detail_viewed', 'app_entry_clicked', 'prompt_copy_result', 'app_share_link_copied', 'portal_operation_failed', 'publish_panel_viewed', 'publication_preview_viewed']),
   occurredAt: z.iso.datetime({ offset: true }),
   identityScope: z.enum(['persistent', 'session_only']),
   visitorId: id.nullable(), sessionId: id, viewId: id,
@@ -58,6 +58,7 @@ export const browserEvent = z.object({
     app_detail_viewed: ['appId', 'snapshotId', 'attributes.entryContext'],
     app_entry_clicked: ['appId', 'snapshotId', 'interactionId', 'attributes.entryId', 'attributes.entryKind', 'attributes.placement'],
     prompt_copy_result: ['interactionId', 'attributes.promptPurpose', 'attributes.result'],
+    app_share_link_copied: ['appId', 'snapshotId', 'interactionId', 'attributes.placement'],
     portal_operation_failed: ['interactionId', 'attributes.operationKind', 'attributes.safeErrorCode'],
     publish_panel_viewed: ['flowId', 'attributes.publishKind'],
     publication_preview_viewed: ['publicationId', 'attributes.previewRevision', 'attributes.viewerContext'],

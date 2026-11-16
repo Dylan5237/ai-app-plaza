@@ -22,12 +22,22 @@ async function seedApp(name: string, tags: string[], searchText: string) {
     primaryEntry: 'web',
   };
   await harness.db.query('UPDATE published_snapshots SET manifest = $2::jsonb, search_text = $3 WHERE id = $1', [seeded.snapshotId, JSON.stringify(manifest), searchText]);
-  return { id: seeded.appId, name };
+  return { id: seeded.appId, snapshotId: seeded.snapshotId, source: seeded.source as any, name };
 }
 
 const daily = await seedApp('工时日报助手', ['工时日报', '日报模板'], '工时 日报 企业微信 工作记录 汇总');
 const knowledge = await seedApp('知识库整理', ['知识整理'], '知识 整理 文档 归档');
 const meeting = await seedApp('会议纪要生成器', ['会议纪要'], '会议 纪要 语音转文字');
+const agentApp = await seedApp('禅道需求助手', ['MCP', '禅道'], 'mcp 禅道 需求 zentao');
+// Agent-entry app with stable instructions text for the one-click copy check.
+await harness.db.query(
+  'UPDATE published_snapshots SET manifest = $2::jsonb, documents = $3::jsonb WHERE id = $1',
+  [agentApp.snapshotId, JSON.stringify({
+    ...agentApp.source, name: '禅道需求助手', tags: ['MCP', '禅道'],
+    entries: [{ id: 'mcp-main', kind: 'agent', label: 'MCP 接入能力', instructionsPath: 'docs/agent-mcp.md', compatibility: ['Codex'] }],
+    primaryEntry: 'mcp-main',
+  }), JSON.stringify({ 'docs/agent-mcp.md': '禅道需求助手接入说明：安装 zentao-mcp 后按需查询需求。' })],
+);
 
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
 const errors: string[] = [];
@@ -126,6 +136,13 @@ try {
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.locator('.smart-search .msg-text').filter({ hasText: '没有匹配结果' }).last().waitFor();
   report.checks.push('no-match-honesty');
+
+  // Empty results offer a one-click demand registration (anonymous submissions allowed).
+  await page.getByTestId('demand-register').click();
+  await page.getByTestId('demand-description').fill('帮我汇总每周门诊量并出图');
+  await page.getByTestId('demand-submit').click();
+  await page.getByText('已登记。我们会据此完善应用供给，感谢反馈。').waitFor();
+  report.checks.push('demand-registration');
 
   // Errors surface with a retry that recovers.
   await page.route('**/api/apps/smart-search*', route => route.abort('failed'));
@@ -274,10 +291,49 @@ try {
     await llm?.close();
   }
 
+  // Card-level adoption actions: one-click integration prompt copy and share-link copy.
+  await page.getByTestId('tab-catalog').click();
+  const clearFilters = page.getByRole('button', { name: '清除筛选', exact: true });
+  if (await clearFilters.count()) await clearFilters.click();
+  const agentCard = page.locator('.catalog-results').getByTestId('app-card').filter({ hasText: '禅道需求助手' });
+  await agentCard.scrollIntoViewIfNeeded();
+  await agentCard.hover();
+  await agentCard.getByTestId('card-copy-prompt').click();
+  await page.evaluate(() => { (window as any).__plazaCopied = null; const original = navigator.clipboard.writeText.bind(navigator.clipboard); navigator.clipboard.writeText = text => { (window as any).__plazaCopied = text; return original(text); }; });
+  await agentCard.hover();
+  await agentCard.getByTestId('card-copy-prompt').click();
+  await page.waitForFunction(() => (window as any).__plazaCopied !== null);
+  const copiedPrompt = await page.evaluate(() => (window as any).__plazaCopied);
+  assert.ok(copiedPrompt.includes('禅道需求助手接入说明'), 'the card copies the real integration prompt');
+  let promptEvent = null;
+  for (let attempt = 0; attempt < 50 && !promptEvent; attempt++) {
+    promptEvent = analyticsEvents.find(event => event.eventName === 'prompt_copy_result' && event.attributes.promptPurpose === 'usage');
+    if (!promptEvent) await page.waitForTimeout(100);
+  }
+  assert.ok(promptEvent, 'card prompt copy is tracked');
+  assert.equal(promptEvent.appId, agentApp.id);
+
+  await page.evaluate(() => { (window as any).__plazaCopied = null; });
+  const dailyCard = page.locator('.catalog-results').getByTestId('app-card').filter({ hasText: daily.name }).first();
+  await dailyCard.scrollIntoViewIfNeeded();
+  await dailyCard.getByTestId('card-share').click();
+  await page.waitForFunction(() => (window as any).__plazaCopied !== null);
+  const shared = await page.evaluate(() => (window as any).__plazaCopied);
+  assert.ok(shared.includes(daily.name), 'share text carries the app name');
+  assert.ok(shared.includes(`?app=${daily.id}`), 'share text carries the deep link');
+  let shareEvent = null;
+  for (let attempt = 0; attempt < 50 && !shareEvent; attempt++) {
+    shareEvent = analyticsEvents.find(event => event.eventName === 'app_share_link_copied' && event.attributes.placement === 'card');
+    if (!shareEvent) await page.waitForTimeout(100);
+  }
+  assert.ok(shareEvent, 'card share is tracked');
+  assert.equal(shareEvent.appId, daily.id);
+  report.checks.push('card-adoption-actions');
+
   // Super administrators configure the system prompt in the admin center; the change
   // takes effect for subsequent searches and members never see the page.
   const promptLlm = await startLlmFixture();
-  const promptHarness = await startIdentityHarness('', { superAdminAccount: 'fixture.admin', smartSearchAi: { baseUrl: promptLlm.url, model: 'deepseek-flash', apiKey: 'fixture-key', timeoutMs: 3000 } });
+  const promptHarness = await startIdentityHarness('', { analytics: true, superAdminAccount: 'fixture.admin', smartSearchAi: { baseUrl: promptLlm.url, model: 'deepseek-flash', apiKey: 'fixture-key', timeoutMs: 3000 } });
   let promptPage: Awaited<ReturnType<typeof browser.newPage>> | null = null;
   let memberPage: Awaited<ReturnType<typeof browser.newPage>> | null = null;
   try {
@@ -318,6 +374,38 @@ try {
     await memberPage.goto(`${promptHarness.origin}/?space=smart-search`);
     await memberPage.getByRole('heading', { name: '当前身份没有此页面权限', exact: true }).waitFor();
     report.checks.push('prompt-config');
+
+    // Logged-in members' demand registrations carry their identity through the portal-token header.
+    promptLlm.state.reply = () => ({ picks: [], question: null });
+    await memberPage.goto(`${promptHarness.origin}/`);
+    await memberPage.getByRole('heading', { name: '你想完成什么工作？', exact: true }).waitFor();
+    await memberPage.getByRole('textbox', { name: '描述你想完成的任务' }).fill('完全不存在的需求词组');
+    await memberPage.getByRole('button', { name: '发送', exact: true }).click();
+    await memberPage.locator('.smart-search .msg-text').filter({ hasText: '没有匹配结果' }).last().waitFor();
+    await memberPage.getByTestId('demand-register').click();
+    await memberPage.getByTestId('demand-description').fill('成员想要一个排班助手');
+    await memberPage.getByTestId('demand-submit').click();
+    await memberPage.getByText('已登记。我们会据此完善应用供给，感谢反馈。').waitFor();
+    const memberDemand = (await promptHarness.db.query(`SELECT i.name AS submitter FROM plaza_smart_search_requests r LEFT JOIN plaza_identities i ON i.id = r.submitted_by ORDER BY r.created_at DESC LIMIT 1`)).rows[0];
+    assert.equal(memberDemand.submitter, '测试普通成员', 'a logged-in demand submission is attributed to the member');
+    report.checks.push('demand-member-identity');
+
+    // Authors see their own apps' discovery and usage numbers on a dedicated page.
+    const { createAppAccessService } = await import('../server/domain/app-access.js');
+    const adminId = (await promptHarness.db.query('SELECT id FROM plaza_identities WHERE account = \'fixture.admin\'')).rows[0].id;
+    await createAppAccessService(promptHarness.db, promptHarness.config.audience).adopt(adminId, promptSeeded.appId, { ownerId: adminId, expectedAppRevision: 1, requestId: crypto.randomUUID() });
+    const promptSettings = promptHarness.config.analytics!;
+    await promptHarness.db.query(`INSERT INTO analytics_events(event_id,event_name,occurred_at,received_at,effective_at,clock_adjusted,environment,site_instance_id,identity_scope,visitor_id,session_id,view_id,app_id,snapshot_id,heat_counted,attributes)
+      VALUES($1,'app_share_link_copied',now(),now(),now(),false,$2,$3,'persistent',null,$4,$5,$6,$7,false,'{"pageContext":"search","placement":"card"}'::jsonb)`,
+      [crypto.randomUUID(), promptSettings.environment, promptSettings.siteInstanceId, crypto.randomUUID(), crypto.randomUUID(), promptSeeded.appId, promptSeeded.snapshotId]);
+    await promptPage.goto(`${promptHarness.origin}/?space=author-stats`);
+    await promptPage.getByRole('heading', { name: '我的应用数据', exact: true }).waitFor();
+    await promptPage.getByText('工时日报助手').waitFor();
+    assert.equal(await promptPage.locator('.stats-table tbody tr').count(), 1);
+    assert.match(await promptPage.locator('.stats-table tbody tr').innerText(), /1/, 'the seeded share shows up in the author numbers');
+    await memberPage.goto(`${promptHarness.origin}/?space=author-stats`);
+    await memberPage.getByText('你还没有负责或维护的应用').waitFor();
+    report.checks.push('author-stats');
   } finally {
     await promptPage?.close();
     await memberPage?.close();

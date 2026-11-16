@@ -1,7 +1,7 @@
 <script setup>
 import { formatDate } from '../lib/date.ts'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElDialog, ElMessage, ElPopover } from 'element-plus'
+import { ElButton, ElDialog, ElMessage, ElPopover } from 'element-plus'
 import PlazaIcon from '../components/PlazaIcon.vue'
 import '../styles/design-tokens.css'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
@@ -23,7 +23,7 @@ import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
 const emit = defineEmits(['return', 'discover'])
 let disposed = false
-defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel, selectDiscovery })
+defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel, selectDiscovery, copyPromptFromCard, copyShareLink })
 
 const discoveryTab = ref(props.discover || discoverTabFromParam(new URLSearchParams(location.search).get('discover')))
 const randomItems = ref([])
@@ -763,8 +763,36 @@ async function copyAgentInstructions() {
   }
 }
 
-async function copyText(text, successMessage) {
-  if (!text || disposed) return false
+// One-click integration prompt copy straight from cards, without opening the detail dialog.
+async function copyPromptFromCard(app) {
+  try {
+    const current = await apiRequest(appPath(app.id))
+    const action = primaryAction(current)
+    if (action.reason) throw new Error(action.reason)
+    if (action.entry.kind !== 'agent') throw new Error('该应用没有 Agent 接入说明。')
+    const instructions = await apiRequest(`${appPath(current.id)}/instructions/${encodeURIComponent(action.entry.id)}`)
+    if (instructions.distribution?.status === 'disabled') throw new Error('接入说明暂不可用。')
+    const copied = await copyText(instructions.text, '接入提示词已复制')
+    const context = appEvent(current), interactionId = uuid()
+    if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'usage', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
+  } catch (error) {
+    if (!props.management) recordFailure('instructions', error)
+    ElMessage.error(errorText(error))
+  }
+}
+
+// Share blurb (name + summary + deep link) ready to paste into chat.
+async function copyShareLink(app, placement) {
+  const name = app.manifest?.name || '未命名应用'
+  const summary = app.manifest?.summary || ''
+  const link = `${location.origin}${publicPath(`/?app=${encodeURIComponent(app.id)}`)}`
+  const copied = await copyText([name, summary, link].filter(Boolean).join('\n'), '分享内容已复制，发给同事即可打开')
+  const context = appEvent(app), interactionId = uuid()
+  // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
+  if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
+}
+
+async function copyText(text, successMessage) {  if (!text || disposed) return false
   try {
     if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
     await navigator.clipboard.writeText(text)
@@ -1192,8 +1220,8 @@ onUnmounted(() => {
         </div>
         <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
       </header>
-      <SmartSearch v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" />
-      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" />
+      <SmartSearch v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" @copy-prompt="copyPromptFromCard" @share="app => copyShareLink(app, 'card')" />
+      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @copy-prompt="copyPromptFromCard" @share="app => copyShareLink(app, 'card')" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
           <div class="catalog-controls">
@@ -1236,7 +1264,7 @@ onUnmounted(() => {
           <div v-if="catalogNotice" class="catalog-notice" role="status">{{ catalogNotice }}</div>
           <section v-for="group in catalogGroups" :key="group.value" class="catalog-group" :data-testid="`catalog-group-${group.value}`" :aria-label="group.label">
             <div class="app-grid">
-            <CatalogCard v-for="app in group.apps" :key="app.id" :app="app" :selected-tags="selectedTags" @detail="openApp" @primary="usePrimary" @tag="toggleTag" />
+            <CatalogCard v-for="app in group.apps" :key="app.id" :app="app" :selected-tags="selectedTags" @detail="openApp" @primary="usePrimary" @tag="toggleTag" @copy-prompt="copyPromptFromCard" @share="app => copyShareLink(app, 'card')" />
             </div>
           </section>
         </div>
@@ -1262,6 +1290,7 @@ onUnmounted(() => {
       <header v-if="!props.management" class="public-detail-heading">
         <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ props.personalReturn ? '返回我的收藏' : detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : discoveryTab === 'search' ? '返回智能查找' : '返回应用目录' }}</button>
         <h1 tabindex="-1" ref="detailHeading">应用详情</h1>
+        <el-button v-if="selectedApp" class="detail-share" text data-testid="detail-share" @click="copyShareLink(selectedApp, 'detail')"><PlazaIcon name="share" />分享</el-button>
       </header>
       <template v-if="props.management" #header>
         <div class="detail-dialog-heading">
@@ -1463,7 +1492,7 @@ onUnmounted(() => {
 .tag-filter-row{display:flex;align-items:center;flex-wrap:nowrap;gap:7px;min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none}.tag-filter-row::-webkit-scrollbar{display:none}.tag-filter-label{flex:none;white-space:nowrap;margin-right:8px;font-size:12px;color:var(--plaza-muted);line-height:18px;}.filter-chip,.tag-more{flex:none;min-height:30px;padding:4px 12px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--plaza-text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.filter-chip:hover,.tag-more:hover{background:var(--plaza-brand-soft);color:var(--plaza-brand)}.filter-chip.active{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:600}.tag-more{background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.clear-filters{flex:none;border:0;background:none;color:var(--plaza-brand);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.tag-measure{position:fixed;left:0;top:0;visibility:hidden;display:flex;gap:7px;pointer-events:none;white-space:nowrap}.overflow-tags{display:flex;flex-wrap:wrap;gap:4px;max-height:240px;overflow-y:auto}
 .catalog-section{display:flex;flex:1;flex-direction:column;min-height:0}.catalog-heading-row{height:0;margin:0;flex:none}.catalog-results{flex:1 0 auto;position:relative}.catalog-refreshing{position:absolute;right:0;top:-20px;color:var(--plaza-muted);font-size:11px;line-height:18px;}.app-grid{display:grid;grid-template-columns:repeat(var(--catalog-columns),minmax(0,1fr));gap:var(--catalog-gap)}.pagination-row{display:flex;flex:0 0 48px;align-items:center;justify-content:center;margin-top:auto}
 .catalog-state{display:flex;min-height:200px;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:28px;border:1px solid var(--plaza-line);border-radius:16px;background:var(--plaza-surface);color:var(--plaza-muted);font-size:14px;text-align:center;line-height:22px;}.catalog-state strong{color:var(--plaza-ink);font-size:17px;line-height:26px;}.catalog-state p{margin:0 0 4px}.catalog-state.is-error{color:var(--plaza-danger);margin-bottom:16px}.empty-mark{font-size:27px}.catalog-notice{margin-bottom:12px;padding:9px 12px;border:1px solid var(--plaza-line);border-radius:9px;background:var(--plaza-surface);color:var(--plaza-success);font-size:12px;line-height:18px;}
-.public-detail{display:block;width:100%;min-height:100%;margin:0;padding:26px 32px 32px;border:0;border-radius:0;background:var(--plaza-canvas)}.public-detail-heading{display:flex;align-items:center;gap:18px;margin-bottom:20px}.public-detail-heading h1{margin:0;font-size:24px;line-height:32px;}.public-detail .detail-layout{height:calc(100vh - 170px)}.public-app-version{padding:3px 7px;color:var(--plaza-muted);font-size:11px;line-height:18px;}
+.public-detail{display:block;width:100%;min-height:100%;margin:0;padding:26px 32px 32px;border:0;border-radius:0;background:var(--plaza-canvas)}.public-detail-heading{display:flex;align-items:center;gap:18px;margin-bottom:20px}.public-detail-heading h1{margin:0;font-size:24px;line-height:32px;}.detail-share{margin-left:auto;color:var(--plaza-text)}.detail-share :deep(svg){width:15px;height:15px;margin-right:4px;color:#8a93a2}.detail-share:hover{color:var(--plaza-brand)}.public-detail .detail-layout{height:calc(100vh - 170px)}.public-app-version{padding:3px 7px;color:var(--plaza-muted);font-size:11px;line-height:18px;}
 .detail-return{min-height:40px;border-color:var(--plaza-brand);background:var(--plaza-brand-soft);color:var(--plaza-brand);font-weight:650}.detail-return:hover{background:var(--plaza-brand-soft)}
 .detail-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 18px; color: var(--plaza-ink); font-size: 17px; font-weight: 650;line-height:26px;}
 .detail-update-link { border: 0; background: none; color: var(--plaza-text); font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; padding: 2px 4px; }

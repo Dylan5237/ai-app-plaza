@@ -2,7 +2,7 @@
 import { ref, watch, onUnmounted } from 'vue'
 import CatalogCard from './CatalogCard.vue'
 const props = defineProps({ items: { type: Array, required: true }, index: { type: Number, default: 0 }, loading: Boolean, revalidating: Boolean, error: String, allShown: Boolean })
-const emit = defineEmits(['update:index', 'refresh', 'return', 'detail', 'primary', 'tag'])
+const emit = defineEmits(['update:index', 'refresh', 'return', 'detail', 'primary', 'tag', 'copyPrompt', 'share'])
 const wheel = ref(null)
 let touchStart = null
 let touchTarget = null
@@ -159,7 +159,7 @@ function click(event) {
           :inert="opacity(position) < .02"
           :data-testid="position === index ? 'wheel-current' : 'wheel-side'">
           <CatalogCard :app="app" :inert="position !== index" :aria-hidden="position !== index ? 'true' : undefined"
-            @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" />
+            @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" @copy-prompt="emit('copyPrompt', $event)" @share="emit('share', $event)" />
           <button v-if="position !== index" class="side-select" :aria-label="`切换到 ${app.manifest.name}`" @click="select(position)"></button>
         </div>
       </div>

@@ -3,6 +3,7 @@ import { requireAdministrator } from './domain/platform-access.js';
 import { publicCatalogAppIds } from './domain/app-access.js';
 import { installManagementIdentity } from './management-auth.js';
 import { registerApplicationAccess } from './application-access.js';
+import { createSmartSearchRequest } from './domain/smart-search-requests.js';
 import { requireAppAction } from './domain/app-access.js';
 import type { IdentityHttp } from './identity.js';
 import Fastify, { type FastifyRequest } from 'fastify';
@@ -233,6 +234,12 @@ export async function createApp(config: Config, db: Database) {
     const search = z.object({ query: z.string().min(1).max(500) }).parse(request.query);
     return service.smartSearch(search.query, await viewerId(request));
   });
+  app.post('/api/smart-search-requests', { config: { rateLimit: { groupId: ':smart-search-demand', max: 10, timeWindow: '1 hour' } } }, async (request) => {
+    // Demand signal volunteered from the empty result state; anonymous submissions are allowed,
+    // bounded per client so a script cannot flood the administration list.
+    const body = z.object({ description: z.string().min(1).max(200) }).strict().parse(request.body);
+    return createSmartSearchRequest(db, { description: body.description, submittedBy: await viewerId(request) });
+  });
   app.get('/api/tags', async request => ({ tags: await service.tags(await viewerId(request)), maxTagsPerApp: 3 }));
   app.get('/api/apps/:id', async request => service.app(publicationId(request.params), { viewerId: await viewerId(request) }));
   app.get('/api/apps/:id/publish-contract', async (request) => {
@@ -300,7 +307,7 @@ export async function createApp(config: Config, db: Database) {
   if (!config.tiangong) registerPreviewAdmin(app, config, db);
   identity = await registerIdentity(app, config, db, service);
   if (identity) {
-    registerApplicationAccess(app, db, config.audience, identity);
+    registerApplicationAccess(app, db, config.audience, identity, config.analytics);
     registerOperationsDashboard(app, db, { analytics: config.analytics,
       authenticateAdministrator: async request => {
         const actor = await identity!.authenticate(request);

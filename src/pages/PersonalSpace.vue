@@ -4,7 +4,7 @@ import CatalogCard from '../components/CatalogCard.vue'
 import ListPagination from '../components/ListPagination.vue'
 import { apiRequest } from '../lib/api.js'
 import { favorites, saveFavorite } from '../lib/personal.js'
-const emit = defineEmits(['close', 'detail', 'primary', 'tag'])
+const emit = defineEmits(['close', 'detail', 'primary', 'tag', 'copyPrompt', 'share'])
 const items = ref([]), total = ref(0), page = ref(1), loading = ref(false), error = ref('')
 let sequence = 0
 async function load() {
@@ -38,7 +38,7 @@ onUnmounted(() => { sequence++; window.removeEventListener('plaza-favorites-chan
     <div v-else-if="!total && !error" class="personal-empty"><h2>还没有收藏</h2><p>在应用卡片或详情中点击星标，即可保存在这里。</p><el-button type="primary" @click="emit('close')">去发现应用</el-button></div>
     <div class="personal-grid" :aria-busy="loading">
       <template v-for="item in items" :key="item.id">
-        <CatalogCard v-if="item.app" :app="item.app" @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" />
+        <CatalogCard v-if="item.app" :app="item.app" @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" @copy-prompt="emit('copyPrompt', $event)" @share="emit('share', $event)" />
         <div v-else class="unavailable-favorite"><h2>某项收藏已不可访问</h2><p>应用可能已下架或访问权限已变化。</p><el-button :disabled="favorites.busy.includes(item.id)" @click="remove(item.id)">移除收藏</el-button></div>
       </template>
     </div>

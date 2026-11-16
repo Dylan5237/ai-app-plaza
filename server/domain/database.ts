@@ -239,6 +239,15 @@ const MIGRATIONS = [
     updated_at timestamptz NOT NULL DEFAULT now(),
     updated_by uuid
   )`,
+  `CREATE TABLE IF NOT EXISTS plaza_smart_search_requests (
+    id uuid PRIMARY KEY,
+    description text NOT NULL,
+    submitted_by uuid,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    status text NOT NULL DEFAULT 'open' CHECK(status IN ('open','done')),
+    handled_by uuid,
+    handled_at timestamptz
+  )`,
   ...IDENTITY_SCHEMA,
   ...APP_ACCESS_SCHEMA,
 ];
