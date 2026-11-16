@@ -70,19 +70,23 @@ test('author stats cover owned apps only and count exposure, details, usage and 
   assert.equal(memberView.status, 'available');
   assert.deepEqual((memberView as any).items, [], 'non-owners see nothing');
 
-  const event = async (name: string, attributes: any, appId: string, session = randomUUID()) => h.db.query(
+  const event = async (name: string, attributes: any, appId: string, options: { session?: string; heat?: boolean } = {}) => h.db.query(
     `INSERT INTO analytics_events(event_id,event_name,occurred_at,received_at,effective_at,clock_adjusted,environment,site_instance_id,identity_scope,visitor_id,session_id,view_id,app_id,snapshot_id,heat_counted,attributes)
-     VALUES($1,$2,now(),now(),now(),false,$3,$4,'persistent',null,$5,$6,$7,$8,false,$9::jsonb)`,
-    [randomUUID(), name, settings.environment, settings.siteInstanceId, session, randomUUID(), appId, seeded.snapshotId, JSON.stringify({ pageContext: 'search', ...attributes })]);
+     VALUES($1,$2,now(),now(),now(),false,$3,$4,'persistent',null,$5,$6,$7,$8,$9,$10::jsonb)`,
+    [randomUUID(), name, settings.environment, settings.siteInstanceId, options.session ?? randomUUID(), randomUUID(), appId, seeded.snapshotId, Boolean(options.heat), JSON.stringify({ pageContext: 'search', ...attributes })]);
   await event('app_card_exposed', { section: 'search' }, seeded.appId);
   await event('app_card_exposed', { section: 'search' }, seeded.appId);
   await event('app_detail_viewed', { entryContext: 'search_result' }, seeded.appId);
-  await event('prompt_copy_result', { promptPurpose: 'usage', result: 'success' }, seeded.appId);
-  await event('app_entry_clicked', { entryKind: 'web' }, seeded.appId);
+  await event('prompt_copy_result', { promptPurpose: 'usage', result: 'success' }, seeded.appId, { heat: true });
+  const entrySession = randomUUID();
+  await event('app_entry_clicked', { entryKind: 'web' }, seeded.appId, { session: entrySession, heat: true });
+  // A repeat click from the same client inside the 30-minute window is not heat-counted at ingest
+  // and must not inflate the author's usage numbers.
+  await event('app_entry_clicked', { entryKind: 'web' }, seeded.appId, { session: entrySession });
   await event('app_share_link_copied', { placement: 'card' }, seeded.appId);
   await event('app_card_exposed', { section: 'search' }, other.appId);
   // Management-context events must not count as public usage.
-  await event('app_entry_clicked', { entryKind: 'web', entryContext: 'management', pageContext: 'management' }, seeded.appId);
+  await event('app_entry_clicked', { entryKind: 'web', entryContext: 'management', pageContext: 'management' }, seeded.appId, { heat: true });
 
   const view = await authorAppStats(h.db, settings, admin.user.id) as any;
   assert.equal(view.items.length, 1, 'only owned apps are listed');
@@ -90,6 +94,17 @@ test('author stats cover owned apps only and count exposure, details, usage and 
   assert.equal(item.name, '作者数据测试应用');
   assert.equal(item.exposed, 2);
   assert.equal(item.detailSessions, 1);
-  assert.equal(item.usages, 2, 'platform entry + prompt copy count as usage');
+  assert.equal(item.usages, 2, 'usages follow the shared 30-minute heat_counted dedup, so the repeat click adds nothing');
   assert.equal(item.shares, 1);
+
+  // Taking an app offline (下架) must not erase its recent history for the author.
+  await h.db.query("INSERT INTO catalog_app_lifecycle(app_id, status, revision, updated_at) VALUES($1,'offline',1,now())", [seeded.appId]);
+  const offlineView = await authorAppStats(h.db, settings, admin.user.id) as any;
+  assert.equal(offlineView.items.length, 1, 'offline apps keep their author stats history');
+  assert.equal(offlineView.items[0].usages, 2);
+  assert.equal(offlineView.items[0].exposed, 2);
+  // Deleted apps leave the author view entirely.
+  await h.db.query("UPDATE catalog_app_lifecycle SET status='deleted' WHERE app_id=$1", [seeded.appId]);
+  const deletedView = await authorAppStats(h.db, settings, admin.user.id) as any;
+  assert.deepEqual(deletedView.items, [], 'deleted apps drop out of the author view');
 });

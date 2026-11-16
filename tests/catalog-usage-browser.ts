@@ -981,13 +981,15 @@ try {
   assert.equal(await detail.count(), 0, 'text selection does not navigate');
   await mixedCard.locator('.app-tag').first().focus();
   await page.keyboard.press('Shift+Tab');
+  assert.equal(await mixedCard.getByTestId('card-share').evaluate((el: HTMLElement) => document.activeElement === el), true, 'the card share shortcut is reachable by keyboard');
+  await page.keyboard.press('Shift+Tab');
   assert.equal(await mixedCard.getByTestId('card-title').evaluate((el: HTMLElement) => document.activeElement === el), true);
   assert.ok(await page.evaluate(() => Boolean(window.getSelection()?.toString().trim())), 'keyboard navigation preserves the earlier text selection');
   await page.keyboard.press('Enter');
   await detail.waitFor();
   await page.getByTestId('return-discovery').click();
   await detail.waitFor({ state: 'hidden' });
-  report.checks.push('after real text selection, Shift+Tab to the title and Enter still open detail');
+  report.checks.push('after real text selection, Shift+Tab through the share shortcut to the title and Enter still open detail');
   // A later click on selected text must not turn into navigation either.
   await mixedCard.locator('.app-summary').evaluate((el: HTMLElement) => {
     const range = document.createRange(); range.selectNodeContents(el);

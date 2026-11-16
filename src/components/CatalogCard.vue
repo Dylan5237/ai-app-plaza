@@ -34,7 +34,6 @@ function detail(event) {
         <button
           class="app-share-link"
           data-testid="card-share"
-          tabindex="-1"
           :aria-label="`复制 ${name} 的分享链接`"
           title="复制分享链接"
           @click.stop="emit('share', app)"
