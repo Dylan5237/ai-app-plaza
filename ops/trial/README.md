@@ -18,7 +18,7 @@
 
 1. 核验 SSH host key 和当前授权；只读记录原服务的启动状态、监听端口、Nginx 配置哈希与页面/API 响应。应用端口和数据库端口必须空闲，目标目录、unit、容器名不能已存在。
 2. 在独立 checkout 中执行 `npm ci`、`npm run typecheck`、`npm test`、`npm run build`，提交并推送固定源码。不要打包任何 `.env`、node_modules 或原始项目资料。
-3. 执行 `python ops/trial/package.py --date YYYYMMDD --output artifacts/trial-release`。输出包含 release ID、完整源码 SHA、包 SHA-256 和文件级清单。
+3. 执行 `python ops/trial/package.py --date YYYYMMDD --output artifacts/trial-release`。脚本在本次调用内重新构建并核对源码未变，运行源码读取 Git blob 而非 Windows 换行转换后的副本。输出包含 release ID、完整源码 SHA/tree、包 SHA-256 和文件级清单；正式发布附加 `--main-ref origin/main` 核对已同步的主分支。已有实例的正式更新见[天宫同源部署](../tiangong/README.md)。
 4. 将包和 `deploy.py` 传至已确认的唯一远端临时路径，再回读大小和 SHA-256。部署脚本需要 Python 3.12+、Docker、systemd，联网只下载独立 Node 运行时和锁定 npm 依赖。
 5. `deploy.py` 参数为 `--archive <路径> --sha256 <包哈希> --release <release ID> --host <私网IP> --port <空闲端口> --db-port <本机空闲端口> --gitlab <GitLab根地址> --postgres-image <已核验sha256镜像ID>`。先附加 `--check` 做零写入预检，再用同组参数安装。
 6. 回读 `/api/health`、`/api/apps`、首页和静态资源，检查复制发布提示词。重启本应用实例并核验数据库记录保留；再次核对原服务配置、启动时间和健康状态。

@@ -16,3 +16,9 @@ __pycache__/
 # Local historical material and verification output
 archive/
 artifacts/
+
+# Private Tiangong deployment inputs and rendered machine configuration.
+ops/tiangong/*.local.json
+ops/tiangong/*.env
+ops/tiangong/*.pem
+ops/tiangong/local/
