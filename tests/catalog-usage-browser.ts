@@ -285,6 +285,7 @@ try {
   assert.equal(initialResponse.status(), 200);
   const initial = await initialResponse.json() as ListResponse;
   await waitForCatalog(page);
+  assert.equal(await page.getByTestId('share-button').evaluate((el: HTMLElement) => getComputedStyle(el).backgroundColor), 'rgb(62, 88, 206)', 'the share-my-app primary button uses the brand blue');
   assert.equal(await page.getByTestId('usage-all').getAttribute('aria-pressed'), 'true');
   assert.deepEqual(initial.usageCounts, { platform: 6, agent: 8 });
   assert.equal(initial.total, 14, 'fixture contains five web-only, eight Agent-only, and one dual-entry application');

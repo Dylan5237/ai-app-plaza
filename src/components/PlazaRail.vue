@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import IdentityBar from './IdentityBar.vue'
 import PlazaIcon from './PlazaIcon.vue'
 import { identity } from '../lib/identity.js'
@@ -32,6 +32,9 @@ const fallbackActive = path === '/admin'
                   ? 'author-stats'
                   : discoverTabFromParam(params.get('discover'))
 const active = computed(() => props.active || fallbackActive)
+// Administration entries share one scenario and are not everyday destinations: they collapse
+// behind a single toggle so the rail fits without scrolling, and expand when one is active.
+const adminSectionOpen = ref(['dashboard', 'governance', 'groups', 'smart-search', 'admins'].includes(active.value))
 </script>
 
 <template>
@@ -71,22 +74,26 @@ const active = computed(() => props.active || fallbackActive)
       </a>
 
       <template v-if="identity?.user?.administrator || identity?.user?.superAdministrator || identity?.user?.identityAdmin">
-        <p class="rail-group-label">管理中心</p>
-        <a v-if="identity?.user?.administrator || identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'dashboard' }" :aria-current="active === 'dashboard' ? 'page' : undefined" :href="publicPath('/?space=operations')">
-          <PlazaIcon name="operations" /><span>运营看板</span>
-        </a>
-        <a v-if="identity?.user?.administrator || identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'governance' }" :aria-current="active === 'governance' ? 'page' : undefined" :href="publicPath('/?space=governance')">
-          <PlazaIcon name="access" /><span>应用负责人</span>
-        </a>
-        <button v-if="identity?.user?.identityAdmin" class="rail-item" :class="{ active: active === 'groups' }" type="button" @click="emit('groups')">
-          <PlazaIcon name="groups" /><span>成员与小组</span>
+        <button class="rail-item rail-admin-toggle" type="button" :aria-expanded="adminSectionOpen" data-testid="rail-admin-toggle" @click="adminSectionOpen = !adminSectionOpen">
+          <PlazaIcon name="management" /><span>管理中心</span><PlazaIcon name="chevron" class="rail-chevron" :class="{ open: adminSectionOpen }" aria-hidden="true" />
         </button>
-        <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'smart-search' }" :aria-current="active === 'smart-search' ? 'page' : undefined" :href="publicPath('/?space=smart-search')">
-          <PlazaIcon name="agent" /><span>智能查找</span>
-        </a>
-        <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'admins' }" :aria-current="active === 'admins' ? 'page' : undefined" :href="publicPath('/?space=administrators')">
-          <PlazaIcon name="admins" /><span>管理员配置</span>
-        </a>
+        <div v-show="adminSectionOpen" class="rail-admin-entries" data-testid="rail-admin-entries">
+          <a v-if="identity?.user?.administrator || identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'dashboard' }" :aria-current="active === 'dashboard' ? 'page' : undefined" :href="publicPath('/?space=operations')">
+            <PlazaIcon name="operations" /><span>运营看板</span>
+          </a>
+          <a v-if="identity?.user?.administrator || identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'governance' }" :aria-current="active === 'governance' ? 'page' : undefined" :href="publicPath('/?space=governance')">
+            <PlazaIcon name="access" /><span>应用负责人</span>
+          </a>
+          <button v-if="identity?.user?.identityAdmin" class="rail-item" :class="{ active: active === 'groups' }" type="button" @click="emit('groups')">
+            <PlazaIcon name="groups" /><span>成员与小组</span>
+          </button>
+          <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'smart-search' }" :aria-current="active === 'smart-search' ? 'page' : undefined" :href="publicPath('/?space=smart-search')">
+            <PlazaIcon name="agent" /><span>智能查找</span>
+          </a>
+          <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'admins' }" :aria-current="active === 'admins' ? 'page' : undefined" :href="publicPath('/?space=administrators')">
+            <PlazaIcon name="admins" /><span>管理员配置</span>
+          </a>
+        </div>
       </template>
     </nav>
 
@@ -118,6 +125,12 @@ const active = computed(() => props.active || fallbackActive)
 .rail-item.active { background: var(--plaza-surface); color: #2e45b8; font-weight: 600; box-shadow: 0 1px 2px rgb(28 37 51 / .06), 0 0 0 1px rgb(32 42 59 / .04); }
 .rail-item.active :deep(svg) { color: var(--plaza-brand); }
 .rail-item:focus-visible { outline: 2px solid var(--plaza-brand); outline-offset: 1px; }
+.rail-admin-toggle > span { flex: 1; }
+.rail-chevron { color: #98a1b0; transition: transform .15s; }
+.rail-chevron.open { transform: rotate(180deg); }
+.rail-admin-entries { display: flex; flex-direction: column; gap: 2px; }
+.rail-admin-entries .rail-item { height: 32px; padding-left: 24px; font-size: 12.5px; }
+.rail-admin-entries .rail-item :deep(svg) { width: 15px; height: 15px; }
 .rail-foot { margin-top: auto; padding-top: 18px; }
 .rail-slogan { margin: 0 10px 12px; color: #67707f; font-size: 11px; line-height: 1.6; }
 @media (max-width: 760px) {
@@ -129,6 +142,9 @@ const active = computed(() => props.active || fallbackActive)
   .rail-group-label { display: none; }
   .rail-item { width: auto; height: 34px; flex: 0 0 auto; justify-content: flex-start; padding: 0 10px; font-size: 12px; gap: 6px; }
   .rail-item :deep(svg) { width: 15px; height: 15px; }
+  .rail-chevron { display: none; }
+  .rail-admin-entries { flex-direction: row; gap: 4px; }
+  .rail-admin-entries .rail-item { height: 34px; padding: 0 10px; font-size: 12px; }
   .rail-foot { margin-top: 0; padding-top: 6px; min-width: 0; }
   .rail-slogan { display: none; }
 }

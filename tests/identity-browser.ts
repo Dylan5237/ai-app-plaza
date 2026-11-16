@@ -16,6 +16,11 @@ if (process.argv.includes('--serve')) {
   await new Promise(() => {});
 }
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL as any } : {}) });
+// Administration entries collapse behind one toggle by default; open it before using them.
+async function openAdminEntries(target: any) {
+  const toggle = target.getByTestId('rail-admin-toggle');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+}
 const errors: string[] = [];
 const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
 await page.addInitScript({ content: `(() => {
@@ -67,6 +72,10 @@ try {
     return route.continue();
   });
   await page.getByRole('button', { name: '以测试名册管理员进入' }).click();
+  const adminToggle = page.getByTestId('rail-admin-toggle');
+  assert.equal(await adminToggle.getAttribute('aria-expanded'), 'false', 'the administration section stays collapsed by default');
+  await openAdminEntries(page);
+  assert.equal(await adminToggle.getAttribute('aria-expanded'), 'true', 'one click expands the merged administration entries');
   await page.getByRole('button', { name: '成员与小组' }).waitFor();
   const retryFavorite = page.getByRole('button', { name: '收藏状态读取失败，点击重试', exact: true });
   await retryFavorite.waitFor();
@@ -75,6 +84,10 @@ try {
   await retryFavorite.click();
   await page.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
   assert.deepEqual(favoriteReadSteps, ['ids', 'ids', 'save'], 'successful status retry precedes the single favorite write');
+  await adminToggle.click();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  assert.equal(await page.evaluate(() => { const rail = document.querySelector('.plaza-rail') as HTMLElement; return rail.scrollHeight <= rail.clientHeight + 1; }), true, 'the merged rail fits a 720px viewport without a scrollbar');
+  await page.setViewportSize({ width: 1366, height: 900 });
   await page.unroute('**/api/personal/favorite-ids');
   for (let attempt = 0; attempt < 30 && !analyticsPortalTokens.includes('fixture-admin'); attempt++) await page.waitForTimeout(100);
   assert.ok(analyticsPortalTokens.includes('fixture-admin'), 'verified identity analytics carries the portal token');
@@ -179,6 +192,7 @@ try {
   await page.getByTestId('tab-catalog').click();
   await page.getByTestId('app-card').first().waitFor();
   assert.equal(new URL(page.url()).searchParams.has('space'), false, 'the refreshed wheel does not fall back to favorites');
+  await openAdminEntries(page);
   await page.getByRole('button', { name: '成员与小组' }).click();
   await page.getByText('暂无小组。', { exact: true }).waitFor();
   await page.getByRole('button', { name: '新建小组', exact: true }).click();
@@ -237,6 +251,7 @@ try {
   await page.getByRole('button', { name: '使用天宫身份登录' }).waitFor();
   assert.equal(await page.getByRole('button', { name: '成员与小组' }).count(), 0, 'explicit logout survives reload');
   await page.getByRole('button', { name: '使用天宫身份登录' }).click();
+  await openAdminEntries(page);
   await page.getByRole('button', { name: '成员与小组' }).waitFor();
   await page.evaluate(() => localStorage.setItem('fixture-sky-token', 'fixture-member'));
   await page.reload();
@@ -262,6 +277,7 @@ try {
   assert.ok(analyticsPortalTokens.slice(analyticsCountAfterLogout).every(token => token === undefined), 'explicit logout stops identity headers even while the portal token remains in storage');
   await page.evaluate(() => localStorage.setItem('fixture-sky-token', 'fixture-admin'));
   await page.getByRole('button', { name: '使用天宫身份登录' }).click();
+  await openAdminEntries(page);
   await page.getByRole('button', { name: '成员与小组' }).click();
   await page.getByRole('button', { name: '编辑 浏览器验证小组' }).waitFor();
   await page.setViewportSize({ width: 568, height: 280 });
