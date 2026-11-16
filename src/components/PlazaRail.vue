@@ -28,7 +28,9 @@ const fallbackActive = path === '/admin'
               ? 'admins'
               : space === 'smart-search'
                 ? 'smart-search'
-                : discoverTabFromParam(params.get('discover'))
+                : space === 'author-stats'
+                  ? 'author-stats'
+                  : discoverTabFromParam(params.get('discover'))
 const active = computed(() => props.active || fallbackActive)
 </script>
 
@@ -63,6 +65,9 @@ const active = computed(() => props.active || fallbackActive)
       </a>
       <a v-if="identity?.user" class="rail-item" :class="{ active: active === 'handover' }" :aria-current="active === 'handover' ? 'page' : undefined" :href="publicPath('/?space=transfers')">
         <PlazaIcon name="handover" /><span>应用交接</span>
+      </a>
+      <a v-if="identity?.user" class="rail-item" :class="{ active: active === 'author-stats' }" :aria-current="active === 'author-stats' ? 'page' : undefined" :href="publicPath('/?space=author-stats')">
+        <PlazaIcon name="operations" /><span>我的应用数据</span>
       </a>
 
       <template v-if="identity?.user?.administrator || identity?.user?.superAdministrator || identity?.user?.identityAdmin">

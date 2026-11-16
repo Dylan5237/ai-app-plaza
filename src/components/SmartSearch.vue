@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElButton, ElInput } from 'element-plus'
+import { ElButton, ElInput, ElMessage } from 'element-plus'
 import CatalogCard from './CatalogCard.vue'
 import PlazaIcon from './PlazaIcon.vue'
 import { apiRequest } from '../lib/api.js'
@@ -13,7 +13,7 @@ function lengthBucket(text) {
 }
 
 const props = defineProps({ active: { type: Boolean, default: true } })
-const emit = defineEmits(['detail', 'primary', 'tag', 'return', 'results'])
+const emit = defineEmits(['detail', 'primary', 'tag', 'return', 'results', 'copyPrompt', 'share'])
 
 const task = ref('')
 const messages = ref([])
@@ -22,6 +22,10 @@ const expandedOthers = ref({})
 const suggestedPrompts = ref([])
 const thread = ref(null)
 const input = ref(null)
+const demandFormFor = ref(-1)
+const demandText = ref('')
+const demandBusy = ref(false)
+const demandDone = ref(-1)
 
 // Suggested task descriptions for the empty state; a random subset rotates in each
 // conversation so the page never feels like a wall of examples.
@@ -65,7 +69,36 @@ function newConversation() {
   searching.value = false
   expandedOthers.value = {}
   pendingQuestionTask = null
+  demandFormFor.value = -1
+  demandText.value = ''
+  demandDone.value = -1
   pickSuggestions()
+}
+
+function openDemand(index) {
+  demandFormFor.value = index
+  demandText.value = ''
+}
+
+function cancelDemand() {
+  demandFormFor.value = -1
+  demandText.value = ''
+}
+
+async function submitDemand(index) {
+  const description = demandText.value.trim()
+  if (!description || demandBusy.value) return
+  demandBusy.value = true
+  try {
+    await apiRequest('/api/smart-search-requests', { method: 'POST', body: { description } })
+    demandFormFor.value = -1
+    demandText.value = ''
+    demandDone.value = index
+  } catch (error) {
+    ElMessage.error(error.message || '登记暂时不可用，请稍后重试。')
+  } finally {
+    demandBusy.value = false
+  }
 }
 
 async function runSearch(text, display = text, followUp = false, suggested = false) {
@@ -226,6 +259,15 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
           <div class="msg-label"><small>广场助手</small></div>
           <p class="msg-text">当前可见的上架应用中没有匹配结果。可以调整任务描述，或回到目录按标签浏览。</p>
           <div class="inline-actions"><span v-if="draftDirty() && i === messages.length - 1" class="stale-tag">上一轮结果</span><el-button text size="small" @click="editTask(m.taskSummary)">调整描述</el-button><el-button text size="small" @click="emit('return')">回到目录</el-button></div>
+          <div v-if="demandFormFor === i" class="demand-form">
+            <el-input v-model="demandText" type="textarea" :rows="2" maxlength="200" show-word-limit placeholder="一句话描述你想完成的工作，例如：帮我汇总每周门诊量" aria-label="想完成的工作" data-testid="demand-description" />
+            <div class="demand-actions">
+              <el-button size="small" @click="cancelDemand">取消</el-button>
+              <el-button size="small" type="primary" :disabled="!demandText.trim() || demandBusy" data-testid="demand-submit" @click="submitDemand(i)">{{ demandBusy ? '正在提交…' : '提交登记' }}</el-button>
+            </div>
+          </div>
+          <p v-else-if="demandDone === i" class="demand-done">已登记。我们会据此完善应用供给，感谢反馈。</p>
+          <el-button v-else text size="small" data-testid="demand-register" @click="openDemand(i)">登记我想要的应用</el-button>
         </div>
 
         <div v-else-if="m.kind === 'question'" class="msg assistant">
@@ -245,7 +287,7 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
           <div class="recommendations">
             <template v-for="(c, ci) in m.candidates" :key="c.app.id">
               <div v-if="ci === 0 || expandedOthers[i]" class="recommendation">
-                <CatalogCard :app="c.app" @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" />
+                <CatalogCard :app="c.app" @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" @copy-prompt="emit('copyPrompt', $event)" @share="emit('share', $event)" />
                 <div class="rec-reason">
                   <div class="reason-block">
                     <strong>为什么出现</strong>
@@ -303,6 +345,9 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
 .msg-label small { font-size: 11px; }
 .msg-text { margin: 5px 0; color: var(--plaza-text); font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
 .inline-actions { display: flex; gap: 4px; margin-top: 8px; }
+.demand-form { display: grid; gap: 8px; margin-top: 10px; max-width: 560px; }
+.demand-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.demand-done { margin: 8px 0 0; padding: 8px 12px; border: 1px solid #cfe3cf; border-radius: 10px; background: #f1f8f1; color: #2f6b3a; font-size: 12.5px; }
 .basic-banner { margin-bottom: 10px; }
 .result-context { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 10px; padding: 8px 12px; border: 1px solid var(--plaza-line); border-radius: 10px; background: var(--plaza-canvas); }
 .results.stale .result-context { opacity: .6; }

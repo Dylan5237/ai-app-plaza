@@ -33,7 +33,7 @@ export async function apiRequest(path, { method = 'GET', body, token, idempotenc
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey)
   const portalToken = readPortalToken()
-  const protectedPath = /^\/api\/(identity|personal|access|management|operations|publications)(\/|\?|$)/.test(path) || path === '/api/auth/me'
+  const protectedPath = /^\/api\/(identity|personal|access|management|operations|publications|smart-search-requests)(\/|\?|$)/.test(path) || path === '/api/auth/me'
   const authenticatedRead = authenticatedWebIdentity && /^\/api\/(apps|tags)(\/|\?|$)/.test(path)
   if (portalToken && (protectedPath || authenticatedRead)) headers.set('X-Plaza-Portal-Token', portalToken)
 

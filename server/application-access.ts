@@ -4,9 +4,12 @@ import type { Database } from './domain/database.js';
 import { createAppAccessService } from './domain/app-access.js';
 import { administratorUsers, setAdministrator } from './domain/platform-access.js';
 import { smartSearchPromptView, setSmartSearchPrompt } from './domain/smart-search-prompt.js';
+import { listSmartSearchRequests, setSmartSearchRequestStatus } from './domain/smart-search-requests.js';
+import { authorAppStats } from './domain/author-stats.js';
 import type { IdentityHttp } from './identity.js';
+import type { Config } from './config.js';
 
-export function registerApplicationAccess(app: FastifyInstance, db: Database, audience: string, identity: IdentityHttp) {
+export function registerApplicationAccess(app: FastifyInstance, db: Database, audience: string, identity: IdentityHttp, analytics?: Config['analytics']) {
   const access = createAppAccessService(db, audience);
   const id = (params: unknown) => z.object({ id: z.string().uuid() }).strict().parse(params).id;
   const mutation = z.object({ requestId: z.string().uuid(), confirmed: z.literal(true) });
@@ -62,4 +65,11 @@ export function registerApplicationAccess(app: FastifyInstance, db: Database, au
     const { confirmed: _, ...input } = mutation.extend({ template: z.string().min(1).max(6000).nullable() }).strict().parse(request.body);
     return setSmartSearchPrompt(db, actorId, input);
   });
+  app.get('/api/access/smart-search-requests', async request => ({ items: await listSmartSearchRequests(db, await user(request)) }));
+  app.put('/api/access/smart-search-requests/:id', async request => {
+    const actorId = await user(request, true);
+    const { confirmed: _, ...input } = mutation.extend({ status: z.enum(['open', 'done']) }).strict().parse(request.body);
+    return setSmartSearchRequestStatus(db, actorId, { id: id(request.params), ...input });
+  });
+  app.get('/api/access/author-stats', async request => authorAppStats(db, analytics, await user(request)));
 }

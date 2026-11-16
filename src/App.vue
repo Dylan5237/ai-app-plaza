@@ -9,6 +9,7 @@ import PersonalSpace from './pages/PersonalSpace.vue'
 import OperationsDashboard from './pages/OperationsDashboard.vue'
 import AdministrationCenter from './pages/AdministrationCenter.vue'
 import SmartSearchPromptAdmin from './pages/SmartSearchPromptAdmin.vue'
+import AuthorStats from './pages/AuthorStats.vue'
 import { identity } from './lib/identity.js'
 import { publicBasePath, publicPath } from './lib/public-path.js'
 import { primaryAction } from './lib/catalog.ts'
@@ -22,12 +23,12 @@ const discoverView = ref(discoverTabFromParam(new URLSearchParams(location.searc
 let personalFocus = null
 let initialPersonalPending = new URLSearchParams(location.search).get('space') === 'favorites'
 const center = new URLSearchParams(location.search).get('space') || ''
-const isCenter = ['operations', 'governance', 'administrators', 'transfers', 'smart-search'].includes(center)
-const centerAllowed = computed(() => center === 'transfers' ? Boolean(identity.user) : center === 'administrators' || center === 'smart-search' ? identity.user?.superAdministrator : identity.user?.administrator)
+const isCenter = ['operations', 'governance', 'administrators', 'transfers', 'smart-search', 'author-stats'].includes(center)
+const centerAllowed = computed(() => center === 'transfers' || center === 'author-stats' ? Boolean(identity.user) : center === 'administrators' || center === 'smart-search' ? identity.user?.superAdministrator : identity.user?.administrator)
 let initialGroupPending = center === 'groups'
 const railActive = computed(() => {
   if (showManagement.value) return 'mine'
-  if (isCenter) return { operations: 'dashboard', governance: 'governance', administrators: 'admins', transfers: 'handover', 'smart-search': 'smart-search' }[center] || ''
+  if (isCenter) return { operations: 'dashboard', governance: 'governance', administrators: 'admins', transfers: 'handover', 'smart-search': 'smart-search', 'author-stats': 'author-stats' }[center] || ''
   if (showGroups.value) return 'groups'
   if (showPersonal.value) return 'favorites'
   return discoverView.value
@@ -92,12 +93,13 @@ async function usePersonalApp(app) {
     <PlazaRail :active="railActive" @discover="showDiscovery" @favorites="showFavorites" @groups="openGroups" />
     <div class="plaza-content">
       <IdentityGroups v-if="showGroups && identity.user?.identityAdmin" :key="identity.epoch" @close="showGroups = false" />
-      <PersonalSpace v-if="identity.user && (showPersonal || detailFromPersonal)" v-show="showPersonal" :key="identity.epoch" @close="showPersonal = false" @detail="openPersonalApp" @primary="usePersonalApp" @tag="filterTag" />
+      <PersonalSpace v-if="identity.user && (showPersonal || detailFromPersonal)" v-show="showPersonal" :key="identity.epoch" @close="showPersonal = false" @detail="openPersonalApp" @primary="usePersonalApp" @tag="filterTag" @copy-prompt="app => directory?.copyPromptFromCard(app)" @share="app => directory?.copyShareLink(app, 'card')" />
       <template v-if="isCenter">
         <OperationsDashboard v-if="centerAllowed && center === 'operations'" :key="identity.epoch" />
         <SmartSearchPromptAdmin v-else-if="centerAllowed && center === 'smart-search'" :key="identity.epoch" />
+        <AuthorStats v-else-if="centerAllowed && center === 'author-stats'" :key="identity.epoch" />
         <AdministrationCenter v-else-if="centerAllowed" :key="identity.epoch" :mode="center" />
-        <main v-else class="center-denied plaza-public"><h1>{{ identity.user ? '当前身份没有此页面权限' : '请先核验天宫身份' }}</h1><p>运营看板与治理功能仅对获授权管理员开放，应用交接需本人登录。</p><a :href="publicPath('/')">返回应用广场</a></main>
+        <main v-else class="center-denied plaza-public"><h1>{{ identity.user ? '当前身份没有此页面权限' : '请先核验天宫身份' }}</h1><p>运营看板与治理功能仅对获授权管理员开放，应用交接与应用数据需本人登录。</p><a :href="publicPath('/')">返回应用广场</a></main>
       </template>
       <template v-else>
         <AppManagement v-show="!showGroups && !showPersonal" v-if="showManagement && !detailFromPersonal" :key="identity.epoch" />
