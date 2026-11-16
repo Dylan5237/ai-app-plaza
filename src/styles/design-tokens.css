@@ -1,7 +1,7 @@
 /* Public product tokens. Keep aligned with docs/design/plaza-ui-ux.md. */
 :root {
   --plaza-canvas:#f8f7f4;--plaza-surface:#ffffff;--plaza-ink:#202a3b;--plaza-text:#596477;--plaza-muted:#657085;--plaza-line:#e4e6ec;
-  --plaza-brand:#3e58ce;--plaza-brand-soft:#edf0ff;--plaza-share:#ffc89b;--plaza-share-ink:#613215;
+  --plaza-brand:#3e58ce;--plaza-brand-soft:#edf0ff;
   --plaza-primary-button:var(--plaza-brand);
   --plaza-success:#267154;--plaza-warning:#925a16;--plaza-danger:#b83f4b;
   --plaza-radius:16px;--plaza-control-radius:9px;--plaza-focus:0 0 0 3px var(--plaza-brand);

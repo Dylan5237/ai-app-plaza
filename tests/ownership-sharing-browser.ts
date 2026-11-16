@@ -27,8 +27,7 @@ async function select(surface: Page, name: string, option: string) {
   await surface.keyboard.press('Escape');
 }
 async function login(surface: Page, button: string) {
-  await surface.goto(`${h.origin}/plaza/fixture/portal`);
-  await surface.getByRole('button', { name: button, exact: true }).click();
+  await surface.goto(`${h.origin}/plaza/fixture/portal`);  await surface.getByRole('button', { name: button, exact: true }).click();
   await surface.getByRole('link', { name: '我的应用', exact: true }).waitFor();
 }
 async function role(value: string) {
@@ -39,9 +38,15 @@ async function role(value: string) {
   await page.getByRole('dialog', { name: '调整平台角色', exact: true }).waitFor({ state: 'hidden' });
   await row.getByRole('cell', { name: value, exact: true }).waitFor();
 }
+// Administration entries collapse behind one toggle by default; open it before using them.
+async function openAdminEntries() {
+  const toggle = page.getByTestId('rail-admin-toggle');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+}
 try {
   await login(page, '以测试名册管理员进入');
   await page.getByText('超级管理员 · 天宫身份', { exact: true }).waitFor();
+  await openAdminEntries();
   await page.getByRole('link', { name: '应用负责人', exact: true }).click();
   await page.getByRole('heading', { name: '应用负责人', exact: true }).waitFor();
   const appRow = page.getByRole('row').filter({ hasText: target.source.name });
@@ -173,6 +178,7 @@ try {
   await page.getByText('应用不存在。', { exact: false }).waitFor();
   assert.equal(await page.getByTestId('app-detail').count(), 0, 'super administrator is not a private-content bypass after handoff');
 
+  await openAdminEntries();
   await page.getByRole('link', { name: '管理员配置', exact: true }).click();
   const memberRow = page.getByRole('row').filter({ hasText: memberLabel });
   await memberRow.getByRole('button', { name: '调整角色', exact: true }).click();
