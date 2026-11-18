@@ -23,7 +23,7 @@ import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
 const emit = defineEmits(['return', 'discover'])
 let disposed = false
-defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel, selectDiscovery, copyPromptFromCard, copyShareLink })
+defineExpose({ openApp, usePrimary, filterByTag: filterFromWheel, selectDiscovery, copyShareLink })
 
 const discoveryTab = ref(props.discover || discoverTabFromParam(new URLSearchParams(location.search).get('discover')))
 const randomItems = ref([])
@@ -763,24 +763,6 @@ async function copyAgentInstructions() {
   }
 }
 
-// One-click integration prompt copy straight from cards, without opening the detail dialog.
-async function copyPromptFromCard(app) {
-  try {
-    const current = await apiRequest(appPath(app.id))
-    const action = primaryAction(current)
-    if (action.reason) throw new Error(action.reason)
-    if (action.entry.kind !== 'agent') throw new Error('该应用没有 Agent 接入说明。')
-    const instructions = await apiRequest(`${appPath(current.id)}/instructions/${encodeURIComponent(action.entry.id)}`)
-    if (instructions.distribution?.status === 'disabled') throw new Error('接入说明暂不可用。')
-    const copied = await copyText(instructions.text, '接入提示词已复制')
-    const context = appEvent(current), interactionId = uuid()
-    if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'usage', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
-  } catch (error) {
-    if (!props.management) recordFailure('instructions', error)
-    ElMessage.error(errorText(error))
-  }
-}
-
 // Share blurb (name + summary + deep link) ready to paste into chat.
 async function copyShareLink(app, placement) {
   const name = app.manifest?.name || '未命名应用'
@@ -1220,8 +1202,8 @@ onUnmounted(() => {
         </div>
         <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
       </header>
-      <SmartSearch v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" @copy-prompt="copyPromptFromCard" @share="app => copyShareLink(app, 'card')" />
-      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @copy-prompt="copyPromptFromCard" @share="app => copyShareLink(app, 'card')" />
+      <SmartSearch v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" @share="app => copyShareLink(app, 'card')" />
+      <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @share="app => copyShareLink(app, 'card')" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
           <div class="catalog-controls">
@@ -1264,7 +1246,7 @@ onUnmounted(() => {
           <div v-if="catalogNotice" class="catalog-notice" role="status">{{ catalogNotice }}</div>
           <section v-for="group in catalogGroups" :key="group.value" class="catalog-group" :data-testid="`catalog-group-${group.value}`" :aria-label="group.label">
             <div class="app-grid">
-            <CatalogCard v-for="app in group.apps" :key="app.id" :app="app" :selected-tags="selectedTags" @detail="openApp" @primary="usePrimary" @tag="toggleTag" @copy-prompt="copyPromptFromCard" @share="app => copyShareLink(app, 'card')" />
+            <CatalogCard v-for="app in group.apps" :key="app.id" :app="app" :selected-tags="selectedTags" @detail="openApp" @primary="usePrimary" @tag="toggleTag" @share="app => copyShareLink(app, 'card')" />
             </div>
           </section>
         </div>

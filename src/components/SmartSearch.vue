@@ -13,7 +13,7 @@ function lengthBucket(text) {
 }
 
 const props = defineProps({ active: { type: Boolean, default: true } })
-const emit = defineEmits(['detail', 'primary', 'tag', 'return', 'results', 'copyPrompt', 'share'])
+const emit = defineEmits(['detail', 'primary', 'tag', 'return', 'results', 'share'])
 
 const task = ref('')
 const messages = ref([])
@@ -287,7 +287,7 @@ onUnmounted(() => window.removeEventListener('focus', revalidateResults))
           <div class="recommendations">
             <template v-for="(c, ci) in m.candidates" :key="c.app.id">
               <div v-if="ci === 0 || expandedOthers[i]" class="recommendation">
-                <CatalogCard :app="c.app" @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" @copy-prompt="emit('copyPrompt', $event)" @share="emit('share', $event)" />
+                <CatalogCard :app="c.app" @detail="emit('detail', $event)" @primary="emit('primary', $event)" @tag="emit('tag', $event)" @share="emit('share', $event)" />
                 <div class="rec-reason">
                   <div class="reason-block">
                     <strong>为什么出现</strong>
