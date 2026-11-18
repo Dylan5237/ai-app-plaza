@@ -6,7 +6,7 @@ import PlatformOpenButton from './PlatformOpenButton.vue'
 import { appFormats, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { formatDate } from '../lib/date.ts'
 const props = defineProps({ app: { type: Object, required: true }, selectedTags: { type: Array, default: () => [] } })
-const emit = defineEmits(['detail', 'primary', 'tag', 'copyPrompt', 'share'])
+const emit = defineEmits(['detail', 'primary', 'tag', 'share'])
 const action = computed(() => primaryAction(props.app))
 const name = computed(() => props.app.manifest?.name || '未命名应用')
 const tags = computed(() => props.app.tags || props.app.manifest?.tags || [])
@@ -56,16 +56,6 @@ function detail(event) {
           <time :datetime="app.updatedAt" :title="`更新于 ${date(app.updatedAt)}`">{{ date(app.updatedAt) }}</time>
         </div>
         <p v-if="action.reason" class="app-primary-reason" :title="action.reason" data-testid="primary-disabled-reason">{{ action.reason }}</p>
-        <div v-else-if="action.entry?.kind === 'agent'" class="app-hover-actions">
-          <button
-            class="app-copy-prompt"
-            data-testid="card-copy-prompt"
-            :aria-label="`一键复制 ${name} 接入提示词`"
-            title="一键复制接入提示词"
-            @click.stop="emit('copyPrompt', app)"
-          >复制接入词</button>
-          <button class="app-primary-action app-hover-primary" data-testid="card-primary-agent" @click.stop="emit('primary', app)">{{ action.label }} <span aria-hidden="true">→</span></button>
-        </div>
         <PlatformOpenButton v-else-if="action.entry?.kind === 'web'" class="app-primary-action" data-testid="open-platform" :href="safeHttpUrl(action.entry.url)" @click.prevent="emit('primary', app)" />
         <button v-else class="app-primary-action" data-testid="card-primary-agent" @click.stop="emit('primary', app)">{{ action.label }} <span aria-hidden="true">→</span></button>
       </div>
@@ -109,17 +99,6 @@ function detail(event) {
 .app-card:hover .app-dates, .app-card:focus-within .app-dates { opacity: 0; pointer-events: none; transform: translateX(-3px); }
 .app-primary-action { position: absolute; right: 0; top: 50%; z-index: 2; display: inline-flex; min-height: 24px; align-items: center; gap: 3px; padding: 3px 0; border: 0; border-radius: 0; background: transparent; color: var(--plaza-brand); font: inherit; font-size: 12px; font-weight: 600; line-height: 18px; white-space: nowrap; text-decoration: none; cursor: pointer; opacity: 0; pointer-events: none; transform: translate(4px, -50%); transition: opacity .14s, transform .14s; }
 .app-card:hover .app-primary-action, .app-card:focus-within .app-primary-action { opacity: 1; transform: translate(0, -50%); animation: primary-pointer-ready 0s .14s forwards; }
-/* Agent cards reveal a small action cluster on hover: one-click copy of the integration
-   prompt next to the primary "接入我的Agent" action. */
-.app-hover-actions { position: absolute; right: 0; top: 50%; z-index: 2; display: flex; align-items: center; gap: 8px; opacity: 0; pointer-events: none; transform: translate(4px, -50%); transition: opacity .14s, transform .14s; }
-.app-card:hover .app-hover-actions, .app-card:focus-within .app-hover-actions { opacity: 1; transform: translate(0, -50%); pointer-events: auto; }
-/* Inside the cluster the primary action keeps its own hidden-at-rest semantics so
-   hybrid/hover-capable devices still see the dates until the card is hovered. */
-.app-hover-actions .app-primary-action { position: static; transform: none; opacity: 0; pointer-events: none; }
-.app-card:hover .app-hover-actions .app-primary-action, .app-card:focus-within .app-hover-actions .app-primary-action { opacity: 1; pointer-events: auto; }
-.app-copy-prompt { display: inline-flex; min-height: 24px; align-items: center; padding: 3px 10px; border: 1px solid rgb(62 88 206 / .35); border-radius: 8px; background: var(--plaza-surface); color: var(--plaza-brand); font: inherit; font-size: 11.5px; font-weight: 600; line-height: 16px; white-space: nowrap; cursor: pointer; transition: background .12s; }
-.app-copy-prompt:hover { background: var(--plaza-brand-soft); }
-.app-copy-prompt:focus-visible { outline: 2px solid var(--plaza-brand); outline-offset: 1px; }
 /* Keep the outgoing date's hit area until the replacement action has finished fading in. */
 @keyframes primary-pointer-ready { to { pointer-events: auto; } }
 .app-meta :deep(.platform-open-button) { min-height: 24px; padding: 3px 0; border: 0; border-radius: 0; background: transparent; color: var(--plaza-brand); font-size: 12px; font-weight: 600; line-height: 18px; }
@@ -136,10 +115,7 @@ function detail(event) {
   .app-card { height: auto; min-height: var(--catalog-card-height); }
   .app-dates { display: none; }
   .app-meta { min-width: 0; height: auto; }
-  .app-hover-actions { position: static; transform: none; opacity: 1; pointer-events: auto; }
-  .app-copy-prompt { display: none; }
   .app-primary-action { position: static; opacity: 1; pointer-events: auto; transform: none; }
-  .app-hover-actions .app-primary-action { opacity: 1; pointer-events: auto; }
   .app-primary-action, .app-meta :deep(.platform-open-button) { min-height: 44px; padding: 10px 0; }
   .app-card:hover .app-primary-action, .app-card:focus-within .app-primary-action { transform: none; animation: none; }
   .app-primary-reason { display: block; overflow: visible; -webkit-line-clamp: unset; }

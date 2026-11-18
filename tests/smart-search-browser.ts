@@ -291,29 +291,12 @@ try {
     await llm?.close();
   }
 
-  // Card-level adoption actions: one-click integration prompt copy and share-link copy.
+  // Card-level adoption action: share-link copy. (Integration prompt copy lives on the detail page only.)
   await page.getByTestId('tab-catalog').click();
   const clearFilters = page.getByRole('button', { name: '清除筛选', exact: true });
   if (await clearFilters.count()) await clearFilters.click();
-  const agentCard = page.locator('.catalog-results').getByTestId('app-card').filter({ hasText: '禅道需求助手' });
-  await agentCard.scrollIntoViewIfNeeded();
-  await agentCard.hover();
-  await agentCard.getByTestId('card-copy-prompt').click();
+  assert.equal(await page.getByTestId('card-copy-prompt').count(), 0, 'cards no longer offer the integration prompt copy');
   await page.evaluate(() => { (window as any).__plazaCopied = null; const original = navigator.clipboard.writeText.bind(navigator.clipboard); navigator.clipboard.writeText = text => { (window as any).__plazaCopied = text; return original(text); }; });
-  await agentCard.hover();
-  await agentCard.getByTestId('card-copy-prompt').click();
-  await page.waitForFunction(() => (window as any).__plazaCopied !== null);
-  const copiedPrompt = await page.evaluate(() => (window as any).__plazaCopied);
-  assert.ok(copiedPrompt.includes('禅道需求助手接入说明'), 'the card copies the real integration prompt');
-  let promptEvent = null;
-  for (let attempt = 0; attempt < 50 && !promptEvent; attempt++) {
-    promptEvent = analyticsEvents.find(event => event.eventName === 'prompt_copy_result' && event.attributes.promptPurpose === 'usage');
-    if (!promptEvent) await page.waitForTimeout(100);
-  }
-  assert.ok(promptEvent, 'card prompt copy is tracked');
-  assert.equal(promptEvent.appId, agentApp.id);
-
-  await page.evaluate(() => { (window as any).__plazaCopied = null; });
   const dailyCard = page.locator('.catalog-results').getByTestId('app-card').filter({ hasText: daily.name }).first();
   await dailyCard.scrollIntoViewIfNeeded();
   await dailyCard.getByTestId('card-share').click();
@@ -328,7 +311,7 @@ try {
   }
   assert.ok(shareEvent, 'card share is tracked');
   assert.equal(shareEvent.appId, daily.id);
-  report.checks.push('card-adoption-actions');
+  report.checks.push('card-share');
 
   // Super administrators configure the system prompt in the admin center; the change
   // takes effect for subsequent searches and members never see the page.

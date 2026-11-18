@@ -93,7 +93,7 @@ async function usePersonalApp(app) {
     <PlazaRail :active="railActive" @discover="showDiscovery" @favorites="showFavorites" @groups="openGroups" />
     <div class="plaza-content">
       <IdentityGroups v-if="showGroups && identity.user?.identityAdmin" :key="identity.epoch" @close="showGroups = false" />
-      <PersonalSpace v-if="identity.user && (showPersonal || detailFromPersonal)" v-show="showPersonal" :key="identity.epoch" @close="showPersonal = false" @detail="openPersonalApp" @primary="usePersonalApp" @tag="filterTag" @copy-prompt="app => directory?.copyPromptFromCard(app)" @share="app => directory?.copyShareLink(app, 'card')" />
+      <PersonalSpace v-if="identity.user && (showPersonal || detailFromPersonal)" v-show="showPersonal" :key="identity.epoch" @close="showPersonal = false" @detail="openPersonalApp" @primary="usePersonalApp" @tag="filterTag" @share="app => directory?.copyShareLink(app, 'card')" />
       <template v-if="isCenter">
         <OperationsDashboard v-if="centerAllowed && center === 'operations'" :key="identity.epoch" />
         <SmartSearchPromptAdmin v-else-if="centerAllowed && center === 'smart-search'" :key="identity.epoch" />
