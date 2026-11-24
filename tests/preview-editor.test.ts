@@ -941,3 +941,129 @@ test('retrying metadata edit after new preview was created but before operation 
   assert.equal(repairedOp.status, 'submitted');
   assert.equal(repairedOp.publication_id, editedId);
 });
+
+test('retrying metadata edit resumes checking candidate rather than leaving it stuck in checking', async t => {
+  const { h, integrated, owner, headers } = await setup(t);
+  const publishKey = randomBytes(32).toString('base64url');
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  assert.equal(first.status, 'preview_ready');
+
+  const editKey = randomUUID();
+  const edited = structuredClone(first.preview!.manifest);
+  edited.name = '恢复停在 checking 的候选';
+  edited.projectVersion = '1.0.1';
+  const payload = { expectedAppRevision: 0, manifest: edited, documents: first.preview!.documents };
+  const editHeaders = headers(owner, { authorization: `Bearer ${first.ticket}`, 'idempotency-key': editKey });
+
+  const editRes = await integrated.app.inject({ method: 'POST', url: `/plaza/api/publications/${first.id}/editor`, headers: editHeaders, payload });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  const editedId = editRes.json().publication.id;
+  const editedOpId = editRes.json().operationId;
+
+  // Simulate process restart right after inserting checking candidate before preparePreview() ran.
+  await h.db.query("UPDATE managed_publish_operations SET status = 'release_ready', publication_id = NULL WHERE id = $1", [editedOpId]);
+  await h.db.query("UPDATE publications SET status = 'preview_ready', next_action = 'confirm', superseded_by_publication_id = NULL WHERE id = $1", [first.id]);
+  await h.db.query("UPDATE publications SET status = 'checking', next_action = 'checking', digest = NULL, preview_jsonb = NULL WHERE id = $1", [editedId]);
+
+  const resumed = await integrated.app.inject({ method: 'POST', url: `/plaza/api/publications/${first.id}/editor`, headers: editHeaders, payload });
+  assert.equal(resumed.statusCode, 200, resumed.body);
+  assert.equal(resumed.json().publication.id, editedId);
+  assert.equal(resumed.json().publication.status, 'preview_ready');
+  assert.equal(resumed.json().publication.preview.manifest.name, '恢复停在 checking 的候选');
+
+  const firstAfter = (await h.db.query<{ status: string; superseded_by_publication_id: string }>('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [first.id])).rows[0];
+  assert.equal(firstAfter.status, 'cancelled');
+  assert.equal(firstAfter.superseded_by_publication_id, editedId);
+  const opAfter = (await h.db.query<{ status: string; publication_id: string }>('SELECT status, publication_id FROM managed_publish_operations WHERE id = $1', [editedOpId])).rows[0];
+  assert.equal(opAfter.status, 'submitted');
+  assert.equal(opAfter.publication_id, editedId);
+});
+
+test('retry after old preview expired is rejected inside preparePreview without cancelling expired preview', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let blockGitLabReads = false;
+  let blockAfterRelease = false;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathname = (req.url ?? '').split('?')[0];
+    if (blockGitLabReads && req.method === 'GET' && /^\/api\/v4\/projects\/\d+$/.test(pathname)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: '403 Forbidden (temporary failure)' }));
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      const chunks: Buffer[] = [];
+      upstreamRes.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      upstreamRes.on('end', () => {
+        if (blockAfterRelease && req.method === 'POST' && req.url?.includes('/releases')) {
+          blockAfterRelease = false;
+          blockGitLabReads = true;
+        }
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        res.end(Buffer.concat(chunks));
+      });
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const publishKey = randomBytes(32).toString('base64url');
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+
+  blockAfterRelease = true;
+  const edited = structuredClone(first.preview!.manifest);
+  edited.name = '旧预览过期后禁止替代延续';
+  edited.projectVersion = '1.0.1';
+  const editRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', authorization: `Bearer ${first.ticket}`, 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 0, manifest: edited, documents: first.preview!.documents },
+  });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  assert.equal(editRes.json().publication.status, 'failed');
+  assert.equal(editRes.json().publication.nextAction, 'retry');
+  const failedCandidateId = editRes.json().publication.id;
+  const failedTicket = editRes.json().ticket;
+
+  // Expire the original preview before retrying the failed candidate.
+  await h.db.query("UPDATE publications SET expires_at = now() - interval '1 minute' WHERE id = $1", [first.id]);
+  blockGitLabReads = false;
+
+  const retryRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${failedCandidateId}/retry`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', authorization: `Bearer ${failedTicket}` }),
+    payload: {},
+  });
+  assert.equal(retryRes.statusCode, 200, retryRes.body);
+  assert.equal(retryRes.json().status, 'failed');
+  assert.equal(retryRes.json().nextAction, 'submit_again');
+  assert.equal(retryRes.json().error.code, 'PUBLICATION_STATE_CONFLICT');
+
+  const firstAfter = (await h.db.query<{ status: string; superseded_by_publication_id: string | null }>('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [first.id])).rows[0];
+  assert.equal(firstAfter.status, 'preview_ready');
+  assert.equal(firstAfter.superseded_by_publication_id, null);
+});

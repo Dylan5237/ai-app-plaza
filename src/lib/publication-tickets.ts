@@ -1,5 +1,8 @@
-const PUBLICATION_TICKET_PREFIX = 'ai-app-plaza:publication:'
-const PUBLICATION_OWNER_KEY = 'ai-app-plaza:publication-owner'
+import { publicBasePath } from './public-path.js'
+
+const mountKey = () => (typeof document !== 'undefined' ? publicBasePath() || '/' : '/')
+const ticketPrefix = () => `ai-app-plaza:publication:${mountKey()}:`
+const ownerStorageKey = () => `ai-app-plaza:publication-owner:${mountKey()}`
 const memoryTickets = new Map<string, string>()
 const storageFallbackIds = new Set<string>()
 const currentRouteTicketIds = new Set<string>()
@@ -9,16 +12,18 @@ let ticketsSuspended = false
 function removeStorageTickets(preserveIds?: Set<string>): void {
   if (typeof window === 'undefined') return
   try {
+    const prefix = ticketPrefix()
+    const ownerKey = ownerStorageKey()
     const keysToRemove: string[] = []
     for (let index = 0; index < window.sessionStorage.length; index += 1) {
       const key = window.sessionStorage.key(index)
       if (!key) continue
-      if (key === PUBLICATION_OWNER_KEY) {
+      if (key === ownerKey) {
         keysToRemove.push(key)
         continue
       }
-      if (key.startsWith(PUBLICATION_TICKET_PREFIX)) {
-        const id = key.slice(PUBLICATION_TICKET_PREFIX.length)
+      if (key.startsWith(prefix)) {
+        const id = key.slice(prefix.length)
         if (!preserveIds?.has(id)) keysToRemove.push(key)
       }
     }
@@ -41,8 +46,8 @@ export function savePublicationTicket(id: string, ticket: string, fromUrl = fals
   let persisted = false
   if (typeof window !== 'undefined') {
     try {
-      window.sessionStorage.setItem(`${PUBLICATION_TICKET_PREFIX}${id}`, ticket)
-      if (currentTicketOwnerId) window.sessionStorage.setItem(PUBLICATION_OWNER_KEY, currentTicketOwnerId)
+      window.sessionStorage.setItem(`${ticketPrefix()}${id}`, ticket)
+      if (currentTicketOwnerId) window.sessionStorage.setItem(ownerStorageKey(), currentTicketOwnerId)
       persisted = true
     } catch {
       persisted = false
@@ -65,7 +70,7 @@ export function readPublicationTicket(id: string): string {
   if (!id || ticketsSuspended) return ''
   if (typeof window !== 'undefined') {
     try {
-      const stored = window.sessionStorage.getItem(`${PUBLICATION_TICKET_PREFIX}${id}`)
+      const stored = window.sessionStorage.getItem(`${ticketPrefix()}${id}`)
       if (stored) return stored
     } catch {
       // Fallback to in-memory ticket when sessionStorage is unavailable.
@@ -107,11 +112,12 @@ export function syncPublicationTicketIdentity(userId: string | null): void {
   ticketsSuspended = false
   if (typeof window !== 'undefined') {
     try {
-      const previousOwner = window.sessionStorage.getItem(PUBLICATION_OWNER_KEY)
+      const ownerKey = ownerStorageKey()
+      const previousOwner = window.sessionStorage.getItem(ownerKey)
       if (previousOwner && previousOwner !== userId) {
         clearMemoryPublicationTickets(true)
       }
-      window.sessionStorage.setItem(PUBLICATION_OWNER_KEY, userId)
+      window.sessionStorage.setItem(ownerKey, userId)
     } catch {
       // Ignore storage access errors in memory-only environments.
     }

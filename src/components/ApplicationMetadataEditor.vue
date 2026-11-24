@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import { uuid } from '../lib/analytics.js'
+import { deletePendingMetadataEdit, getPendingMetadataEdit, setPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
 
 const props = defineProps({
   appId: { type: String, default: '' },
@@ -20,7 +21,6 @@ const documents = ref({})
 const expectedRevision = ref(0)
 const activeTab = ref('overview')
 const pending = ref(null)
-const pendingRequests = new Map()
 const isPublicationMode = computed(() => Boolean(props.publicationId))
 const targetKey = computed(() => isPublicationMode.value ? `pub:${props.publicationId}` : props.appId ? `app:${props.appId}` : '')
 const editorEndpoint = computed(() => {
@@ -56,24 +56,42 @@ function lines(value) { return (value || []).join('\n') }
 function setLines(object, field, value) { object[field] = value.split('\n').map(item => item.trim()).filter(Boolean) }
 async function load() {
   const current = ++sequence
+  const key = targetKey.value
+  const saved = getPendingMetadataEdit(key)
   loading.value = true
   error.value = ''
   context.value = null
   manifest.value = null
   pending.value = null
   activeTab.value = 'overview'
+  const applySavedPending = (loadedContext = null) => {
+    if (!saved) return false
+    context.value = loadedContext
+    pending.value = saved
+    expectedRevision.value = saved.body.expectedAppRevision ?? 0
+    manifest.value = clone(saved.body.manifest)
+    documents.value = clone(saved.body.documents)
+    return true
+  }
   try {
     const result = await apiRequest(editorEndpoint.value, requestToken.value ? { token: requestToken.value } : {})
     if (current !== sequence) return
+    if (!result.editable) {
+      if (!applySavedPending(result)) context.value = result
+      return
+    }
     context.value = result
-    if (!result.editable) return
     expectedRevision.value = result.expectedAppRevision ?? result.app.revision
     manifest.value = clone(result.app.manifest)
     manifest.value.projectVersion = result.suggestedVersion
     documents.value = clone(result.app.documents)
-    const saved = pendingRequests.get(targetKey.value)
-    if (saved) { pending.value = saved; manifest.value = clone(saved.body.manifest); documents.value = clone(saved.body.documents) }
-  } catch (e) { if (current === sequence) error.value = e.message }
+    if (saved) applySavedPending(result)
+  } catch (e) {
+    if (current === sequence) {
+      if (!applySavedPending(null)) error.value = e.message
+      else error.value = ''
+    }
+  }
   finally { if (current === sequence) loading.value = false }
 }
 watch(targetKey, key => {
@@ -99,7 +117,7 @@ async function close() {
   emit('close')
 }
 async function save() {
-  if (saving.value || !context.value?.editable || !manifest.value) return
+  if (saving.value || (!pending.value && !context.value?.editable) || !manifest.value) return
   if (!pending.value && !changed.value) return
   if (!pending.value) {
     const key = uuid()
@@ -121,7 +139,7 @@ async function save() {
   const currentSequence = sequence
   const operationKey = operation.cacheKey
   const isCurrent = () => currentSequence === sequence && targetKey.value === operationKey
-  pendingRequests.set(operation.cacheKey, operation)
+  setPendingMetadataEdit(operation.cacheKey, operation)
   saving.value = true
   error.value = ''
   try {
@@ -134,7 +152,7 @@ async function save() {
     if (operation.publicationMode) {
       const nextPublication = operation.management ? result.managementPublication : result.publication
       if (!nextPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
-      pendingRequests.delete(operation.cacheKey)
+      deletePendingMetadataEdit(operation.cacheKey)
       if (!isCurrent()) return
       pending.value = null
       emit('saved', {
@@ -144,7 +162,7 @@ async function save() {
       })
     } else {
       if (!result.managementPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
-      pendingRequests.delete(operation.cacheKey)
+      deletePendingMetadataEdit(operation.cacheKey)
       if (!isCurrent()) return
       pending.value = null
       emit('saved', result.managementPublication.id)
@@ -152,7 +170,7 @@ async function save() {
   } catch (e) {
     // Deterministic validation failures have no partial GitLab write; uncertain failures retain the exact request.
     if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED'].includes(e.code))) {
-      pendingRequests.delete(operation.cacheKey)
+      deletePendingMetadataEdit(operation.cacheKey)
       if (isCurrent()) pending.value = null
     }
     if (isCurrent()) error.value = e.message || '保存未完成。'
@@ -166,12 +184,13 @@ async function save() {
   <el-dialog :model-value="Boolean(targetKey)" :title="isPublicationMode ? '编辑应用信息' : '修改应用详情'" width="min(860px, 94vw)" class="metadata-editor" data-testid="metadata-editor" :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" :before-close="close">
     <div v-loading="loading" class="metadata-content">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="editor-alert" />
-      <el-alert v-if="context && !context.editable" :title="context.reason || '当前来源暂不支持后台修改。'" type="info" :closable="false" />
+      <el-alert v-if="context && !context.editable && !pending" :title="context.reason || '当前来源暂不支持后台修改。'" type="info" :closable="false" />
       <template v-if="manifest">
-        <p class="editor-context">{{ context.app.manifest.name }} · 当前 v{{ context.app.version }} · {{ context.app.manifest.appKey }}</p>
+        <p v-if="context?.app" class="editor-context">{{ context.app.manifest.name }} · 当前 v{{ context.app.version }} · {{ context.app.manifest.appKey }}</p>
+        <p v-else class="editor-context">{{ manifest.name }} · {{ manifest.appKey }}</p>
         <p class="editor-note">{{ isPublicationMode ? '保存会将资料写回托管仓库并生成最新预览。核对无误后点击「确认收录」或「确认更新」，广场才会展示最新内容。' : '保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。' }}</p>
         <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
-        <el-alert v-if="pending && !saving" title="保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。" type="warning" :closable="false" class="editor-alert" />
+        <el-alert v-if="pending && !saving" :title="context && !context.editable ? '该原预览已不可继续新建修改；如果此前保存可能已生成新预览，请点击「重试本次保存」找回结果与新授权。' : '保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。'" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基本资料" name="overview">
             <el-form label-position="top" :disabled="locked">
@@ -180,7 +199,7 @@ async function save() {
                 <el-form-item label="新版本号"><el-input v-model="manifest.projectVersion" data-testid="editor-version" placeholder="例如 1.2.1" /></el-form-item>
               </div>
               <el-form-item label="应用简介"><el-input v-model="manifest.summary" type="textarea" :rows="3" data-testid="editor-summary" /></el-form-item>
-              <el-form-item label="能力标签（最多 3 个）"><el-select v-model="manifest.tags" multiple filterable allow-create default-first-option :multiple-limit="3" aria-label="能力标签"><el-option v-for="tag in context.app.tags" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item>
+              <el-form-item label="能力标签（最多 3 个）"><el-select v-model="manifest.tags" multiple filterable allow-create default-first-option :multiple-limit="3" aria-label="能力标签"><el-option v-for="tag in (context?.app?.tags || manifest.tags || [])" :key="tag" :label="tag" :value="tag" /></el-select></el-form-item>
               <div v-for="(author, index) in manifest.maintainers" :key="index" class="editor-author">
                 <el-form-item :label="`作者 ${index + 1} · 中文姓名`"><el-input v-model="author.name" /></el-form-item>
                 <el-form-item label="英文全名或完整拼音"><el-input v-model="author.nameEn" /></el-form-item>

@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { apiRequest, advanceIdentityRequests, configurePortalIdentity, configureWebIdentity, readPortalToken } from './api.js'
 import { publicBasePath } from './public-path.js'
+import { clearPendingMetadataEdits } from './pending-metadata-edits.ts'
 import { clearMemoryPublicationTickets, setPublicationTicketsSuspended, syncPublicationTicketIdentity } from './publication-tickets.ts'
 
 export const identity = reactive({ enabled: false, user: null, busy: false, error: '', retryable: false, switchRequired: false, epoch: 0 })
@@ -18,12 +19,15 @@ function clearUser(clearTickets = false) {
   if (clearTickets) {
     syncPublicationTicketIdentity(null)
     clearMemoryPublicationTickets(false)
+    clearPendingMetadataEdits()
     lastUserId = null
   }
   generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.retryable = false; identity.epoch++
 }
 function failed(error) {
-  clearUser(error?.code === 'ACCOUNT_SWITCH_REQUIRED' || error?.status === 401 || error?.status === 403)
+  const switchedOrLoggedOut = error?.code === 'ACCOUNT_SWITCH_REQUIRED' || !readPortalToken()
+  if (!switchedOrLoggedOut && lastUserId) setPublicationTicketsSuspended(true)
+  clearUser(switchedOrLoggedOut)
   identity.error = error.message
   identity.switchRequired = error.code === 'ACCOUNT_SWITCH_REQUIRED'
 }
@@ -38,7 +42,10 @@ export async function signIn(switchAccount = false) {
     const { requestId } = await apiRequest('/api/auth/tiangong/requests', { method: 'POST', body: {} })
     const result = await apiRequest('/api/auth/tiangong/exchange', { method: 'POST', body: { requestId, token, switchAccount } })
     if (current !== generation || token !== readPortalToken()) return
-    if (lastUserId && result.user?.id && lastUserId !== result.user.id) clearMemoryPublicationTickets(false)
+    if (lastUserId && result.user?.id && lastUserId !== result.user.id) {
+      clearMemoryPublicationTickets(false)
+      clearPendingMetadataEdits()
+    }
     syncPublicationTicketIdentity(result.user?.id ?? null)
     lastUserId = result.user?.id ?? null
     advanceIdentityRequests(); configureWebIdentity(true); identity.user = result.user; identity.epoch++; identity.switchRequired = false; suppress(false)
@@ -75,7 +82,10 @@ export async function initializeIdentity() {
     try {
       const result = await apiRequest('/api/auth/me')
       if (current !== generation || token !== readPortalToken()) return
-      if (lastUserId && result.user?.id && lastUserId !== result.user.id) clearMemoryPublicationTickets(false)
+      if (lastUserId && result.user?.id && lastUserId !== result.user.id) {
+      clearMemoryPublicationTickets(false)
+      clearPendingMetadataEdits()
+    }
       syncPublicationTicketIdentity(result.user?.id ?? null)
       lastUserId = result.user?.id ?? null
       advanceIdentityRequests(); configureWebIdentity(true); identity.user = result.user; identity.epoch++

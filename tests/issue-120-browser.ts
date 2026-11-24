@@ -366,13 +366,19 @@ try {
   await memberPage.goto(ticketClearDraft.previewUrl);
   await memberPage.getByTestId('confirm-publication').waitFor();
   assert.ok(
-    await memberPage.evaluate(id => window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`), ticketClearDraft.id),
-    'ticket persisted in sessionStorage for current user',
+    await memberPage.evaluate(id => window.sessionStorage.getItem(`ai-app-plaza:publication:/plaza:${id}`), ticketClearDraft.id),
+    'ticket persisted in sessionStorage under mount-scoped key for current user',
   );
+  await memberPage.evaluate(() => window.sessionStorage.setItem('ai-app-plaza:publication:/other-plaza:keep', 'other-mount-ticket'));
   await memberPage.goto(`${h.origin}/plaza/?discover=catalog`);
   await memberPage.getByRole('button', { name: '退出广场', exact: true }).click();
   await memberPage.getByRole('button', { name: '使用天宫身份登录', exact: true }).waitFor();
-  await memberPage.waitForFunction(id => window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) === null, ticketClearDraft.id);
+  await memberPage.waitForFunction(id => window.sessionStorage.getItem(`ai-app-plaza:publication:/plaza:${id}`) === null, ticketClearDraft.id);
+  assert.equal(
+    await memberPage.evaluate(() => window.sessionStorage.getItem('ai-app-plaza:publication:/other-plaza:keep')),
+    'other-mount-ticket',
+    'logging out of /plaza does not clear tickets belonging to another mount path',
+  );
 
   // Pre-login link ticket still works after logging in via the portal for the first time.
   const preLoginDraft = await h.managed.submit(makeBundle({
@@ -382,7 +388,7 @@ try {
     entry: 'agent',
   }), randomBytes(32).toString('base64url'), randomUUID());
   await anonPage.goto(preLoginDraft.previewUrl);
-  await anonPage.waitForFunction(id => Boolean(window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`)), preLoginDraft.id);
+  await anonPage.waitForFunction(id => Boolean(window.sessionStorage.getItem(`ai-app-plaza:publication:/plaza:${id}`)), preLoginDraft.id);
   await anonPage.getByText('登录', { exact: false }).first().waitFor();
   await anonPage.evaluate(() => window.localStorage.setItem('fixture-sky-token', 'fixture-admin'));
   await anonPage.goto(`${h.origin}/plaza/?publish_check=1#publish=${preLoginDraft.id}`);

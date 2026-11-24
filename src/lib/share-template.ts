@@ -25,11 +25,12 @@ export async function loadShareTemplates(force = false): Promise<{ templates: ty
   const request = apiRequest('/api/share-templates')
     .then((result) => {
       if (result && typeof result.agent === 'string' && typeof result.platform === 'string') {
+        const fetched = { agent: result.agent, platform: result.platform }
         if (seq === requestSequence) {
-          cached = { agent: result.agent, platform: result.platform }
+          cached = fetched
           loadedOnce = true
         }
-        return { templates: cached, ok: true }
+        return { templates: loadedOnce && seq < requestSequence ? cached : fetched, ok: true }
       }
       return { templates: cached, ok: false }
     })

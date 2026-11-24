@@ -22,6 +22,7 @@ import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '.
 import { discoverTabFromParam } from '../lib/discovery.ts'
 import { currentShareTemplates, hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
 import { hasTicketStorageFallback, readPublicationTicket, savePublicationTicket as storePublicationTicket } from '../lib/publication-tickets.ts'
+import { hasPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
@@ -386,6 +387,7 @@ const selectedAppEntries = computed(() => {
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
 const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= Date.now())
+const hasPendingPublicationEdit = computed(() => Boolean(publicationId.value && hasPendingMetadataEdit(`pub:${publicationId.value}`)))
 const isUpdate = computed(() => publication.value?.change?.kind === 'update')
 const isUnchanged = computed(() => publication.value?.change?.kind === 'unchanged')
 const publicationStatusText = computed(() => ({
@@ -1022,7 +1024,7 @@ async function loadPublication(id = publicationId.value, { revalidating = public
       publication.value = result
       if (result.status === 'registered') publicationError.value = ''
       const keepPendingRetry = !result.requiresIdentity &&
-        publicationEditorOpen.value && publicationEditorPending.value && result.status === 'cancelled'
+        publicationEditorOpen.value && (publicationEditorPending.value || hasPendingPublicationEdit.value) && result.status === 'cancelled'
       if (result.requiresIdentity || (result.status !== 'preview_ready' && !keepPendingRetry)) {
         publicationEditorOpen.value = false
         publicationEditorToken.value = ''
@@ -1079,7 +1081,9 @@ async function mutatePublication(action) {
 }
 
 function openPublicationEditor() {
-  if (!publicationId.value || publication.value?.status !== 'preview_ready' || publicationExpired.value) return
+  if (!publicationId.value) return
+  const canRecoverPending = Boolean(hasPendingPublicationEdit.value && !publication.value?.requiresIdentity)
+  if (!canRecoverPending && (publication.value?.status !== 'preview_ready' || publicationExpired.value)) return
   publicationEditorToken.value = props.management ? '' : publicationToken(publicationId.value)
   if (!props.management && !publicationEditorToken.value) {
     publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
@@ -1262,6 +1266,16 @@ onUnmounted(() => {
             @click="openPublicationEditor"
           >
             编辑应用信息
+          </button>
+          <button
+            v-else-if="hasPendingPublicationEdit && !publication?.requiresIdentity"
+            type="button"
+            class="secondary-button"
+            data-testid="recover-publication-edit"
+            :disabled="publicationBusy || publicationLoading"
+            @click="openPublicationEditor"
+          >
+            恢复上次编辑结果
           </button>
           <button
             v-if="publication?.status === 'failed' && publication.nextAction !== 'submit_again'"

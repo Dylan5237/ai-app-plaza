@@ -134,6 +134,7 @@ export interface PlazaService {
   publication(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
   receiptView(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
   managedReceipt(id: string, input: SubmitInput): Promise<SubmitResult>;
+  resumeCheckingPublication(id: string, input: SubmitInput): Promise<SubmitResult>;
   confirm(id: string, ticket: string, confirmation: { revision: number; digest: string }, viewerId?: string): Promise<PublicationView>;
   retry(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
   managementPublication(id: string, viewerId?: string): Promise<PublicationView>;
@@ -685,6 +686,9 @@ export function createService(config: ServiceConfig): PlazaService {
         if (replaced.status !== 'preview_ready' || replaced.confirmed_at !== null || replaced.superseded_by_publication_id !== null) {
           throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览已开始确认或已被其他修订替代，请刷新后查看最新状态。');
         }
+        if (new Date(replaced.expires_at).getTime() <= Date.now()) {
+          throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览已过期，无法继续替代或延长有效期，请重新提交。');
+        }
         if (existing && (config.applicationIdentity || Boolean(await accessRecord(tx, existing.id)))) {
           await requireAppAction(tx, existing.id, locked.replace_actor_user_id ?? undefined);
         }
@@ -713,7 +717,7 @@ export function createService(config: ServiceConfig): PlazaService {
                   superseded_by_publication_id = $2,
                   token_ciphertext = NULL, token_iv = NULL, token_auth_tag = NULL,
                   updated_at = now()
-            WHERE id = $1 AND status = 'preview_ready' AND confirmed_at IS NULL AND superseded_by_publication_id IS NULL
+            WHERE id = $1 AND status = 'preview_ready' AND confirmed_at IS NULL AND superseded_by_publication_id IS NULL AND expires_at > now()
             RETURNING id`,
           [replaced.id, locked.id],
         );
@@ -1177,6 +1181,28 @@ export function createService(config: ServiceConfig): PlazaService {
       // Preview expiry must not hide completed history after ownership and source checks.
       if (effective.status !== 'registered' && new Date(effective.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
       return supersededSubmitView(record, effective);
+    },
+
+    async resumeCheckingPublication(id, input) {
+      await cleanupExpiredTokens();
+      const record = (await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id])).rows[0];
+      if (!record || record.request_hash !== hashInput(input)) {
+        throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "原发布回执与本次固定来源不一致，已停止恢复。");
+      }
+      if (record.status !== 'registered' && new Date(record.expires_at).getTime() <= Date.now()) {
+        throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+      }
+      if (record.status !== 'checking') {
+        const effective = await resolveSupersededPublication(record);
+        return supersededSubmitView(record, effective);
+      }
+      try {
+        const source = await assertAuthorAndSource(record);
+        const prepared = await preparePreview(record, source);
+        return submitView(prepared);
+      } catch (error) {
+        return submitView(await markFailed(record.id, error));
+      }
     },
 
     async lookupManagedReceipt(input, gitlabToken, idempotencyKey) {

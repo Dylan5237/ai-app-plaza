@@ -633,11 +633,14 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         )).rows[0]?.id
       : undefined);
     if (existingPublicationId && operation.commit_sha && operation.project_id) {
-      const result = await config.service.managedReceipt(existingPublicationId, inputFor(operation.commit_sha));
+      let result = await config.service.managedReceipt(existingPublicationId, inputFor(operation.commit_sha));
+      if (result.status === 'checking') {
+        result = await config.service.resumeCheckingPublication(existingPublicationId, inputFor(operation.commit_sha));
+      }
       const appId = result.preview?.id ?? result.appId;
       binding = await updateBindingApp(binding, appId);
       const targetPubId = result.originalPublicationId ?? result.id;
-      if (operation.status !== 'submitted' || operation.publication_id !== targetPubId) {
+      if (result.status !== 'checking' && (operation.status !== 'submitted' || operation.publication_id !== targetPubId)) {
         operation = await updateOperation(operation, { status: 'submitted', publication_id: targetPubId });
       }
       return { ...result, managedAppId: binding.id, sourceUploaded: true };
