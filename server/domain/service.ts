@@ -622,7 +622,7 @@ export function createService(config: ServiceConfig): PlazaService {
     const mustSubmitAgain = failure.code === "SOURCE_MISMATCH" || failure.code === "VALIDATION_FAILED" ||
       failure.code === "AUTH_TOKEN_INVALID" || failure.code === "REVISION_CONFLICT" || failure.code === "VERSION_NOT_NEWER" ||
       failure.code === "PUBLICATION_STATE_CONFLICT" || failure.code === "PUBLICATION_CANCELLED" ||
-      failure.code === "APP_NOT_FOUND" || failure.code === "LOGIN_REQUIRED";
+      failure.code === "APP_NOT_FOUND" || failure.code === "PUBLICATION_NOT_FOUND" || failure.code === "LOGIN_REQUIRED";
     const nextAction = mustSubmitAgain
       ? "submit_again"
       : retryAllowed ? "retry" : "submit_again";
@@ -632,7 +632,7 @@ export function createService(config: ServiceConfig): PlazaService {
     await tx.query(
       `UPDATE publications
           SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
-              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED', 'APP_NOT_FOUND', 'LOGIN_REQUIRED') THEN NULL ELSE confirmed_at END,
+              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED', 'APP_NOT_FOUND', 'PUBLICATION_NOT_FOUND', 'LOGIN_REQUIRED') THEN NULL ELSE confirmed_at END,
               updated_at = now()
         WHERE id = $1 AND status NOT IN ('registered', 'cancelled')`,
       [id, failure.code, failure.message, nextAction],
@@ -1064,9 +1064,18 @@ export function createService(config: ServiceConfig): PlazaService {
         const now = new Date();
         const submitAttempt: PublicationAttempt | undefined = config.analytics && !origin ? { id: randomUUID(), startedAt: now.toISOString(), kind: 'submit' } : undefined;
         const publicationId = randomUUID();
-        const candidateAppId = randomUUID();
         const expiry = new Date(now.getTime() + PUBLICATION_TTL_MS);
+        const projectId = validateProjectId(input.projectId);
         const created = await config.db.transaction(async (tx) => {
+          const existingApp = await findAppByKey(tx, projectId, input.appKey);
+          let candidateAppId: string = randomUUID();
+          if (!existingApp && origin?.replacesPublicationId) {
+            const replaced = (await tx.query<{ candidate_app_id: string }>(
+              'SELECT candidate_app_id FROM publications WHERE id = $1',
+              [origin.replacesPublicationId],
+            )).rows[0];
+            if (replaced?.candidate_app_id) candidateAppId = replaced.candidate_app_id;
+          }
           const inserted = await tx.query<PublicationRecord>(
             `INSERT INTO publications (
                id, actor_id, idempotency_digest, request_hash, submission, status, revision,
@@ -1095,7 +1104,6 @@ export function createService(config: ServiceConfig): PlazaService {
           );
           if (inserted.rows[0]) {
             if (origin?.replacesPublicationId && origin?.replaceActorUserId) {
-              const existingApp = await findAppByKey(tx, validateProjectId(input.projectId), input.appKey);
               if (!existingApp) {
                 const existingActor = (await tx.query<{ user_id: string }>(
                   'SELECT user_id FROM plaza_publication_actors WHERE publication_id = $1 FOR UPDATE',
@@ -1140,7 +1148,8 @@ export function createService(config: ServiceConfig): PlazaService {
           const effective = origin?.mode === 'managed' && created.record.superseded_by_publication_id
             ? await resolveSupersededPublication(created.record)
             : created.record;
-          if (effective.status !== 'registered' && new Date(effective.expires_at).getTime() <= Date.now()) {
+          const allowRegisteredExpired = origin?.mode === 'managed' && effective.status === 'registered';
+          if (!allowRegisteredExpired && new Date(effective.expires_at).getTime() <= Date.now()) {
             throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
           }
           return supersededSubmitView(created.record, effective);

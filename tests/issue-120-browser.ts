@@ -240,6 +240,17 @@ try {
   await adminPage.getByText('模板已保存，后续操作立即生效。').waitFor();
 
   await adminPage.goto(`${h.origin}/plaza/?discover=catalog`);
+  await adminPage.locator('.catalog-results').getByTestId('app-card').filter({ hasText: 'WorkBuddy企微机器人权限主动续期' }).waitFor();
+  // Hold /api/share-templates in-flight to verify cached Share copies without waiting on network.
+  let releaseShare!: () => void;
+  const shareGate = new Promise<void>(resolve => { releaseShare = resolve; });
+  const shareRefreshPromise = adminPage.waitForResponse(
+    res => res.url().includes('/plaza/api/share-templates') && res.request().method() === 'GET',
+  );
+  await adminPage.route('**/plaza/api/share-templates', async route => {
+    await shareGate;
+    await route.continue();
+  }, { times: 1 });
   await adminPage.evaluate(() => { (window as any).__copied = null; });
   await adminPage.locator('.catalog-results').getByTestId('app-card').filter({ hasText: 'WorkBuddy企微机器人权限主动续期' }).getByTestId('card-share').click();
   await adminPage.waitForFunction(() => (window as any).__copied !== null);
@@ -247,6 +258,8 @@ try {
     await adminPage.evaluate(() => (window as any).__copied),
     `【定制分享】WorkBuddy企微机器人权限主动续期 | ${h.origin}/plaza/?app=${agentReg.appId}`,
   );
+  releaseShare();
+  await shareRefreshPromise;
   report.checks.push('req2-share-templates-split-and-maintainable');
 
   // --- Req 3: Direct editing on private preview page ---
@@ -336,6 +349,39 @@ try {
   await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
   await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor({ state: 'hidden' });
   report.checks.push('req4-detail-visibility-and-restricted-prompt');
+
+  // --- Publication ticket sessionStorage isolation across logout & first login ---
+  const ticketClearDraft = await h.managed.submit(makeBundle({
+    appKey: 'ticket-logout-clear',
+    name: '退出清空会话票据测试',
+    summary: '验证退出广场后同步清除 sessionStorage 预览票据。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await memberPage.goto(ticketClearDraft.previewUrl);
+  await memberPage.getByTestId('confirm-publication').waitFor();
+  assert.ok(
+    await memberPage.evaluate(id => window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`), ticketClearDraft.id),
+    'ticket persisted in sessionStorage for current user',
+  );
+  await memberPage.goto(`${h.origin}/plaza/?discover=catalog`);
+  await memberPage.getByRole('button', { name: '退出广场', exact: true }).click();
+  await memberPage.getByRole('button', { name: '使用天宫身份登录', exact: true }).waitFor();
+  await memberPage.waitForFunction(id => window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) === null, ticketClearDraft.id);
+
+  // Pre-login link ticket still works after logging in via the portal for the first time.
+  const preLoginDraft = await h.managed.submit(makeBundle({
+    appKey: 'ticket-prelogin-preserve',
+    name: '登录前链接保留票据测试',
+    summary: '验证首次登录前打开的预览票据在登录后仍可用。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await anonPage.goto(preLoginDraft.previewUrl);
+  await anonPage.waitForFunction(id => Boolean(window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`)), preLoginDraft.id);
+  await anonPage.getByText('登录', { exact: false }).first().waitFor();
+  await anonPage.evaluate(() => window.localStorage.setItem('fixture-sky-token', 'fixture-admin'));
+  await anonPage.goto(`${h.origin}/plaza/?publish_check=1#publish=${preLoginDraft.id}`);
+  await anonPage.getByTestId('confirm-publication').waitFor();
+  report.checks.push('publication-ticket-sessionstorage-isolation');
 
   await memberPage.screenshot({ path: 'artifacts/issue-120-detail-visibility.png', fullPage: true });
   await adminPage.screenshot({ path: 'artifacts/issue-120-templates-admin.png', fullPage: true });

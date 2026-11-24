@@ -207,9 +207,9 @@ function formatVersion(value) {
 
 <style scoped>
 .overview-visibility { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; margin-top: 14px; padding: 10px 14px; border: 1px solid var(--plaza-line); border-radius: 9px; background: var(--plaza-surface); font-size: 12.5px; line-height: 19px; }
-.overview-visibility.is-warning { border-color: #e4c28e; background: #fff9ef; color: #7a490c; }
-.overview-visibility.is-info { border-color: #c8d2f4; background: var(--plaza-brand-soft); color: #2b3f9e; }
-.overview-visibility.is-public { border-color: #c3dfce; background: #f2f9f5; color: #216147; }
+.overview-visibility.is-warning { border-color: var(--plaza-warning); background: var(--plaza-surface); color: var(--plaza-warning); }
+.overview-visibility.is-info { border-color: var(--plaza-brand); background: var(--plaza-brand-soft); color: var(--plaza-brand); }
+.overview-visibility.is-public { border-color: var(--plaza-success); background: var(--plaza-surface); color: var(--plaza-success); }
 .overview-visibility-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
 .overview-visibility-badge { font-weight: 650; }
 .overview-visibility-note { font-size: 12px; opacity: .92; }

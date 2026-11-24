@@ -20,8 +20,8 @@ import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { discoverTabFromParam } from '../lib/discovery.ts'
-import { hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
-import { getPublicationTicket, hasTicketStorageFallback, setPublicationTicket } from '../lib/publication-tickets.ts'
+import { currentShareTemplates, hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
+import { hasTicketStorageFallback, readPublicationTicket, savePublicationTicket as storePublicationTicket } from '../lib/publication-tickets.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
@@ -108,7 +108,14 @@ async function observeCards() {
   }, { threshold: [.5] })
   cards.forEach(card => exposureObserver.observe(card))
 }
-function onVisibilityChange() { void observeCards() }
+function onVisibilityChange() {
+  void observeCards()
+  if (!document.hidden) void loadShareTemplates(true)
+}
+function onWindowFocus() {
+  refreshVisibleAccess()
+  void loadShareTemplates(true)
+}
 watch(randomIndex, () => { if (discoveryTab.value === 'random') void observeCards() }, { flush: 'post' })
 watch(() => props.discover, tab => {
   if (tab && tab !== discoveryTab.value) void selectDiscovery(tab)
@@ -781,13 +788,17 @@ async function copyAgentInstructions() {
 
 // Share blurb rendered from configurable agent/platform templates.
 async function copyShareLink(app, placement) {
-  const loaded = await loadShareTemplates(true)
-  if (disposed) return
-  if (!loaded.ok && !hasLoadedShareTemplates()) {
-    ElMessage.error('暂时无法获取分享模板，请稍后重试。')
-    return
+  const fromCache = hasLoadedShareTemplates()
+  let templates = fromCache ? currentShareTemplates() : null
+  if (!templates) {
+    const loaded = await loadShareTemplates(true)
+    if (disposed) return
+    if (!loaded.ok && !hasLoadedShareTemplates()) {
+      ElMessage.error('暂时无法获取分享模板，请稍后重试。')
+      return
+    }
+    templates = loaded.templates
   }
-  const templates = loaded.templates
   const usage = catalogUsage(app)
   const template = usage === 'platform' ? templates.platform : templates.agent
   const name = app.manifest?.name || '未命名应用'
@@ -799,8 +810,8 @@ async function copyShareLink(app, placement) {
     : app.visibility && app.visibility.scope !== 'all'
       ? '（当前为受限分享范围，仅获授权同事可打开）'
       : ''
-  const offlineNote = !loaded.ok ? '（网络波动，已使用上次同步的分享模板）' : ''
-  const copied = await copyText(text, `分享内容已复制${scopeNote}${offlineNote}`)
+  const copied = await copyText(text, `分享内容已复制${scopeNote}`)
+  if (fromCache) void loadShareTemplates(true)
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
@@ -910,23 +921,11 @@ async function copyExample(text) {
 }
 
 function publicationToken(id) {
-  try {
-    return window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) || getPublicationTicket(id)
-  } catch {
-    return getPublicationTicket(id)
-  }
+  return readPublicationTicket(id)
 }
 
-function savePublicationTicket(id, ticket) {
-  let persisted = false
-  try {
-    window.sessionStorage.setItem(`ai-app-plaza:publication:${id}`, ticket)
-    persisted = true
-  } catch {
-    persisted = false
-  }
-  setPublicationTicket(id, ticket, persisted)
-  return persisted
+function savePublicationTicket(id, ticket, fromUrl = false) {
+  return storePublicationTicket(id, ticket, fromUrl)
 }
 
 function preparePublicationRoute() {
@@ -943,7 +942,7 @@ function preparePublicationRoute() {
   shareVisible.value = false
   const ticket = props.management ? '' : fragment.get('key')
   if (ticket) {
-    if (!savePublicationTicket(id, ticket)) {
+    if (!savePublicationTicket(id, ticket, true)) {
       publicationError.value = STORAGE_FALLBACK_NOTICE
     }
   }
@@ -1156,7 +1155,7 @@ onMounted(async () => {
   window.addEventListener('popstate', handlePopState)
   window.addEventListener('keydown', handleDetailKey, true)
   window.addEventListener('resize', scheduleCatalogLayout)
-  window.addEventListener('focus', refreshVisibleAccess)
+  window.addEventListener('focus', onWindowFocus)
   document.addEventListener('visibilitychange', onVisibilityChange)
   if (preparePublicationRoute()) return
   if (props.management) return
@@ -1190,7 +1189,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleDetailKey, true)
   window.removeEventListener('hashchange', handleHashChange)
   window.removeEventListener('resize', scheduleCatalogLayout)
-  window.removeEventListener('focus', refreshVisibleAccess)
+  window.removeEventListener('focus', onWindowFocus)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   clearExposureObserver()
   layoutObserver?.disconnect()

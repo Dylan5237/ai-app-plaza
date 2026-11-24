@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import { apiRequest, advanceIdentityRequests, configurePortalIdentity, configureWebIdentity, readPortalToken } from './api.js'
 import { publicBasePath } from './public-path.js'
-import { clearMemoryPublicationTickets } from './publication-tickets.ts'
+import { clearMemoryPublicationTickets, syncPublicationTicketIdentity } from './publication-tickets.ts'
 
 export const identity = reactive({ enabled: false, user: null, busy: false, error: '', retryable: false, switchRequired: false, epoch: 0 })
 const suppressionKey = `plaza-explicit-logout:${publicBasePath()}`
@@ -15,7 +15,10 @@ function suppress(value) {
   try { value ? sessionStorage.setItem(suppressionKey, '1') : sessionStorage.removeItem(suppressionKey) } catch { /* Optional storage. */ }
 }
 function clearUser(clearTickets = false) {
-  if (clearTickets || lastUserId) clearMemoryPublicationTickets()
+  if (clearTickets || lastUserId) {
+    syncPublicationTicketIdentity(null)
+    clearMemoryPublicationTickets(false)
+  }
   lastUserId = null
   generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.retryable = false; identity.epoch++
 }
@@ -35,7 +38,8 @@ export async function signIn(switchAccount = false) {
     const { requestId } = await apiRequest('/api/auth/tiangong/requests', { method: 'POST', body: {} })
     const result = await apiRequest('/api/auth/tiangong/exchange', { method: 'POST', body: { requestId, token, switchAccount } })
     if (current !== generation || token !== readPortalToken()) return
-    if (lastUserId && result.user?.id && lastUserId !== result.user.id) clearMemoryPublicationTickets()
+    if (lastUserId && result.user?.id && lastUserId !== result.user.id) clearMemoryPublicationTickets(false)
+    syncPublicationTicketIdentity(result.user?.id ?? null)
     lastUserId = result.user?.id ?? null
     advanceIdentityRequests(); configureWebIdentity(true); identity.user = result.user; identity.epoch++; identity.switchRequired = false; suppress(false)
   } catch (error) { if (current === generation) failed(error) }
@@ -68,7 +72,8 @@ export async function initializeIdentity() {
     try {
       const result = await apiRequest('/api/auth/me')
       if (current !== generation || token !== readPortalToken()) return
-      if (lastUserId && result.user?.id && lastUserId !== result.user.id) clearMemoryPublicationTickets()
+      if (lastUserId && result.user?.id && lastUserId !== result.user.id) clearMemoryPublicationTickets(false)
+      syncPublicationTicketIdentity(result.user?.id ?? null)
       lastUserId = result.user?.id ?? null
       advanceIdentityRequests(); configureWebIdentity(true); identity.user = result.user; identity.epoch++
     }
