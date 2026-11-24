@@ -180,7 +180,7 @@ test('text templates endpoint is restricted to super administrators and supports
 });
 
 test('share templates endpoint and renderer support agent/platform split, empty summary, and single-pass substitution', async t => {
-  const { integrated, admin, headers } = await setup(t);
+  const { h, integrated, admin, headers } = await setup(t);
 
   const pubInitial = await integrated.app.inject({ url: '/plaza/api/share-templates', headers: headers(null) });
   assert.equal(pubInitial.statusCode, 200);
@@ -255,4 +255,44 @@ test('share templates endpoint and renderer support agent/platform split, empty 
   const pubReset = (await integrated.app.inject({ url: '/plaza/api/share-templates', headers: headers(null) })).json();
   assert.equal(pubReset.agent, DEFAULT_SHARE_AGENT_TEMPLATE);
   assert.equal(pubReset.platform, '平台自定义：{{name}} -> {{url}}');
+
+  // Concurrent updates on same template serialize cleanly for both same-requestId replay and distinct changes.
+  const dupReqId = randomUUID();
+  const [dupA, dupB] = await Promise.all([
+    integrated.app.inject({
+      method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+      payload: { confirmed: true, requestId: dupReqId, purpose: 'share_agent', template: '并发幂等A {{url}}' },
+    }),
+    integrated.app.inject({
+      method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+      payload: { confirmed: true, requestId: dupReqId, purpose: 'share_agent', template: '并发幂等A {{url}}' },
+    }),
+  ]);
+  assert.equal(dupA.statusCode, 200);
+  assert.equal(dupB.statusCode, 200);
+  assert.equal([dupA.json(), dupB.json()].filter(x => x.saved).length, 1);
+  assert.equal([dupA.json(), dupB.json()].filter(x => x.recovered).length, 1);
+
+  const [diffA, diffB] = await Promise.all([
+    integrated.app.inject({
+      method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+      payload: { confirmed: true, requestId: randomUUID(), purpose: 'share_agent', template: '并发一 {{url}}' },
+    }),
+    integrated.app.inject({
+      method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+      payload: { confirmed: true, requestId: randomUUID(), purpose: 'share_agent', template: '并发二 {{url}}' },
+    }),
+  ]);
+  assert.equal(diffA.statusCode, 200);
+  assert.equal(diffB.statusCode, 200);
+  type TemplateAuditRow = { before_value: { template: string } | null; after_value: { template: string } | null };
+  const auditRows = (await h.db.query<TemplateAuditRow>(
+    `SELECT before_value, after_value FROM plaza_access_operations
+      WHERE action = 'text_template_changed' AND resource_id = 'share_agent'`,
+  )).rows;
+  const fromConcurrentDup = auditRows.find((r: TemplateAuditRow) => r.before_value === null && r.after_value?.template === '并发幂等A {{url}}');
+  assert.ok(fromConcurrentDup);
+  const step2 = auditRows.find((r: TemplateAuditRow) => r.before_value?.template === fromConcurrentDup.after_value?.template);
+  const step3 = step2 && auditRows.find((r: TemplateAuditRow) => r.before_value?.template === step2.after_value?.template);
+  assert.ok(step2 && step3, 'concurrent template updates form an unbroken before/after audit chain');
 });

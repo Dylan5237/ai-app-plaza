@@ -247,6 +247,7 @@ export async function setTextTemplate(
 
   return db.transaction(async tx => {
     await requireAdministrator(tx, actorId, true);
+    await tx.query('LOCK TABLE plaza_text_templates IN SHARE ROW EXCLUSIVE MODE');
     const recovered = (await tx.query('SELECT * FROM plaza_access_operations WHERE id = $1', [input.requestId])).rows[0];
     if (recovered) {
       if (recovered.actor_id !== actorId || recovered.action !== 'text_template_changed' ||

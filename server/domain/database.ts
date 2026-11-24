@@ -154,6 +154,7 @@ const MIGRATIONS = [
   `ALTER TABLE publications ADD COLUMN IF NOT EXISTS replaces_publication_id uuid REFERENCES publications(id)`,
   `ALTER TABLE publications ADD COLUMN IF NOT EXISTS superseded_by_publication_id uuid REFERENCES publications(id)`,
   `ALTER TABLE publications ADD COLUMN IF NOT EXISTS replace_actor_user_id uuid`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS managed_operation_id uuid`,
   `CREATE INDEX IF NOT EXISTS publications_replaces_idx ON publications (replaces_publication_id) WHERE replaces_publication_id IS NOT NULL`,
   `ALTER TABLE managed_publish_operations ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE catalog_app_lifecycle ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,

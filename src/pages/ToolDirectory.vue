@@ -20,7 +20,8 @@ import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { discoverTabFromParam } from '../lib/discovery.ts'
-import { hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
+import { currentShareTemplates, hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
+import { getPublicationTicket, hasTicketStorageFallback, setPublicationTicket } from '../lib/publication-tickets.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
@@ -371,6 +372,8 @@ const publicationBusy = ref(false)
 const publicationError = ref('')
 const publicationEditorOpen = ref(false)
 const publicationEditorToken = ref('')
+const publicationEditorPending = ref(false)
+const STORAGE_FALLBACK_NOTICE = '浏览器未能将临时授权写入会话存储，当前标签页仍可核对确认；请勿刷新或关闭标签页。'
 
 const catalogGroups = computed(() => [{ value: selectedUsage.value, label: '应用目录', apps: apps.value }])
 const selectedAppEntries = computed(() => {
@@ -778,13 +781,19 @@ async function copyAgentInstructions() {
 
 // Share blurb rendered from configurable agent/platform templates.
 async function copyShareLink(app, placement) {
-  const loaded = await loadShareTemplates(true)
-  if (disposed) return
-  if (!loaded.ok && !hasLoadedShareTemplates()) {
-    ElMessage.error('暂时无法获取分享模板，请稍后重试。')
-    return
+  let templates
+  if (hasLoadedShareTemplates()) {
+    templates = currentShareTemplates()
+    void loadShareTemplates(true)
+  } else {
+    const loaded = await loadShareTemplates(true)
+    if (disposed) return
+    if (!loaded.ok) {
+      ElMessage.error('暂时无法获取分享模板，请稍后重试。')
+      return
+    }
+    templates = loaded.templates
   }
-  const templates = loaded.templates
   const usage = catalogUsage(app)
   const template = usage === 'platform' ? templates.platform : templates.agent
   const name = app.manifest?.name || '未命名应用'
@@ -796,8 +805,7 @@ async function copyShareLink(app, placement) {
     : app.visibility && app.visibility.scope !== 'all'
       ? '（当前为受限分享范围，仅获授权同事可打开）'
       : ''
-  const offlineNote = !loaded.ok ? '（网络波动，已使用上次同步的分享模板）' : ''
-  const copied = await copyText(text, `分享内容已复制${scopeNote}${offlineNote}`)
+  const copied = await copyText(text, `分享内容已复制${scopeNote}`)
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
@@ -906,14 +914,24 @@ async function copyExample(text) {
   if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'example', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
 }
 
-const memoryPublicationTickets = new Map()
-
 function publicationToken(id) {
   try {
-    return window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) || memoryPublicationTickets.get(id) || ''
+    return window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) || getPublicationTicket(id)
   } catch {
-    return memoryPublicationTickets.get(id) || ''
+    return getPublicationTicket(id)
   }
+}
+
+function savePublicationTicket(id, ticket) {
+  let persisted = false
+  try {
+    window.sessionStorage.setItem(`ai-app-plaza:publication:${id}`, ticket)
+    persisted = true
+  } catch {
+    persisted = false
+  }
+  setPublicationTicket(id, ticket, persisted)
+  return persisted
 }
 
 function preparePublicationRoute() {
@@ -925,15 +943,13 @@ function preparePublicationRoute() {
   publicationBusy.value = false
   publicationEditorOpen.value = false
   publicationEditorToken.value = ''
+  publicationEditorPending.value = false
   detailVisible.value = false
   shareVisible.value = false
   const ticket = props.management ? '' : fragment.get('key')
   if (ticket) {
-    memoryPublicationTickets.set(id, ticket)
-    try {
-      window.sessionStorage.setItem(`ai-app-plaza:publication:${id}`, ticket)
-    } catch {
-      publicationError.value = '浏览器未能保存此私有预览链接的临时授权到会话存储，当前标签页仍可核对确认；切勿刷新页面。'
+    if (!savePublicationTicket(id, ticket)) {
+      publicationError.value = STORAGE_FALLBACK_NOTICE
     }
   }
   const visibleFragment = new URLSearchParams()
@@ -974,16 +990,38 @@ function openPublication(id) {
   window.history.replaceState({ ...window.history.state, plazaManagementPreview: true }, '', window.location.href)
 }
 
+async function recordPublicationPreviewViewed(id, result) {
+  if (result?.analyticsEnabled === true) {
+    measurementEnabled = true
+    enableAnalytics(true)
+  }
+  if (!measurementEnabled) return
+  const viewerContext = props.management ? 'management' : 'publication_link'
+  const pageContext = props.management ? 'management' : 'publication'
+  if (!portalViewed) {
+    track('portal_viewed', eventAttributes({ pageContext, entryMode: viewerContext }))
+    portalViewed = true
+  }
+  await nextTick()
+  if (!disposed && publicationId.value === id && result?.preview && Number.isInteger(result.revision) && result.revision > 0) {
+    track('publication_preview_viewed', eventAttributes({ pageContext, entryMode: viewerContext, viewerContext, previewRevision: result.revision }), { publicationId: id })
+  }
+}
+
 async function loadPublication(id = publicationId.value, { revalidating = publication.value?.id === id } = {}) {
   if (!id) return
   const sequence = ++publicationRequestSequence
   const current = () => sequence === publicationRequestSequence && publicationId.value === id
+  const storageFallback = !props.management && hasTicketStorageFallback(id)
   publicationLoading.value = true
-  publicationError.value = ''
+  publicationError.value = storageFallback ? STORAGE_FALLBACK_NOTICE : ''
   if (!revalidating) publication.value = null
   const token = props.management ? '' : publicationToken(id)
   if (!props.management && !token) {
     publication.value = null
+    publicationEditorOpen.value = false
+    publicationEditorToken.value = ''
+    publicationEditorPending.value = false
     publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
     publicationLoading.value = false
     return
@@ -992,18 +1030,15 @@ async function loadPublication(id = publicationId.value, { revalidating = public
     const result = await apiRequest(publicationPath(id), token ? { token } : {})
     if (current()) {
       publication.value = result
-      if (result.requiresIdentity || result.status !== 'preview_ready') {
+      if (result.status === 'registered') publicationError.value = ''
+      const keepPendingRetry = !result.requiresIdentity &&
+        publicationEditorOpen.value && publicationEditorPending.value && result.status === 'cancelled'
+      if (result.requiresIdentity || (result.status !== 'preview_ready' && !keepPendingRetry)) {
         publicationEditorOpen.value = false
         publicationEditorToken.value = ''
+        publicationEditorPending.value = false
       }
-      if (result.analyticsEnabled === true) {
-        measurementEnabled = true; enableAnalytics(true)
-        const viewerContext = props.management ? 'management' : 'publication_link'
-        const pageContext = props.management ? 'management' : 'publication'
-        if (!portalViewed) { track('portal_viewed', eventAttributes({ pageContext, entryMode: viewerContext })); portalViewed = true }
-        await nextTick()
-        if (current() && result.preview && Number.isInteger(result.revision) && result.revision > 0) track('publication_preview_viewed', eventAttributes({ pageContext, entryMode: viewerContext, viewerContext, previewRevision: result.revision }), { publicationId: id })
-      }
+      await recordPublicationPreviewViewed(id, result)
     }
   } catch (error) {
     if (current()) {
@@ -1011,6 +1046,7 @@ async function loadPublication(id = publicationId.value, { revalidating = public
         publication.value = null
         publicationEditorOpen.value = false
         publicationEditorToken.value = ''
+        publicationEditorPending.value = false
       }
       publicationError.value = errorText(error)
     }
@@ -1065,16 +1101,14 @@ function openPublicationEditor() {
 function onPublicationEditorSaved(result) {
   publicationEditorOpen.value = false
   publicationEditorToken.value = ''
+  publicationEditorPending.value = false
   if (!result?.publicationId) return
   const nextId = result.publicationId
   let nextError = ''
   if (!props.management) {
     if (result.ticket) {
-      memoryPublicationTickets.set(nextId, result.ticket)
-      try {
-        window.sessionStorage.setItem(`ai-app-plaza:publication:${nextId}`, result.ticket)
-      } catch {
-        nextError = '浏览器未能将新预览的临时授权写入会话存储，当前标签页仍可直接确认，但切勿刷新或关闭标签页。'
+      if (!savePublicationTicket(nextId, result.ticket)) {
+        nextError = STORAGE_FALLBACK_NOTICE
       }
     } else {
       nextError = '未能获取新预览的临时授权，请使用原发布记录恢复链接或从管理后台继续确认。'
@@ -1090,6 +1124,7 @@ function onPublicationEditorSaved(result) {
   visibleFragment.set('publish', nextId)
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${visibleFragment.toString()}`)
   if (props.management) void loadPublication(nextId, { revalidating: false })
+  else if (result.publication) void recordPublicationPreviewViewed(nextId, result.publication)
 }
 
 function applicationUrl(appId) {
@@ -1293,7 +1328,8 @@ onUnmounted(() => {
       :publication-id="publicationEditorOpen ? publicationId : ''"
       :publication-token="publicationEditorToken"
       :management="props.management"
-      @close="publicationEditorOpen = false"
+      @pending-change="publicationEditorPending = $event"
+      @close="publicationEditorOpen = false; publicationEditorPending = false"
       @saved="onPublicationEditorSaved"
     />
   </div>

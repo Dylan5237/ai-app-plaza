@@ -3,8 +3,10 @@ import { z } from 'zod';
 import { managementEnabled, type Config } from './config.js';
 import type { Database } from './domain/database.js';
 import type { ManagedPublisher } from './domain/managed-publisher.js';
+import { requireAppAction } from './domain/app-access.js';
 import { DomainError } from './domain/errors.js';
 import type { PlazaService } from './domain/service.js';
+import { requirePublicationMaintenance } from './management-auth.js';
 
 const appId = z.string().uuid();
 const editRequest = z.object({
@@ -21,16 +23,29 @@ export function registerManagementEditor(
   managed?: ManagedPublisher,
 ) {
   if (!managementEnabled(config)) return;
-  void db;
+  const sourceInstance = config.tiangong && config.gitlabUrl
+    ? new URL(config.gitlabUrl).toString().replace(/\/+$/, '')
+    : '';
+  const enforceAppAccess = async (id: string, userId?: string) => {
+    if (!config.tiangong) return;
+    if (!userId) throw new DomainError(401, 'LOGIN_REQUIRED', '请使用天宫身份登录后继续。');
+    await requireAppAction(db, id, userId);
+  };
+  const enforcePublicationAccess = async (id: string, userId?: string) => {
+    if (!config.tiangong) return;
+    await requirePublicationMaintenance(db, id, sourceInstance, userId);
+  };
 
   app.get('/api/management/apps/:id/editor', async request => {
     const id = appId.parse((request.params as { id?: unknown }).id);
+    await enforceAppAccess(id, request.plazaUserId);
     if (!managed) return { app: await service.app(id, { includeHidden: true, viewerId: request.plazaUserId, management: !!config.tiangong }), editable: false, reason: '当前服务未启用统一托管发布，请使用原发布新版本流程。' };
     return managed.editorContext(id, request.plazaUserId);
   });
 
   app.post('/api/management/apps/:id/editor', { bodyLimit: 1024 * 1024 }, async request => {
     const id = appId.parse((request.params as { id?: unknown }).id);
+    await enforceAppAccess(id, request.plazaUserId);
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务未启用统一托管发布，请使用原发布新版本流程。');
     (request as any).managedRunning = true;
     try {
@@ -50,6 +65,7 @@ export function registerManagementEditor(
 
   app.get('/api/management/publications/:id/editor', async request => {
     const id = appId.parse((request.params as { id?: unknown }).id);
+    await enforcePublicationAccess(id, request.plazaUserId);
     if (!managed) {
       const pub = await service.managementPublication(id, request.plazaUserId);
       return { ...(pub.preview ? { app: pub.preview } : {}), editable: false, reason: '当前服务未启用统一托管发布，请修改来源仓库后重新生成预览。' };
@@ -59,6 +75,7 @@ export function registerManagementEditor(
 
   app.post('/api/management/publications/:id/editor', { bodyLimit: 1024 * 1024 }, async request => {
     const id = appId.parse((request.params as { id?: unknown }).id);
+    await enforcePublicationAccess(id, request.plazaUserId);
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务未启用统一托管发布，请修改来源仓库后重新生成预览。');
     (request as any).managedRunning = true;
     try {

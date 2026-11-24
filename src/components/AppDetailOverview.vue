@@ -34,7 +34,7 @@ const visibilityMeta = computed(() => {
       label: scopeTitle,
       detail: isOwner
         ? '仅你本人可在广场查看此应用；他人打开分享链接将无法访问。'
-        : '当前仅应用负责人本人及维护者可查看此应用；其他成员打开分享链接将无法访问。',
+        : '普通分享链接仅应用负责人本人可见；受委派维护者可从管理后台查看并维护。',
     }
   }
   if (v.scope === 'members') {

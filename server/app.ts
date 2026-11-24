@@ -336,7 +336,8 @@ export async function createApp(config: Config, db: Database) {
       const input = publicationEditBody.parse(request.body);
       const result = await managed.editPublicationMetadata(id, input, idempotencyKey, { management: false, ticket: token, viewerId: viewer });
       if (result.mode !== 'private') throw new Error('Unexpected publication edit result mode');
-      return { publication: result.publication, ticket: result.ticket, operationId: result.operationId };
+      const publication = config.analytics ? { ...result.publication, analyticsEnabled: true } : result.publication;
+      return { publication, ticket: result.ticket, operationId: result.operationId };
     } finally {
       releaseManagedSlot(request);
     }

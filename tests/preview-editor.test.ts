@@ -476,3 +476,59 @@ test('transient failure on edited preview supersedes old preview and binds actor
   assert.equal(confirmRes.json().status, 'registered');
   assert.equal((await integrated.managed!.receipt(publishKey, origKey)).status, 'registered');
 });
+
+test('management editor enforces decoded maintenance auth on encoded paths, recovers interrupted operation links, and returns REVISION_CONFLICT on stale previews', async t => {
+  const { h, integrated, owner, other, headers } = await setup(t);
+
+  // 1) Percent-encoded UUID path in /api/management/publications/:id/editor cannot bypass requirePublicationMaintenance.
+  const publishKey = randomBytes(32).toString('base64url');
+  const unclaimed = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  assert.equal(unclaimed.status, 'preview_ready');
+  const encodedId = unclaimed.id.slice(0, 2).split('').map(c => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join('') + unclaimed.id.slice(2);
+  const bypassGet = await integrated.app.inject({
+    url: `/plaza/api/management/publications/${encodedId}/editor`,
+    headers: headers(other),
+  });
+  assert.equal(bypassGet.statusCode, 404);
+  const bypassPost = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${encodedId}/editor`,
+    headers: headers(other, { 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 0, manifest: unclaimed.preview!.manifest, documents: unclaimed.preview!.documents },
+  });
+  assert.equal(bypassPost.statusCode, 404);
+
+  // 2) Simulated crash before managed_publish_operations.publication_id is backfilled still finds managed source via publications.managed_operation_id.
+  await h.db.query('UPDATE managed_publish_operations SET publication_id = NULL WHERE publication_id = $1', [unclaimed.id]);
+  const recoveredEditorCtx = await integrated.app.inject({
+    url: `/plaza/api/publications/${unclaimed.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${unclaimed.ticket}` }),
+  });
+  assert.equal(recoveredEditorCtx.statusCode, 200, recoveredEditorCtx.body);
+  assert.equal(recoveredEditorCtx.json().editable, true);
+
+  // Restore link cleanly and confirm v1.0.0 -> rev 1.
+  const opIdRow = (await h.db.query('SELECT managed_operation_id FROM publications WHERE id = $1', [unclaimed.id])).rows[0];
+  assert.ok(opIdRow.managed_operation_id);
+  await h.db.query('UPDATE managed_publish_operations SET publication_id = $1 WHERE id = $2', [unclaimed.id, opIdRow.managed_operation_id]);
+  const confirmV1 = await integrated.service.confirm(unclaimed.id, unclaimed.ticket, { revision: 1, digest: unclaimed.digest! }, owner.user.id);
+  const appId = confirmV1.appId!;
+
+  // 3) Create v1.1.0 and v1.2.0 candidates; confirm v1.2.0 first so v1.1.0 becomes revision-stale while still preview_ready -> edit must return 409 REVISION_CONFLICT.
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: unclaimed.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  const v12 = await integrated.managed!.submit({ ...bundleFiles('1.2.0'), managedAppId: unclaimed.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  await integrated.service.confirm(v12.id, v12.ticket, { revision: 1, digest: v12.digest! }, owner.user.id);
+
+  const staleManifest = structuredClone(v11.preview!.manifest);
+  staleManifest.name = '并发修订冲突后的命名';
+  staleManifest.projectVersion = '1.2.1';
+  const staleRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${v11.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${v11.ticket}`, 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 1, manifest: staleManifest, documents: v11.preview!.documents },
+  });
+  assert.equal(staleRes.statusCode, 409);
+  assert.equal(staleRes.json().error.code, 'REVISION_CONFLICT');
+  void appId;
+});

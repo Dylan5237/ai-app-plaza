@@ -1071,8 +1071,8 @@ export function createService(config: ServiceConfig): PlazaService {
                id, actor_id, idempotency_digest, request_hash, submission, status, revision,
                candidate_app_id, token_ciphertext, token_iv, token_auth_tag,
                next_action, expires_at, created_at, updated_at, identity_required,
-               replaces_publication_id, replace_actor_user_id
-             ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11, $12, $13, $14)
+               replaces_publication_id, replace_actor_user_id, managed_operation_id
+             ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11, $12, $13, $14, $15)
              ON CONFLICT (actor_id, idempotency_digest) DO NOTHING RETURNING *`,
             [
               publicationId,
@@ -1089,6 +1089,7 @@ export function createService(config: ServiceConfig): PlazaService {
               !!config.applicationIdentity,
               origin?.replacesPublicationId ?? null,
               origin?.replaceActorUserId ?? null,
+              origin?.operationId ?? null,
             ],
           );
           if (inserted.rows[0]) {

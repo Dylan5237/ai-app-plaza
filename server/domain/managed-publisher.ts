@@ -903,10 +903,11 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     }>(
       `SELECT op.*, b.publish_key_digest, b.app_key AS binding_app_key, b.project_id AS binding_project_id,
               p.status AS pub_status, p.confirmed_at AS pub_confirmed_at, p.superseded_by_publication_id AS pub_superseded_by
-         FROM managed_publish_operations AS op
+         FROM publications AS p
+         JOIN managed_publish_operations AS op
+           ON (op.publication_id = p.id OR op.id = p.managed_operation_id)
          JOIN managed_app_bindings AS b ON b.id = op.binding_id
-         JOIN publications AS p ON p.id = op.publication_id
-        WHERE op.publication_id = $1
+        WHERE p.id = $1
         ORDER BY op.created_at DESC
         LIMIT 1`,
       [publicationId],
@@ -1003,7 +1004,12 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     const previewExpectedRevision = sourceRow.expected_app_revision ?? 0;
     if (previewExpectedRevision !== currentCatalogRevision) {
       return {
-        context: { app: pubView.preview, editable: false, reason: '应用已发生新版本变动，当前预览已过期，请基于最新应用状态重新提交。' },
+        context: {
+          app: pubView.preview,
+          editable: false,
+          expectedAppRevision: currentCatalogRevision,
+          reason: '应用已发生新版本变动，当前预览已过期，请基于最新应用状态重新提交。',
+        },
         binding, sourceOperation: sourceRow, pubView, catalogAppId,
       };
     }
@@ -1142,12 +1148,14 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
             new Date(loaded.pubView.expiresAt).getTime() <= Date.now()) {
           throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '当前预览已失效或已被新预览替代，请刷新后编辑最新预览。');
         }
+        if (loaded.context.expectedAppRevision !== undefined &&
+            ((loaded.sourceOperation?.expected_app_revision ?? 0) !== loaded.context.expectedAppRevision ||
+             input.expectedAppRevision !== loaded.context.expectedAppRevision)) {
+          throw new DomainError(409, 'REVISION_CONFLICT', '应用状态或版本已变化，请刷新预览后重新编辑。');
+        }
         if (!loaded.binding || !loaded.sourceOperation?.commit_sha || !loaded.context.editable ||
             !loaded.context.app || loaded.context.expectedAppRevision === undefined) {
           throw editorUnavailable(loaded.context.reason);
-        }
-        if (input.expectedAppRevision !== loaded.context.expectedAppRevision) {
-          throw new DomainError(409, 'REVISION_CONFLICT', '应用状态或版本已变化，请刷新预览后重新编辑。');
         }
         const previewApp = loaded.context.app;
         const { submitInput, bundle } = buildMetadataBundle(previewApp, loaded.binding, input.expectedAppRevision, input);

@@ -10,7 +10,7 @@ const props = defineProps({
   publicationToken: { type: String, default: '' },
   management: { type: Boolean, default: false },
 })
-const emit = defineEmits(['close', 'saved'])
+const emit = defineEmits(['close', 'saved', 'pending-change'])
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -33,6 +33,7 @@ const editorEndpoint = computed(() => {
 })
 const requestToken = computed(() => isPublicationMode.value && !props.management ? props.publicationToken : '')
 const locked = computed(() => saving.value || Boolean(pending.value))
+watch(locked, value => emit('pending-change', value), { immediate: true })
 let sequence = 0
 const clone = value => JSON.parse(JSON.stringify(value))
 const content = value => JSON.stringify({ ...value, projectVersion: undefined })
