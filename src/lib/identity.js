@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import { apiRequest, advanceIdentityRequests, configurePortalIdentity, configureWebIdentity, readPortalToken } from './api.js'
 import { publicBasePath } from './public-path.js'
-import { clearMemoryPublicationTickets, syncPublicationTicketIdentity } from './publication-tickets.ts'
+import { clearMemoryPublicationTickets, setPublicationTicketsSuspended, syncPublicationTicketIdentity } from './publication-tickets.ts'
 
 export const identity = reactive({ enabled: false, user: null, busy: false, error: '', retryable: false, switchRequired: false, epoch: 0 })
 const suppressionKey = `plaza-explicit-logout:${publicBasePath()}`
@@ -15,15 +15,15 @@ function suppress(value) {
   try { value ? sessionStorage.setItem(suppressionKey, '1') : sessionStorage.removeItem(suppressionKey) } catch { /* Optional storage. */ }
 }
 function clearUser(clearTickets = false) {
-  if (clearTickets || lastUserId) {
+  if (clearTickets) {
     syncPublicationTicketIdentity(null)
     clearMemoryPublicationTickets(false)
+    lastUserId = null
   }
-  lastUserId = null
   generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.retryable = false; identity.epoch++
 }
 function failed(error) {
-  clearUser(error?.code === 'ACCOUNT_SWITCH_REQUIRED')
+  clearUser(error?.code === 'ACCOUNT_SWITCH_REQUIRED' || error?.status === 401 || error?.status === 403)
   identity.error = error.message
   identity.switchRequired = error.code === 'ACCOUNT_SWITCH_REQUIRED'
 }
@@ -64,7 +64,10 @@ export async function initializeIdentity() {
     const status = await apiRequest('/api/auth/tiangong/status')
     if (current !== generation) return
     identity.enabled = status.enabled === true
-    if (!identity.enabled) return
+    if (!identity.enabled) {
+      setPublicationTicketsSuspended(false)
+      return
+    }
     storageKey = status.tokenStorage?.key
     configurePortalIdentity(status.tokenStorage?.key)
     if (suppressed || !readPortalToken()) return
@@ -90,7 +93,12 @@ export async function initializeIdentity() {
 window.addEventListener('plaza-identity-invalid', event => failed(event.detail))
 window.addEventListener('storage', event => {
   if (storageKey && (event.key === storageKey || event.key === null)) {
-    clearUser(Boolean(lastUserId || !readPortalToken()))
+    if (!readPortalToken()) {
+      clearUser(true)
+    } else {
+      if (lastUserId) setPublicationTicketsSuspended(true)
+      clearUser(false)
+    }
     initializeIdentity()
   }
 })

@@ -30,6 +30,8 @@ const templateUncertain = reactive({})
 const templateErrors = reactive({})
 const templateNotices = reactive({})
 const templatePending = reactive({})
+const retryAction = ref('load')
+let failedTemplatePurpose = ''
 let templatesVersion = 0
 
 const publishItems = computed(() => {
@@ -67,6 +69,28 @@ function previewTemplate(item) {
   return renderTemplate(body, samples)
 }
 
+function applyPromptResult(promptResult, forceResetDraft = false) {
+  const previousEffective = view.value ? (view.value.template ?? view.value.defaultPrompt) : null
+  const nextEffective = promptResult.template ?? promptResult.defaultPrompt
+  view.value = promptResult
+  if (forceResetDraft || previousEffective === null || draft.value.trim() === previousEffective.trim()) {
+    draft.value = nextEffective
+  }
+}
+
+function applyTemplatesResult(result, updatedPurpose = '') {
+  const prevEffective = Object.fromEntries(
+    Object.entries(templatesView.value?.items || {}).map(([purpose, item]) => [purpose, effectiveTemplate(item)]),
+  )
+  templatesView.value = result
+  for (const [purpose, item] of Object.entries(result?.items || {})) {
+    const nextValue = effectiveTemplate(item)
+    if (purpose === updatedPurpose || templateDrafts[purpose] === undefined || templateDrafts[purpose] === prevEffective[purpose]) {
+      templateDrafts[purpose] = nextValue
+    }
+  }
+}
+
 async function load() {
   const version = ++requestVersion
   loading.value = true
@@ -77,18 +101,17 @@ async function load() {
       apiRequest('/api/access/text-templates'),
     ])
     if (version !== requestVersion) return
-    view.value = promptResult
-    draft.value = promptResult.template ?? promptResult.defaultPrompt
-    templatesView.value = templatesResult
-    for (const [purpose, item] of Object.entries(templatesResult?.items || {})) {
-      templateDrafts[purpose] = item.template ?? item.defaultTemplate
-    }
+    retryAction.value = 'load'
+    failedTemplatePurpose = ''
+    applyPromptResult(promptResult)
+    applyTemplatesResult(templatesResult)
   } catch (err) {
     if (version === requestVersion) {
       if (err.status === 401 || err.status === 403) {
         view.value = null
         templatesView.value = null
       }
+      retryAction.value = 'load'
       error.value = err.message || '提示词配置加载失败，请稍后重试。'
     }
   } finally {
@@ -98,14 +121,16 @@ async function load() {
 
 async function reloadSmartSearchPrompt() {
   const version = ++requestVersion
+  error.value = ''
   try {
     const promptResult = await apiRequest('/api/access/smart-search-prompt')
     if (version !== requestVersion) return
-    view.value = promptResult
-    draft.value = promptResult.template ?? promptResult.defaultPrompt
+    retryAction.value = 'load'
+    applyPromptResult(promptResult, true)
   } catch (err) {
     if (version === requestVersion) {
       if (err.status === 401 || err.status === 403) view.value = null
+      retryAction.value = 'reload-prompt'
       error.value = err.message || '提示词配置加载失败，请稍后重试。'
     }
   }
@@ -113,22 +138,36 @@ async function reloadSmartSearchPrompt() {
 
 async function reloadTemplates(updatedPurpose = '') {
   const version = ++templatesVersion
+  error.value = ''
   try {
     const result = await apiRequest('/api/access/text-templates')
     if (version !== templatesVersion) return
-    const prevEffective = Object.fromEntries(
-      Object.entries(templatesView.value?.items || {}).map(([purpose, item]) => [purpose, effectiveTemplate(item)]),
-    )
-    templatesView.value = result
-    for (const [purpose, item] of Object.entries(result?.items || {})) {
-      const nextValue = effectiveTemplate(item)
-      if (purpose === updatedPurpose || templateDrafts[purpose] === undefined || templateDrafts[purpose] === prevEffective[purpose]) {
-        templateDrafts[purpose] = nextValue
-      }
-    }
+    retryAction.value = 'load'
+    failedTemplatePurpose = ''
+    applyTemplatesResult(result, updatedPurpose)
   } catch (err) {
-    if (version === templatesVersion) error.value = err.message || '模板配置加载失败，请稍后重试。'
+    if (version === templatesVersion) {
+      retryAction.value = 'reload-templates'
+      failedTemplatePurpose = updatedPurpose
+      error.value = err.message || '模板配置加载失败，请稍后重试。'
+    }
   }
+}
+
+function retryTopError() {
+  if (pending) {
+    void write(pending.template)
+    return
+  }
+  if (retryAction.value === 'reload-templates') {
+    void reloadTemplates(failedTemplatePurpose)
+    return
+  }
+  if (retryAction.value === 'reload-prompt') {
+    void reloadSmartSearchPrompt()
+    return
+  }
+  void load()
 }
 
 async function write(template) {
@@ -245,7 +284,7 @@ onMounted(load)
       </div>
     </header>
 
-    <div v-if="error" class="state error" role="alert"><span>{{ error }}</span><button type="button" @click="pending ? write(pending.template) : load()">{{ pending ? '重试同一请求' : '重试' }}</button></div>
+    <div v-if="error" class="state error" role="alert"><span>{{ error }}</span><button type="button" @click="retryTopError">{{ pending ? '重试同一请求' : '重试' }}</button></div>
     <div v-if="loading && !view" class="state" role="status">正在读取提示词与模板配置…</div>
 
     <el-tabs v-if="view" v-model="activeTab" class="template-tabs">

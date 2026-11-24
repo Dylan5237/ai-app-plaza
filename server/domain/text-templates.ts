@@ -242,6 +242,9 @@ export async function setTextTemplate(
     if ((input.purpose === 'share_agent' || input.purpose === 'share_platform') && !cleaned.includes('{{url}}')) {
       throw new DomainError(400, 'TEMPLATE_INVALID', '分享模板必须包含 {{url}} 占位符，以确保接收者可直达应用。');
     }
+    if (input.purpose === 'publish_managed_update' && (!cleaned.includes('{{updateContext}}') || !cleaned.includes('{{updateArgs}}'))) {
+      throw new DomainError(400, 'TEMPLATE_INVALID', '发布新版本提示词模板必须包含 {{updateContext}} 和 {{updateArgs}} 占位符，以确保更新命令携带目标应用与修订号。');
+    }
     input = { ...input, template: cleaned };
   }
 

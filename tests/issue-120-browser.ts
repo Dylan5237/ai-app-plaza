@@ -238,8 +238,13 @@ try {
   await adminPage.getByTestId('template-editor-share_agent').fill('【定制分享】{{name}} | {{url}}');
   await adminPage.getByTestId('template-save-share_agent').click();
   await adminPage.getByText('模板已保存，后续操作立即生效。').waitFor();
+  await adminPage.screenshot({ path: 'artifacts/issue-120-templates-admin.png', fullPage: true });
 
+  const initialTemplatesLoaded = adminPage.waitForResponse(
+    res => res.url().includes('/plaza/api/share-templates') && res.request().method() === 'GET' && res.status() === 200,
+  );
   await adminPage.goto(`${h.origin}/plaza/?discover=catalog`);
+  await initialTemplatesLoaded;
   await adminPage.locator('.catalog-results').getByTestId('app-card').filter({ hasText: 'WorkBuddy企微机器人权限主动续期' }).waitFor();
   // Hold /api/share-templates in-flight to verify cached Share copies without waiting on network.
   let releaseShare!: () => void;
@@ -305,6 +310,7 @@ try {
   await visBanner.waitFor();
   assert.match(await visBanner.innerText(), /仅自己可见/);
   await memberPage.getByTestId('detail-manage-access').waitFor();
+  await memberPage.screenshot({ path: 'artifacts/issue-120-detail-visibility.png', fullPage: true });
 
   // Unauthorized logged-in user (admin) and anonymous user both see actionable prompt without leaking app data.
   await anonPage.goto(detailUrl);
@@ -380,11 +386,13 @@ try {
   await anonPage.getByText('登录', { exact: false }).first().waitFor();
   await anonPage.evaluate(() => window.localStorage.setItem('fixture-sky-token', 'fixture-admin'));
   await anonPage.goto(`${h.origin}/plaza/?publish_check=1#publish=${preLoginDraft.id}`);
-  await anonPage.getByTestId('confirm-publication').waitFor();
+  await anonPage.getByRole('button', { name: '退出广场', exact: true }).waitFor();
+  await anonPage.locator('.publication-preview').getByRole('heading', { level: 2, name: '登录前链接保留票据测试', exact: true }).waitFor();
+  await anonPage.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="confirm-publication"]');
+    return Boolean(button && !(button as HTMLButtonElement).disabled);
+  });
   report.checks.push('publication-ticket-sessionstorage-isolation');
-
-  await memberPage.screenshot({ path: 'artifacts/issue-120-detail-visibility.png', fullPage: true });
-  await adminPage.screenshot({ path: 'artifacts/issue-120-templates-admin.png', fullPage: true });
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);

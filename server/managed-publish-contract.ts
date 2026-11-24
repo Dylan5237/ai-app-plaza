@@ -43,7 +43,7 @@ ${JSON.stringify(updateTarget, null, 2)}
     ? ` --managed-app-id "${target.managedAppId}"${config.tiangong && current ? ` --expected-revision ${current.revision}` : ''}`
     : '';
   const template = customTemplate ?? (updateTarget ? DEFAULT_PUBLISH_MANAGED_UPDATE_TEMPLATE : DEFAULT_PUBLISH_MANAGED_NEW_TEMPLATE);
-  const prompt = renderTemplate(template, {
+  let prompt = renderTemplate(template, {
     origin,
     groupPath,
     publisherUrl,
@@ -54,6 +54,14 @@ ${JSON.stringify(updateTarget, null, 2)}
     updateContext,
     updateArgs,
   });
+  if (updateTarget) {
+    if (!template.includes('{{updateContext}}') && updateContext.trim()) {
+      prompt = `${prompt.trimEnd()}\n\n${updateContext.trim()}`;
+    }
+    if (!template.includes('{{updateArgs}}') && updateArgs.trim()) {
+      prompt = `${prompt.trimEnd()}\n\n本次更新正式上传必须附加参数：${updateArgs.trim()}`;
+    }
+  }
   return {
     mode: 'managed', prompt, schema, gitlabUrl: config.gitlabUrl, submitUrl, audience: config.audience,
     managed: { groupPath, groupUrl, publisherUrl, publisherSha256: script.sha256, validationUrl, receiptUrl, limits: { maxFiles: 1000, maxFileBytes: 5 * 1024 * 1024, maxTotalBytes: 20 * 1024 * 1024 } },

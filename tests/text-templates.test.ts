@@ -180,7 +180,7 @@ test('text templates endpoint is restricted to super administrators and supports
 });
 
 test('share templates endpoint and renderer support agent/platform split, empty summary, and single-pass substitution', async t => {
-  const { h, integrated, admin, headers } = await setup(t);
+  const { h, integrated, admin, appId, headers } = await setup(t);
 
   const pubInitial = await integrated.app.inject({ url: '/plaza/api/share-templates', headers: headers(null) });
   assert.equal(pubInitial.statusCode, 200);
@@ -295,4 +295,25 @@ test('share templates endpoint and renderer support agent/platform split, empty 
   const step2 = auditRows.find((r: TemplateAuditRow) => r.before_value?.template === fromConcurrentDup.after_value?.template);
   const step3 = step2 && auditRows.find((r: TemplateAuditRow) => r.before_value?.template === step2.after_value?.template);
   assert.ok(step2 && step3, 'concurrent template updates form an unbroken before/after audit chain');
+
+  // publish_managed_update must retain {{updateContext}} and {{updateArgs}}, and contract still guards legacy rows.
+  for (const invalidUpdate of ['缺少上下文与参数', '只有上下文 {{updateContext}}', '只有参数 {{updateArgs}}']) {
+    const invalidRes = await integrated.app.inject({
+      method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+      payload: { confirmed: true, requestId: randomUUID(), purpose: 'publish_managed_update', template: invalidUpdate },
+    });
+    assert.equal(invalidRes.statusCode, 400);
+    assert.equal(invalidRes.json().error.code, 'TEMPLATE_INVALID');
+  }
+  const validUpdateRes = await integrated.app.inject({
+    method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+    payload: { confirmed: true, requestId: randomUUID(), purpose: 'publish_managed_update', template: '自定义更新\n{{updateContext}}\n{{updateArgs}}' },
+  });
+  assert.equal(validUpdateRes.statusCode, 200);
+  await h.db.query("UPDATE plaza_text_templates SET template = '历史极简更新提示词' WHERE purpose = 'publish_managed_update'");
+  const fallbackContract = (await integrated.app.inject({ url: `/plaza/api/apps/${appId}/publish-contract`, headers: headers(admin) })).json();
+  assert.ok(fallbackContract.prompt.includes('历史极简更新提示词'));
+  assert.ok(fallbackContract.prompt.includes(appId));
+  assert.ok(fallbackContract.prompt.includes('--managed-app-id'));
+  assert.ok(fallbackContract.prompt.includes('--expected-revision 1'));
 });

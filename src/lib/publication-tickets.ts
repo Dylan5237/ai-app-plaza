@@ -4,6 +4,7 @@ const memoryTickets = new Map<string, string>()
 const storageFallbackIds = new Set<string>()
 const currentRouteTicketIds = new Set<string>()
 let currentTicketOwnerId: string | null = null
+let ticketsSuspended = false
 
 function removeStorageTickets(preserveIds?: Set<string>): void {
   if (typeof window === 'undefined') return
@@ -51,12 +52,17 @@ export function savePublicationTicket(id: string, ticket: string, fromUrl = fals
   return persisted
 }
 
+export function setPublicationTicketsSuspended(suspended: boolean): void {
+  ticketsSuspended = Boolean(suspended)
+}
+
 export function getPublicationTicket(id: string): string {
+  if (ticketsSuspended) return ''
   return id ? memoryTickets.get(id) || '' : ''
 }
 
 export function readPublicationTicket(id: string): string {
-  if (!id) return ''
+  if (!id || ticketsSuspended) return ''
   if (typeof window !== 'undefined') {
     try {
       const stored = window.sessionStorage.getItem(`${PUBLICATION_TICKET_PREFIX}${id}`)
@@ -73,6 +79,7 @@ export function hasTicketStorageFallback(id: string): boolean {
 }
 
 export function clearMemoryPublicationTickets(preserveCurrentRouteTickets = false): void {
+  ticketsSuspended = false
   const preserveIds = preserveCurrentRouteTickets && currentRouteTicketIds.size
     ? new Set(currentRouteTicketIds)
     : undefined
@@ -97,6 +104,7 @@ export function syncPublicationTicketIdentity(userId: string | null): void {
     return
   }
   currentTicketOwnerId = userId
+  ticketsSuspended = false
   if (typeof window !== 'undefined') {
     try {
       const previousOwner = window.sessionStorage.getItem(PUBLICATION_OWNER_KEY)

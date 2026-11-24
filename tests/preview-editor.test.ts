@@ -817,10 +817,11 @@ test('replaying unfinished metadata edit checks preview mutability before GitLab
   const editRes = await integrated.app.inject({ method: 'POST', url: `/plaza/api/publications/${first.id}/editor`, headers: editHeaders, payload });
   assert.equal(editRes.statusCode, 200, editRes.body);
   const editedId = editRes.json().publication.id;
-  // Reset operation back to 'commit_ready' AND revert supersession/cancellation on first so we can confirm first.
+  // Reset operation back to 'commit_ready' and remove the unreached candidate so replay models a pre-submit crash.
   await h.db.query("UPDATE managed_publish_operations SET status = 'commit_ready', publication_id = NULL WHERE publication_id = $1", [editedId]);
-  await h.db.query("UPDATE publications SET status = 'cancelled', superseded_by_publication_id = NULL WHERE id = $1", [editedId]);
   await h.db.query("UPDATE publications SET status = 'preview_ready', next_action = 'confirm', superseded_by_publication_id = NULL WHERE id = $1", [first.id]);
+  await h.db.query('DELETE FROM plaza_publication_actors WHERE publication_id = $1', [editedId]);
+  await h.db.query('DELETE FROM publications WHERE id = $1', [editedId]);
   await integrated.service.confirm(first.id, first.ticket, { revision: 1, digest: first.digest! }, owner.user.id);
 
   const writesBefore = managedGitlab.state.writes.length;
@@ -904,4 +905,39 @@ test('direct GitLab submit still rejects expired registered receipt while manage
   );
   const managedRecovered = await integrated.service.managedReceipt(sub.id, submitInput);
   assert.equal(managedRecovered.status, 'registered');
+});
+
+test('retrying metadata edit after new preview was created but before operation marked submitted recovers generated preview', async t => {
+  const { h, integrated, owner, headers } = await setup(t);
+  const publishKey = randomBytes(32).toString('base64url');
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  assert.equal(first.status, 'preview_ready');
+
+  const editKey = randomUUID();
+  const edited = structuredClone(first.preview!.manifest);
+  edited.name = '已创建新预览但操作未落盘';
+  edited.projectVersion = '1.0.1';
+  const payload = { expectedAppRevision: 0, manifest: edited, documents: first.preview!.documents };
+  const editHeaders = headers(owner, { authorization: `Bearer ${first.ticket}`, 'idempotency-key': editKey });
+
+  const editRes = await integrated.app.inject({ method: 'POST', url: `/plaza/api/publications/${first.id}/editor`, headers: editHeaders, payload });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  const editedId = editRes.json().publication.id;
+  const editedOpId = editRes.json().operationId;
+
+  // Simulate process crash after service.submit() created editedId & cancelled first, before updateOperation marked submitted.
+  await h.db.query("UPDATE managed_publish_operations SET status = 'release_ready', publication_id = NULL WHERE id = $1", [editedOpId]);
+
+  const retryRes = await integrated.app.inject({ method: 'POST', url: `/plaza/api/publications/${first.id}/editor`, headers: editHeaders, payload });
+  assert.equal(retryRes.statusCode, 200, retryRes.body);
+  assert.equal(retryRes.json().publication.id, editedId);
+  assert.equal(retryRes.json().publication.status, 'preview_ready');
+  assert.equal(retryRes.json().publication.preview.manifest.name, '已创建新预览但操作未落盘');
+
+  const repairedOp = (await h.db.query<{ status: string; publication_id: string }>(
+    'SELECT status, publication_id FROM managed_publish_operations WHERE id = $1',
+    [editedOpId],
+  )).rows[0];
+  assert.equal(repairedOp.status, 'submitted');
+  assert.equal(repairedOp.publication_id, editedId);
 });

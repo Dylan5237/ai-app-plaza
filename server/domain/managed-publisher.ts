@@ -626,8 +626,20 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     const inputFor = (sha: string) => ({ projectId: operation.project_id!, appKey: bundle.appKey,
       manifestPath: bundle.manifestPath, commitSha: sha, tag: operation.tag,
       ...(operation.expected_app_revision === null ? {} : { expectedAppRevision: operation.expected_app_revision }) });
-    if (operation.status === "submitted" && operation.publication_id && operation.commit_sha && operation.project_id) {
-      const result = await config.service.managedReceipt(operation.publication_id, inputFor(operation.commit_sha));
+    const existingPublicationId = operation.publication_id ?? (operation.commit_sha && operation.project_id
+      ? (await config.db.query<{ id: string }>(
+          'SELECT id FROM publications WHERE managed_operation_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [operation.id],
+        )).rows[0]?.id
+      : undefined);
+    if (existingPublicationId && operation.commit_sha && operation.project_id) {
+      const result = await config.service.managedReceipt(existingPublicationId, inputFor(operation.commit_sha));
+      const appId = result.preview?.id ?? result.appId;
+      binding = await updateBindingApp(binding, appId);
+      const targetPubId = result.originalPublicationId ?? result.id;
+      if (operation.status !== 'submitted' || operation.publication_id !== targetPubId) {
+        operation = await updateOperation(operation, { status: 'submitted', publication_id: targetPubId });
+      }
       return { ...result, managedAppId: binding.id, sourceUploaded: true };
     }
     let project: GitLabProject;
@@ -1175,8 +1187,14 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
               replayOp.base_commit_sha !== sourceRow.commit_sha) {
             throw idempotencyConflict();
           }
-          // Unfinished operations that still need GitLab writes or Plaza submission must re-check preview mutability.
-          if (replayOp.status !== "submitted") {
+          const existingOpPub = replayOp.publication_id
+            ? { id: replayOp.publication_id }
+            : (await config.db.query<{ id: string }>(
+                'SELECT id FROM publications WHERE managed_operation_id = $1 ORDER BY created_at DESC LIMIT 1',
+                [replayOp.id],
+              )).rows[0];
+          // Unfinished operations without any created candidate must still verify old preview mutability before GitLab writes.
+          if (replayOp.status !== "submitted" && !existingOpPub) {
             await ensurePreWriteContext(replayOp.base_commit_sha ?? undefined);
           }
           const submitted = await submitWithBinding(

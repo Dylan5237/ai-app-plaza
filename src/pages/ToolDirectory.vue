@@ -112,10 +112,6 @@ function onVisibilityChange() {
   void observeCards()
   if (!document.hidden) void loadShareTemplates(true)
 }
-function onWindowFocus() {
-  refreshVisibleAccess()
-  void loadShareTemplates(true)
-}
 watch(randomIndex, () => { if (discoveryTab.value === 'random') void observeCards() }, { flush: 'post' })
 watch(() => props.discover, tab => {
   if (tab && tab !== discoveryTab.value) void selectDiscovery(tab)
@@ -1155,7 +1151,7 @@ onMounted(async () => {
   window.addEventListener('popstate', handlePopState)
   window.addEventListener('keydown', handleDetailKey, true)
   window.addEventListener('resize', scheduleCatalogLayout)
-  window.addEventListener('focus', onWindowFocus)
+  window.addEventListener('focus', refreshVisibleAccess)
   document.addEventListener('visibilitychange', onVisibilityChange)
   if (preparePublicationRoute()) return
   if (props.management) return
@@ -1189,7 +1185,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleDetailKey, true)
   window.removeEventListener('hashchange', handleHashChange)
   window.removeEventListener('resize', scheduleCatalogLayout)
-  window.removeEventListener('focus', onWindowFocus)
+  window.removeEventListener('focus', refreshVisibleAccess)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   clearExposureObserver()
   layoutObserver?.disconnect()
