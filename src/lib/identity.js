@@ -25,7 +25,7 @@ function clearUser(clearTickets = false) {
   generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.retryable = false; identity.epoch++
 }
 function failed(error) {
-  const switchedOrLoggedOut = error?.code === 'ACCOUNT_SWITCH_REQUIRED' || !readPortalToken()
+  const switchedOrLoggedOut = error?.code === 'ACCOUNT_SWITCH_REQUIRED' || Boolean(lastUserId && !readPortalToken())
   if (!switchedOrLoggedOut && lastUserId) setPublicationTicketsSuspended(true)
   clearUser(switchedOrLoggedOut)
   identity.error = error.message

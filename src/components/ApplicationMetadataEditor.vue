@@ -88,8 +88,14 @@ async function load() {
     if (saved) applySavedPending(result)
   } catch (e) {
     if (current === sequence) {
-      if (!applySavedPending(null)) error.value = e.message
-      else error.value = ''
+      const authRejected = [401, 403, 404].includes(e?.status)
+      if (!authRejected && applySavedPending(null)) {
+        error.value = ''
+      } else {
+        manifest.value = null
+        pending.value = null
+        error.value = e.message
+      }
     }
   }
   finally { if (current === sequence) loading.value = false }
@@ -152,8 +158,8 @@ async function save() {
     if (operation.publicationMode) {
       const nextPublication = operation.management ? result.managementPublication : result.publication
       if (!nextPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
-      deletePendingMetadataEdit(operation.cacheKey)
       if (!isCurrent()) return
+      deletePendingMetadataEdit(operation.cacheKey)
       pending.value = null
       emit('saved', {
         publicationId: nextPublication.id,
@@ -162,14 +168,14 @@ async function save() {
       })
     } else {
       if (!result.managementPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
-      deletePendingMetadataEdit(operation.cacheKey)
       if (!isCurrent()) return
+      deletePendingMetadataEdit(operation.cacheKey)
       pending.value = null
       emit('saved', result.managementPublication.id)
     }
   } catch (e) {
-    // Deterministic validation failures have no partial GitLab write; uncertain failures retain the exact request.
-    if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED'].includes(e.code))) {
+    // Deterministic validation/auth failures have no usable retry state; uncertain failures retain the exact request.
+    if ([400, 403, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED'].includes(e.code))) {
       deletePendingMetadataEdit(operation.cacheKey)
       if (isCurrent()) pending.value = null
     }

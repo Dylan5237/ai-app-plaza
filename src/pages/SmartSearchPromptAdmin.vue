@@ -32,6 +32,8 @@ const templateNotices = reactive({})
 const templatePending = reactive({})
 const retryAction = ref('load')
 let failedTemplatePurpose = ''
+let failedTemplateDraft
+let failedPromptDraft
 let templatesVersion = 0
 
 const publishItems = computed(() => {
@@ -69,23 +71,31 @@ function previewTemplate(item) {
   return renderTemplate(body, samples)
 }
 
-function applyPromptResult(promptResult, forceResetDraft = false) {
+function applyPromptResult(promptResult, expectedDraft) {
   const previousEffective = view.value ? (view.value.template ?? view.value.defaultPrompt) : null
   const nextEffective = promptResult.template ?? promptResult.defaultPrompt
   view.value = promptResult
-  if (forceResetDraft || previousEffective === null || draft.value.trim() === previousEffective.trim()) {
+  if (
+    previousEffective === null ||
+    draft.value.trim() === previousEffective.trim() ||
+    (expectedDraft !== undefined && draft.value === expectedDraft)
+  ) {
     draft.value = nextEffective
   }
 }
 
-function applyTemplatesResult(result, updatedPurpose = '') {
+function applyTemplatesResult(result, updatedPurpose = '', expectedDraft = undefined) {
   const prevEffective = Object.fromEntries(
     Object.entries(templatesView.value?.items || {}).map(([purpose, item]) => [purpose, effectiveTemplate(item)]),
   )
   templatesView.value = result
   for (const [purpose, item] of Object.entries(result?.items || {})) {
     const nextValue = effectiveTemplate(item)
-    if (purpose === updatedPurpose || templateDrafts[purpose] === undefined || templateDrafts[purpose] === prevEffective[purpose]) {
+    if (
+      templateDrafts[purpose] === undefined ||
+      templateDrafts[purpose] === prevEffective[purpose] ||
+      (purpose === updatedPurpose && expectedDraft !== undefined && templateDrafts[purpose] === expectedDraft)
+    ) {
       templateDrafts[purpose] = nextValue
     }
   }
@@ -103,6 +113,8 @@ async function load() {
     if (version !== requestVersion) return
     retryAction.value = 'load'
     failedTemplatePurpose = ''
+    failedTemplateDraft = undefined
+    failedPromptDraft = undefined
     applyPromptResult(promptResult)
     applyTemplatesResult(templatesResult)
   } catch (err) {
@@ -119,24 +131,26 @@ async function load() {
   }
 }
 
-async function reloadSmartSearchPrompt() {
+async function reloadSmartSearchPrompt(expectedDraft = undefined) {
   const version = ++requestVersion
   error.value = ''
   try {
     const promptResult = await apiRequest('/api/access/smart-search-prompt')
     if (version !== requestVersion) return
     retryAction.value = 'load'
-    applyPromptResult(promptResult, true)
+    failedPromptDraft = undefined
+    applyPromptResult(promptResult, expectedDraft)
   } catch (err) {
     if (version === requestVersion) {
       if (err.status === 401 || err.status === 403) view.value = null
       retryAction.value = 'reload-prompt'
+      failedPromptDraft = expectedDraft
       error.value = err.message || '提示词配置加载失败，请稍后重试。'
     }
   }
 }
 
-async function reloadTemplates(updatedPurpose = '') {
+async function reloadTemplates(updatedPurpose = '', expectedDraft = undefined) {
   const version = ++templatesVersion
   error.value = ''
   try {
@@ -144,11 +158,13 @@ async function reloadTemplates(updatedPurpose = '') {
     if (version !== templatesVersion) return
     retryAction.value = 'load'
     failedTemplatePurpose = ''
-    applyTemplatesResult(result, updatedPurpose)
+    failedTemplateDraft = undefined
+    applyTemplatesResult(result, updatedPurpose, expectedDraft)
   } catch (err) {
     if (version === templatesVersion) {
       retryAction.value = 'reload-templates'
       failedTemplatePurpose = updatedPurpose
+      failedTemplateDraft = expectedDraft
       error.value = err.message || '模板配置加载失败，请稍后重试。'
     }
   }
@@ -160,11 +176,11 @@ function retryTopError() {
     return
   }
   if (retryAction.value === 'reload-templates') {
-    void reloadTemplates(failedTemplatePurpose)
+    void reloadTemplates(failedTemplatePurpose, failedTemplateDraft)
     return
   }
   if (retryAction.value === 'reload-prompt') {
-    void reloadSmartSearchPrompt()
+    void reloadSmartSearchPrompt(failedPromptDraft)
     return
   }
   void load()
@@ -186,11 +202,12 @@ async function write(template) {
   error.value = ''
   notice.value = ''
   try {
+    const draftAtSave = draft.value
     await apiRequest('/api/access/smart-search-prompt', { method: 'PUT', body: request })
     pending = null
     uncertain.value = false
     notice.value = request.template === null ? '已恢复默认提示词，后续检索立即使用默认模板。' : '提示词已保存，后续检索立即生效。'
-    await reloadSmartSearchPrompt()
+    await reloadSmartSearchPrompt(draftAtSave)
   } catch (err) {
     uncertain.value = !err.status || err.status >= 500
     if (uncertain.value) error.value = '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。'
@@ -234,12 +251,13 @@ async function writeTemplate(purpose, template) {
   templateErrors[purpose] = ''
   templateNotices[purpose] = ''
   try {
+    const draftAtSave = templateDrafts[purpose]
     await apiRequest('/api/access/text-templates', { method: 'PUT', body: request })
     delete templatePending[purpose]
     templateUncertain[purpose] = false
     templateNotices[purpose] = request.template === null ? '已恢复默认模板，后续操作立即使用默认内容。' : '模板已保存，后续操作立即生效。'
     if (purpose === 'share_agent' || purpose === 'share_platform') void loadShareTemplates(true)
-    await reloadTemplates(purpose)
+    await reloadTemplates(purpose, draftAtSave)
   } catch (err) {
     const isUncertain = !err.status || err.status >= 500
     templateUncertain[purpose] = isUncertain
