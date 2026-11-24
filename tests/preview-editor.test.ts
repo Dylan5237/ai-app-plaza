@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { resolve } from 'node:path';
 import test from 'node:test';
 import { createApp } from '../server/app.js';
 import { createAppAccessService } from '../server/domain/app-access.js';
+import { openDatabase } from '../server/domain/database.js';
 import { DEFAULT_TAG, manifest, SHA, TOKEN } from './helpers/gitlab-fixture.js';
 import { startIdentityHarness } from './helpers/identity-fixture.js';
 import { MANAGED_GITLAB_TOKEN, startManagedGitLabFixture } from './helpers/managed-gitlab-fixture.js';
@@ -412,6 +414,7 @@ test('transient failure on edited preview supersedes old preview and binds actor
   }, h.db);
   t.after(async () => {
     await integrated.app.close();
+    proxy.closeAllConnections();
     await new Promise<void>(resolve => proxy.close(() => resolve()));
     await managedGitlab.close();
     await h.close();
@@ -531,4 +534,177 @@ test('management editor enforces decoded maintenance auth on encoded paths, reco
   assert.equal(staleRes.statusCode, 409);
   assert.equal(staleRes.json().error.code, 'REVISION_CONFLICT');
   void appId;
+});
+
+test('non-identity non-management instances disable private preview editing', async t => {
+  const db = await openDatabase({ path: 'memory://' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let appToClose: { close(): Promise<void> } | undefined;
+  t.after(async () => {
+    if (appToClose) await appToClose.close();
+    await managedGitlab.close();
+    await db.close();
+  });
+  const portProbe = createServer();
+  await new Promise<void>(resolve => portProbe.listen(0, '127.0.0.1', resolve));
+  const port = (portProbe.address() as AddressInfo).port;
+  await new Promise<void>(resolve => portProbe.close(() => resolve()));
+  const origin = `http://127.0.0.1:${port}`;
+  const integrated = await createApp({
+    host: '127.0.0.1',
+    port,
+    publicOrigin: origin,
+    gitlabUrl: managedGitlab.url,
+    secret: 'non-identity-editor-test-secret-00000',
+    dataDir: '',
+    staticDir: resolve('dist'),
+    rateLimit: false,
+    audience: '内部同事',
+    local: true,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, db);
+  appToClose = integrated.app;
+
+  const publishKey = randomBytes(32).toString('base64url');
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  assert.equal(first.status, 'preview_ready');
+  const headers = { host: new URL(origin).host, origin, authorization: `Bearer ${first.ticket}` };
+
+  const getCtx = await integrated.app.inject({ url: `/api/publications/${first.id}/editor`, headers });
+  assert.equal(getCtx.statusCode, 200, getCtx.body);
+  assert.equal(getCtx.json().editable, false);
+
+  const writesBefore = managedGitlab.state.writes.length;
+  const postEdit = await integrated.app.inject({
+    method: 'POST',
+    url: `/api/publications/${first.id}/editor`,
+    headers: { ...headers, 'idempotency-key': randomUUID() },
+    payload: {
+      expectedAppRevision: 0,
+      manifest: { ...first.preview!.manifest, name: '不应被匿名票据修改', projectVersion: '1.0.1' },
+      documents: first.preview!.documents,
+    },
+  });
+  assert.equal(postEdit.statusCode, 403);
+  assert.equal(postEdit.json().error.code, 'EDITOR_AUTH_REQUIRED');
+  assert.equal(managedGitlab.state.writes.length, writesBefore);
+});
+
+test('revoking maintainer mid-edit aborts superseding in preparePreview without cancelling old preview', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let onReleaseCreated: (() => Promise<void>) | null = null;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      const finalize = async () => {
+        if (onReleaseCreated && req.method === 'POST' && req.url?.includes('/releases')) {
+          const hook = onReleaseCreated;
+          onReleaseCreated = null;
+          await hook();
+        }
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        res.end(Buffer.concat(chunks));
+      };
+      const chunks: Buffer[] = [];
+      upstreamRes.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      upstreamRes.on('end', () => { void finalize(); });
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const access = createAppAccessService(h.db, h.config.audience);
+  const publishKey = randomBytes(32).toString('base64url');
+  const v1 = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: 1, digest: v1.digest! }, owner.user.id);
+  const appId = reg1.appId!;
+  await access.update(owner.user.id, appId, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: v1.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  assert.equal(v11.status, 'preview_ready');
+
+  // Revoke maintainer right after GitLab commit/release finish, before preparePreview() runs.
+  onReleaseCreated = async () => {
+    await access.update(owner.user.id, appId, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+  };
+
+  const edited = structuredClone(v11.preview!.manifest);
+  edited.name = '权限撤销后禁止替代';
+  edited.projectVersion = '1.1.1';
+  const revokedRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/editor`,
+    headers: h.headers({ cookie: maintainer.cookie, 'x-plaza-portal-token': 'fixture-admin', 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 1, manifest: edited, documents: v11.preview!.documents },
+  });
+  assert.equal(revokedRes.statusCode, 404);
+  const v11After = (await h.db.query('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [v11.id])).rows[0];
+  assert.equal(v11After.status, 'preview_ready');
+  assert.equal(v11After.superseded_by_publication_id, null);
+});
+
+test('replaying interrupted managed submission preserves original publication_id across multiple retries after preview edit', async t => {
+  const { h, integrated, owner, headers } = await setup(t);
+
+  const publishKey = randomBytes(32).toString('base64url');
+  const origKey = randomUUID();
+  const bundle = bundleFiles('1.0.0');
+  const first = await integrated.managed!.submit(bundle, publishKey, origKey);
+  assert.equal(first.status, 'preview_ready');
+
+  const opRowBefore = (await h.db.query('SELECT id FROM managed_publish_operations WHERE publication_id = $1', [first.id])).rows[0];
+  // Simulate crash right before operation row recorded publication_id and submitted status.
+  await h.db.query("UPDATE managed_publish_operations SET status = 'release_ready', publication_id = NULL WHERE id = $1", [opRowBefore.id]);
+
+  // Edit the original preview (found via publications.managed_operation_id).
+  const edited = structuredClone(first.preview!.manifest);
+  edited.name = '中断操作后被编辑替代';
+  edited.projectVersion = '1.0.1';
+  const editRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${first.ticket}`, 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 0, manifest: edited, documents: first.preview!.documents },
+  });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  const editedPubId = editRes.json().publication.id;
+
+  // Replay original submission twice: both must return editedPubId AND persist original first.id on operation row.
+  const replay1 = await integrated.managed!.submit(bundle, publishKey, origKey);
+  assert.equal(replay1.id, editedPubId);
+  assert.equal(replay1.superseded, true);
+  assert.equal(replay1.originalPublicationId, first.id);
+
+  const opAfterReplay1 = (await h.db.query('SELECT status, publication_id FROM managed_publish_operations WHERE id = $1', [opRowBefore.id])).rows[0];
+  assert.equal(opAfterReplay1.status, 'submitted');
+  assert.equal(opAfterReplay1.publication_id, first.id);
+
+  const replay2 = await integrated.managed!.submit(bundle, publishKey, origKey);
+  assert.equal(replay2.id, editedPubId);
+  assert.equal(replay2.superseded, true);
+  assert.equal(replay2.originalPublicationId, first.id);
 });

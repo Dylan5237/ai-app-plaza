@@ -318,6 +318,11 @@ export async function createApp(config: Config, db: Database) {
     const id = publicationId(request.params);
     const token = ticket(request.headers.authorization);
     const viewer = await viewerId(request);
+    if (!config.tiangong && !managementEnabled(config)) {
+      const view = await service.publication(id, token, viewer);
+      if (view.requiresIdentity) throw new DomainError(401, 'LOGIN_REQUIRED', '请在天宫同源入口登录后编辑本次预览。');
+      return { ...(view.preview ? { app: view.preview } : {}), editable: false, reason: '当前实例未启用身份核验或管理写入，私有预览暂不支持直接写回仓库。' };
+    }
     if (!managed) {
       const view = await service.publication(id, token, viewer);
       if (view.requiresIdentity) throw new DomainError(401, 'LOGIN_REQUIRED', '请在天宫同源入口登录后编辑本次预览。');
@@ -328,6 +333,9 @@ export async function createApp(config: Config, db: Database) {
   app.post('/api/publications/:id/editor', { bodyLimit: 1024 * 1024 }, async request => {
     const id = publicationId(request.params);
     const token = ticket(request.headers.authorization);
+    if (!config.tiangong && !managementEnabled(config)) {
+      throw new DomainError(403, 'EDITOR_AUTH_REQUIRED', '当前实例未启用身份核验或管理写入，私有预览暂不支持直接写回仓库。');
+    }
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务未启用统一托管发布，请修改来源仓库后重新生成预览。');
     (request as any).managedRunning = true;
     try {

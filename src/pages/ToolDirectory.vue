@@ -20,7 +20,7 @@ import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { discoverTabFromParam } from '../lib/discovery.ts'
-import { currentShareTemplates, hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
+import { hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
 import { getPublicationTicket, hasTicketStorageFallback, setPublicationTicket } from '../lib/publication-tickets.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
@@ -781,19 +781,13 @@ async function copyAgentInstructions() {
 
 // Share blurb rendered from configurable agent/platform templates.
 async function copyShareLink(app, placement) {
-  let templates
-  if (hasLoadedShareTemplates()) {
-    templates = currentShareTemplates()
-    void loadShareTemplates(true)
-  } else {
-    const loaded = await loadShareTemplates(true)
-    if (disposed) return
-    if (!loaded.ok) {
-      ElMessage.error('暂时无法获取分享模板，请稍后重试。')
-      return
-    }
-    templates = loaded.templates
+  const loaded = await loadShareTemplates(true)
+  if (disposed) return
+  if (!loaded.ok && !hasLoadedShareTemplates()) {
+    ElMessage.error('暂时无法获取分享模板，请稍后重试。')
+    return
   }
+  const templates = loaded.templates
   const usage = catalogUsage(app)
   const template = usage === 'platform' ? templates.platform : templates.agent
   const name = app.manifest?.name || '未命名应用'
@@ -805,7 +799,8 @@ async function copyShareLink(app, placement) {
     : app.visibility && app.visibility.scope !== 'all'
       ? '（当前为受限分享范围，仅获授权同事可打开）'
       : ''
-  const copied = await copyText(text, `分享内容已复制${scopeNote}`)
+  const offlineNote = !loaded.ok ? '（网络波动，已使用上次同步的分享模板）' : ''
+  const copied = await copyText(text, `分享内容已复制${scopeNote}${offlineNote}`)
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })

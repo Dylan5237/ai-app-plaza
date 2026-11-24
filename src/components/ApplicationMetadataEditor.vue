@@ -78,6 +78,7 @@ async function load() {
 }
 watch(targetKey, key => {
   sequence++
+  saving.value = false
   if (key) {
     load()
     return
@@ -117,6 +118,9 @@ async function save() {
     }
   }
   const operation = pending.value
+  const currentSequence = sequence
+  const operationKey = operation.cacheKey
+  const isCurrent = () => currentSequence === sequence && targetKey.value === operationKey
   pendingRequests.set(operation.cacheKey, operation)
   saving.value = true
   error.value = ''
@@ -131,6 +135,7 @@ async function save() {
       const nextPublication = operation.management ? result.managementPublication : result.publication
       if (!nextPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
       pendingRequests.delete(operation.cacheKey)
+      if (!isCurrent()) return
       pending.value = null
       emit('saved', {
         publicationId: nextPublication.id,
@@ -140,17 +145,20 @@ async function save() {
     } else {
       if (!result.managementPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
       pendingRequests.delete(operation.cacheKey)
+      if (!isCurrent()) return
       pending.value = null
       emit('saved', result.managementPublication.id)
     }
   } catch (e) {
-    error.value = e.message || '保存未完成。'
     // Deterministic validation failures have no partial GitLab write; uncertain failures retain the exact request.
     if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED'].includes(e.code))) {
       pendingRequests.delete(operation.cacheKey)
-      pending.value = null
+      if (isCurrent()) pending.value = null
     }
-  } finally { saving.value = false }
+    if (isCurrent()) error.value = e.message || '保存未完成。'
+  } finally {
+    if (isCurrent()) saving.value = false
+  }
 }
 </script>
 

@@ -85,7 +85,7 @@ export async function initializeIdentity() {
 window.addEventListener('plaza-identity-invalid', event => failed(event.detail))
 window.addEventListener('storage', event => {
   if (storageKey && (event.key === storageKey || event.key === null)) {
-    clearUser(true)
+    clearUser(Boolean(lastUserId || !readPortalToken()))
     initializeIdentity()
   }
 })

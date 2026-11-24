@@ -674,7 +674,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     }
     const appId = result.preview?.id ?? result.appId;
     binding = await updateBindingApp(binding, appId);
-    operation = await updateOperation(operation, { status: "submitted", publication_id: result.id });
+    operation = await updateOperation(operation, { status: "submitted", publication_id: result.originalPublicationId ?? result.id });
     return { ...result, managedAppId: binding.id, sourceUploaded: true };
   }
 
@@ -1125,13 +1125,16 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
               replayOp.base_commit_sha !== sourceRow.commit_sha) {
             throw idempotencyConflict();
           }
-          const catalogAppId = await findCatalogAppId(binding);
           const submitted = await submitWithBinding(
             submitInput, bundle, binding, idempotencyKey, "metadata_patch", false, sourceRow.commit_sha!,
-            { replacesPublicationId: publicationId, replaceActorUserId: !catalogAppId ? options.viewerId : undefined },
+            { replacesPublicationId: publicationId, replaceActorUserId: options.viewerId },
           );
-          if (submitted.result.status === 'failed' && submitted.result.error?.code === 'PUBLICATION_STATE_CONFLICT') {
-            throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', submitted.result.error.message);
+          if (submitted.result.status === 'failed' && submitted.result.error) {
+            const { code, message } = submitted.result.error;
+            if (code === 'PUBLICATION_STATE_CONFLICT' || code === 'REVISION_CONFLICT') throw new DomainError(409, code, message);
+            if (code === 'APP_NOT_FOUND') throw new DomainError(404, code, message);
+            if (code === 'PERMISSION_DENIED') throw new DomainError(403, code, message);
+            if (code === 'LOGIN_REQUIRED') throw new DomainError(401, code, message);
           }
           if (options.management) {
             const managementPublication = await config.service.managementPublication(submitted.result.id, options.viewerId);
@@ -1165,10 +1168,14 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         }
         const submitted = await submitWithBinding(
           submitInput, bundle, loaded.binding, idempotencyKey, "metadata_patch", false, loaded.sourceOperation.commit_sha,
-          { replacesPublicationId: publicationId, replaceActorUserId: !loaded.catalogAppId ? options.viewerId : undefined },
+          { replacesPublicationId: publicationId, replaceActorUserId: options.viewerId },
         );
-        if (submitted.result.status === 'failed' && submitted.result.error?.code === 'PUBLICATION_STATE_CONFLICT') {
-          throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', submitted.result.error.message);
+        if (submitted.result.status === 'failed' && submitted.result.error) {
+          const { code, message } = submitted.result.error;
+          if (code === 'PUBLICATION_STATE_CONFLICT' || code === 'REVISION_CONFLICT') throw new DomainError(409, code, message);
+          if (code === 'APP_NOT_FOUND') throw new DomainError(404, code, message);
+          if (code === 'PERMISSION_DENIED') throw new DomainError(403, code, message);
+          if (code === 'LOGIN_REQUIRED') throw new DomainError(401, code, message);
         }
         if (options.management) {
           const managementPublication = await config.service.managementPublication(submitted.result.id, options.viewerId);

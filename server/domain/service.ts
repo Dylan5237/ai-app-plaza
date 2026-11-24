@@ -419,7 +419,7 @@ export function createService(config: ServiceConfig): PlazaService {
     const rootInput = getInput(record);
     const rootProjectId = validateProjectId(rootInput.projectId);
     let current = record;
-    for (let depth = 0; depth < 50 && current.superseded_by_publication_id; depth++) {
+    while (current.superseded_by_publication_id) {
       const nextId = current.superseded_by_publication_id;
       if (visited.has(nextId)) {
         throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '预览替代关系存在循环，请重新提交发布。');
@@ -434,9 +434,6 @@ export function createService(config: ServiceConfig): PlazaService {
         throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览替代链路与应用不一致，无法自动恢复。');
       }
       current = next;
-    }
-    if (current.superseded_by_publication_id) {
-      throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '预览修订链过长，无法继续自动恢复。');
     }
     return current;
   }
@@ -624,7 +621,8 @@ export function createService(config: ServiceConfig): PlazaService {
     const failure = safeFailure(error);
     const mustSubmitAgain = failure.code === "SOURCE_MISMATCH" || failure.code === "VALIDATION_FAILED" ||
       failure.code === "AUTH_TOKEN_INVALID" || failure.code === "REVISION_CONFLICT" || failure.code === "VERSION_NOT_NEWER" ||
-      failure.code === "PUBLICATION_STATE_CONFLICT" || failure.code === "PUBLICATION_CANCELLED";
+      failure.code === "PUBLICATION_STATE_CONFLICT" || failure.code === "PUBLICATION_CANCELLED" ||
+      failure.code === "APP_NOT_FOUND" || failure.code === "LOGIN_REQUIRED";
     const nextAction = mustSubmitAgain
       ? "submit_again"
       : retryAllowed ? "retry" : "submit_again";
@@ -634,7 +632,7 @@ export function createService(config: ServiceConfig): PlazaService {
     await tx.query(
       `UPDATE publications
           SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
-              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED') THEN NULL ELSE confirmed_at END,
+              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED', 'APP_NOT_FOUND', 'LOGIN_REQUIRED') THEN NULL ELSE confirmed_at END,
               updated_at = now()
         WHERE id = $1 AND status NOT IN ('registered', 'cancelled')`,
       [id, failure.code, failure.message, nextAction],
@@ -686,6 +684,9 @@ export function createService(config: ServiceConfig): PlazaService {
         if (replaced.superseded_by_publication_id === locked.id) return;
         if (replaced.status !== 'preview_ready' || replaced.confirmed_at !== null || replaced.superseded_by_publication_id !== null) {
           throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览已开始确认或已被其他修订替代，请刷新后查看最新状态。');
+        }
+        if (existing && (config.applicationIdentity || Boolean(await accessRecord(tx, existing.id)))) {
+          await requireAppAction(tx, existing.id, locked.replace_actor_user_id ?? undefined);
         }
         if (locked.replace_actor_user_id && !existing) {
           const existingActor = (await tx.query<{ user_id: string }>(
