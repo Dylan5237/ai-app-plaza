@@ -7,26 +7,34 @@ export const DEFAULT_SHARE_TEMPLATES = {
 
 let cached = { ...DEFAULT_SHARE_TEMPLATES }
 let loadedOnce = false
-let inFlight: Promise<typeof DEFAULT_SHARE_TEMPLATES> | null = null
+let inFlight: Promise<{ templates: typeof DEFAULT_SHARE_TEMPLATES; ok: boolean }> | null = null
 
 export function currentShareTemplates() {
   return cached
 }
 
-export async function loadShareTemplates(force = false) {
-  if (loadedOnce && !force) return cached
+export function hasLoadedShareTemplates() {
+  return loadedOnce
+}
+
+export async function loadShareTemplates(force = false): Promise<{ templates: typeof DEFAULT_SHARE_TEMPLATES; ok: boolean }> {
+  if (loadedOnce && !force) return { templates: cached, ok: true }
   if (inFlight && !force) return inFlight
-  inFlight = apiRequest('/api/share-templates')
+  const request = apiRequest('/api/share-templates')
     .then((result) => {
       if (result && typeof result.agent === 'string' && typeof result.platform === 'string') {
         cached = { agent: result.agent, platform: result.platform }
         loadedOnce = true
+        return { templates: cached, ok: true }
       }
-      return cached
+      return { templates: cached, ok: false }
     })
-    .catch(() => cached)
-    .finally(() => { inFlight = null })
-  return inFlight
+    .catch(() => ({ templates: cached, ok: false }))
+    .finally(() => {
+      if (inFlight === request) inFlight = null
+    })
+  inFlight = request
+  return request
 }
 
 /** Single-pass substitution; blank summary removes its standalone line. */
@@ -44,9 +52,14 @@ export function renderShareTemplate(
   const normalizedTemplate = summary
     ? String(template || '')
     : String(template || '').split(/\r?\n/).filter(line => line.trim() !== '{{summary}}').join('\n')
-  return renderTemplate(normalizedTemplate, {
+  const rendered = renderTemplate(normalizedTemplate, {
     name: values.name || '未命名应用',
     summary,
     url: values.url,
   })
+  const url = String(values.url || '').trim()
+  if (url && !rendered.includes(url)) {
+    return rendered ? `${rendered}\n${url}` : url
+  }
+  return rendered
 }

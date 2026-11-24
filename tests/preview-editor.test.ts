@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { createServer, request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { createApp } from '../server/app.js';
 import { createAppAccessService } from '../server/domain/app-access.js';
@@ -70,8 +72,9 @@ test('private preview editor edits first-time managed preview, preserves code, c
   const { h, integrated, managedGitlab, owner, other, headers } = await setup(t);
 
   const publishKey = randomBytes(32).toString('base64url');
-  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
-  assert.equal(first.status, 'preview_ready');
+  const origKey = randomUUID();
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, origKey);
+  assert.equal(first.status, 'preview_ready', JSON.stringify(first));
   const oldId = first.id;
   const oldTicket = first.ticket;
 
@@ -168,6 +171,15 @@ test('private preview editor edits first-time managed preview, preserves code, c
     headers: headers(other, { authorization: `Bearer ${editBody.ticket}` }),
   })).statusCode, 404);
 
+  // Original receipt reflects the superseding preview before confirmation, and transitions to registered after confirmation.
+  const supersededBeforeConfirm = await integrated.managed!.receipt(publishKey, origKey);
+  if (supersededBeforeConfirm.status === 'recovery_required') throw new Error('expected active receipt before confirmation');
+  assert.equal(supersededBeforeConfirm.id, editBody.publication.id);
+  assert.equal(supersededBeforeConfirm.status, 'preview_ready');
+  assert.equal(supersededBeforeConfirm.superseded, true);
+  assert.equal(supersededBeforeConfirm.originalPublicationId, oldId);
+  assert.equal(supersededBeforeConfirm.originalStatus, 'cancelled');
+
   // Confirm the edited preview and verify live catalog app reflects edited content + retained runtime.js.
   const confirmRes = await integrated.app.inject({
     method: 'POST',
@@ -178,6 +190,30 @@ test('private preview editor edits first-time managed preview, preserves code, c
   assert.equal(confirmRes.statusCode, 200, confirmRes.body);
   const confirmed = confirmRes.json();
   assert.equal(confirmed.status, 'registered');
+
+  // Calling original managed receipt + HTTP receipt endpoint recovers as `registered` instead of stuck `cancelled`.
+  const recovered = await integrated.managed!.receipt(publishKey, origKey);
+  if (recovered.status === 'recovery_required') throw new Error('expected recovered registered receipt');
+  assert.equal(recovered.status, 'registered');
+  assert.equal(recovered.id, editBody.publication.id);
+  assert.equal(recovered.superseded, true);
+  assert.equal(recovered.originalPublicationId, oldId);
+  const httpReceipt = await integrated.app.inject({
+    url: '/plaza/api/managed-publications/receipt',
+    headers: h.headers({ 'x-plaza-publish-key': publishKey, 'idempotency-key': origKey }),
+  });
+  assert.equal(httpReceipt.statusCode, 200, httpReceipt.body);
+  assert.equal(httpReceipt.json().status, 'registered');
+  assert.equal(httpReceipt.json().superseded, true);
+
+  // Superseded old preview cannot be confirmed anymore.
+  const staleConfirm = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${oldId}/confirm`,
+    headers: headers(owner, { authorization: `Bearer ${oldTicket}` }),
+    payload: { revision: first.revision, digest: first.digest },
+  });
+  assert.equal(staleConfirm.statusCode, 409);
   const live = await integrated.service.app(confirmed.appId, { viewerId: owner.user.id });
   assert.equal(live.version, '1.0.1');
   assert.equal(live.manifest.name, '预览直接编辑后的名称');
@@ -279,4 +315,164 @@ test('non-managed direct GitLab preview returns editable: false from preview edi
   assert.equal(res.statusCode, 200, res.body);
   assert.equal(res.json().editable, false);
   assert.match(res.json().reason, /托管/);
+});
+
+test('preview editor refuses Agent distribution changes and conflicts if confirm has started', async t => {
+  const { h, integrated, managedGitlab, owner, headers } = await setup(t);
+
+  const publishKey = randomBytes(32).toString('base64url');
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  assert.equal(first.status, 'preview_ready');
+  const writesBefore = managedGitlab.state.writes.length;
+
+  await integrated.app.inject({
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${first.ticket}` }),
+  });
+
+  // 1) Attempting to widen distribution.files via metadata editor is rejected before GitLab writes.
+  const ctx = (await integrated.app.inject({
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${first.ticket}` }),
+  })).json();
+  const tampered = structuredClone(ctx.app.manifest);
+  tampered.projectVersion = '1.0.1';
+  tampered.entries[0].distribution.files = ['src/runtime.js', 'README.md'];
+  const tamperRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${first.ticket}`, 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 0, manifest: tampered, documents: ctx.app.documents },
+  });
+  assert.equal(tamperRes.statusCode, 400);
+  assert.equal(tamperRes.json().error.code, 'EDITOR_IDENTITY_IMMUTABLE');
+  assert.equal(managedGitlab.state.writes.length, writesBefore);
+
+  // 2) Once confirmation has started (confirmed_at is set), editing that preview fails cleanly and preserves old preview.
+  await h.db.query('UPDATE publications SET confirmed_at = now() WHERE id = $1', [first.id]);
+  const blockedCtx = await integrated.app.inject({
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${first.ticket}` }),
+  });
+  assert.equal(blockedCtx.statusCode, 200);
+  assert.equal(blockedCtx.json().editable, false);
+
+  const validEdit = structuredClone(ctx.app.manifest);
+  validEdit.name = '确认竞争期间不允许替代';
+  validEdit.projectVersion = '1.0.1';
+  const conflictEdit = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers(owner, { authorization: `Bearer ${first.ticket}`, 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 0, manifest: validEdit, documents: ctx.app.documents },
+  });
+  assert.equal(conflictEdit.statusCode, 409);
+  assert.equal(conflictEdit.json().error.code, 'PUBLICATION_STATE_CONFLICT');
+  const oldAfter = (await h.db.query('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [first.id])).rows[0];
+  assert.equal(oldAfter.status, 'preview_ready');
+  assert.equal(oldAfter.superseded_by_publication_id, null);
+});
+
+test('transient failure on edited preview supersedes old preview and binds actor upon retry', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let armedFailAfterRelease = false;
+  let failNextTreeOnce = false;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    if (armedFailAfterRelease && req.method === 'POST' && req.url?.includes('/releases')) {
+      armedFailAfterRelease = false;
+      failNextTreeOnce = true;
+    } else if (failNextTreeOnce && req.method === 'GET' && req.url?.includes('/repository/tree')) {
+      failNextTreeOnce = false;
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'transient tree read failure' }));
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const headers = (extra: Record<string, string> = {}) => h.headers({
+    cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', ...extra,
+  });
+
+  const publishKey = randomBytes(32).toString('base64url');
+  const origKey = randomUUID();
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, origKey);
+  assert.equal(first.status, 'preview_ready', JSON.stringify(first));
+
+  const ctx = (await integrated.app.inject({
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers({ authorization: `Bearer ${first.ticket}` }),
+  })).json();
+  const edited = structuredClone(ctx.app.manifest);
+  edited.name = '瞬时失败重试后修订';
+  edited.projectVersion = '1.0.1';
+
+  // Fail source tree inspection once after v1.0.1 release creation when submit() evaluates the new commit -> returns failed/retry new candidate.
+  armedFailAfterRelease = true;
+  const editRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${first.id}/editor`,
+    headers: headers({ authorization: `Bearer ${first.ticket}`, 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 0, manifest: edited, documents: ctx.app.documents },
+  });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  const failedNew = editRes.json().publication;
+  assert.equal(failedNew.status, 'failed');
+  assert.equal(failedNew.nextAction, 'retry');
+
+  // Old preview remains preview_ready until retry succeeds, and owner can access/retry the failed new candidate.
+  const oldBeforeRetry = (await h.db.query('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [first.id])).rows[0];
+  assert.equal(oldBeforeRetry.status, 'preview_ready');
+  assert.equal(oldBeforeRetry.superseded_by_publication_id, null);
+
+  const retried = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${failedNew.id}/retry`,
+    headers: headers({ authorization: `Bearer ${editRes.json().ticket}` }),
+  });
+  assert.equal(retried.statusCode, 200, retried.body);
+  assert.equal(retried.json().status, 'preview_ready');
+
+  const oldAfterRetry = (await h.db.query('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [first.id])).rows[0];
+  assert.equal(oldAfterRetry.status, 'cancelled');
+  assert.equal(oldAfterRetry.superseded_by_publication_id, failedNew.id);
+
+  // Confirm retried preview and confirm original CLI receipt recovers to `registered`.
+  const confirmRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${failedNew.id}/confirm`,
+    headers: headers({ authorization: `Bearer ${editRes.json().ticket}` }),
+    payload: { revision: retried.json().revision, digest: retried.json().digest },
+  });
+  assert.equal(confirmRes.statusCode, 200, confirmRes.body);
+  assert.equal(confirmRes.json().status, 'registered');
+  assert.equal((await integrated.managed!.receipt(publishKey, origKey)).status, 'registered');
 });

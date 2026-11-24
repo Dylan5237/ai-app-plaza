@@ -11,30 +11,49 @@ const emit = defineEmits(['read-documents', 'read-source', 'manage-access'])
 const visibilityMeta = computed(() => {
   const v = props.app?.visibility
   if (!v) return null
+  const lifecycleStatus = props.app?.lifecycle?.status || 'published'
+  const isOwner = v.canShare === true
+  const scopeTitle = v.scope === 'self'
+    ? (isOwner ? '仅自己可见' : '仅负责人可见')
+    : v.scope === 'members'
+      ? '指定成员可见'
+      : v.scope === 'groups'
+        ? '指定小组可见'
+        : '全体成员公开'
+  if (lifecycleStatus !== 'published') {
+    const statusLabel = lifecycleStatus === 'deleted' ? '已删除' : '已下架'
+    return {
+      tone: 'warning',
+      label: `${statusLabel} · 配置范围：${scopeTitle}`,
+      detail: `当前应用处于${statusLabel}状态，普通分享链接暂不可访问；恢复上架后将按“${scopeTitle}”范围生效。`,
+    }
+  }
   if (v.scope === 'self') {
     return {
       tone: 'warning',
-      label: '仅自己可见',
-      detail: '仅你本人可在广场查看此应用；他人打开分享链接将无法访问。',
+      label: scopeTitle,
+      detail: isOwner
+        ? '仅你本人可在广场查看此应用；他人打开分享链接将无法访问。'
+        : '当前仅应用负责人本人及维护者可查看此应用；其他成员打开分享链接将无法访问。',
     }
   }
   if (v.scope === 'members') {
     return {
       tone: 'info',
-      label: '指定成员可见',
+      label: scopeTitle,
       detail: `当前仅已指定的 ${v.memberCount} 位成员可查看此应用。`,
     }
   }
   if (v.scope === 'groups') {
     return {
       tone: 'info',
-      label: '指定小组可见',
+      label: scopeTitle,
       detail: `当前仅已指定的 ${v.groupCount} 个小组成员可查看此应用。`,
     }
   }
   return {
     tone: 'public',
-    label: '全体成员公开',
+    label: scopeTitle,
     detail: '广场所有访问者（含未登录同事）均可查看此应用。',
   }
 })

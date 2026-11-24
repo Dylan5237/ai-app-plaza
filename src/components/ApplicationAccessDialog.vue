@@ -91,7 +91,7 @@ async function save() {
 </script>
 
 <template>
-  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" :close-on-click-modal="false" :show-close="!busy && !uncertain" :close-on-press-escape="!busy && !uncertain" :before-close="beforeClose" @close="requestClose">
+  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" append-to-body :close-on-click-modal="false" :show-close="!busy && !uncertain" :close-on-press-escape="!busy && !uncertain" :before-close="beforeClose" @close="requestClose">
     <div v-loading="loading" class="access-form">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
       <p v-if="notice" role="status">{{ notice }}</p>

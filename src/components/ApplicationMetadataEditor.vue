@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
+import { uuid } from '../lib/analytics.js'
 
 const props = defineProps({
   appId: { type: String, default: '' },
@@ -74,7 +75,19 @@ async function load() {
   } catch (e) { if (current === sequence) error.value = e.message }
   finally { if (current === sequence) loading.value = false }
 }
-watch(targetKey, key => { sequence++; if (key) load() }, { immediate: true })
+watch(targetKey, key => {
+  sequence++
+  if (key) {
+    load()
+    return
+  }
+  loading.value = false
+  error.value = ''
+  context.value = null
+  manifest.value = null
+  documents.value = {}
+  pending.value = null
+}, { immediate: true })
 async function close() {
   if (saving.value) return
   if (pending.value) {
@@ -87,8 +100,13 @@ async function save() {
   if (saving.value || !context.value?.editable || !manifest.value) return
   if (!pending.value && !changed.value) return
   if (!pending.value) {
+    const key = uuid()
+    if (!key) {
+      error.value = '当前浏览器无法生成安全请求标识，请更换现代浏览器或通过 HTTPS 访问后再保存。'
+      return
+    }
     pending.value = {
-      key: crypto.randomUUID(),
+      key,
       cacheKey: targetKey.value,
       endpoint: editorEndpoint.value,
       token: requestToken.value,
@@ -127,7 +145,7 @@ async function save() {
   } catch (e) {
     error.value = e.message || '保存未完成。'
     // Deterministic validation failures have no partial GitLab write; uncertain failures retain the exact request.
-    if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT'].includes(e.code))) {
+    if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED'].includes(e.code))) {
       pendingRequests.delete(operation.cacheKey)
       pending.value = null
     }

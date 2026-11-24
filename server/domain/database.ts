@@ -151,6 +151,10 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS publications_expiry_idx ON publications (expires_at)`,
   `CREATE INDEX IF NOT EXISTS managed_publish_operations_binding_idx ON managed_publish_operations (binding_id, created_at DESC)`,
   `ALTER TABLE publications ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS replaces_publication_id uuid REFERENCES publications(id)`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS superseded_by_publication_id uuid REFERENCES publications(id)`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS replace_actor_user_id uuid`,
+  `CREATE INDEX IF NOT EXISTS publications_replaces_idx ON publications (replaces_publication_id) WHERE replaces_publication_id IS NOT NULL`,
   `ALTER TABLE managed_publish_operations ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE catalog_app_lifecycle ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `CREATE TABLE IF NOT EXISTS analytics_events (

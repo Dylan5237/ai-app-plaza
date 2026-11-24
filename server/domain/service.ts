@@ -102,6 +102,9 @@ export interface SubmitInput extends SourceInput {
 export interface SubmitResult extends PublicationView {
   ticket: string;
   previewUrl: string;
+  superseded?: boolean;
+  originalPublicationId?: string;
+  originalStatus?: PublicationStatus;
 }
 
 export interface ServiceConfig {
@@ -121,7 +124,12 @@ export interface ServiceConfig {
 export interface PlazaService {
   cleanupExpiredTokens(): Promise<void>;
   tags(viewerId?: string, management?: boolean): Promise<string[]>;
-  submit(input: SubmitInput, gitlabToken: string, idempotencyKey: string, origin?: { mode: 'managed'; operationId: string }): Promise<SubmitResult>;
+  submit(
+    input: SubmitInput,
+    gitlabToken: string,
+    idempotencyKey: string,
+    origin?: { mode: 'managed'; operationId: string; replacesPublicationId?: string; replaceActorUserId?: string },
+  ): Promise<SubmitResult>;
   lookupManagedReceipt(input: SubmitInput, gitlabToken: string, idempotencyKey: string): Promise<SubmitResult | undefined>;
   publication(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
   receiptView(id: string, ticket: string, viewerId?: string): Promise<PublicationView>;
@@ -164,6 +172,9 @@ interface PublicationRecord {
   expires_at: Date | string;
   created_at: Date | string;
   updated_at: Date | string;
+  replaces_publication_id: string | null;
+  superseded_by_publication_id: string | null;
+  replace_actor_user_id: string | null;
 }
 
 interface PublicationAttempt { id: string; startedAt: string; kind: 'submit' | 'confirm' | 'retry'; actorContext?: 'publication_link' | 'management' }
@@ -402,6 +413,45 @@ export function createService(config: ServiceConfig): PlazaService {
     return { ...view, ticket, previewUrl: url.toString() };
   }
 
+  async function resolveSupersededPublication(record: PublicationRecord): Promise<PublicationRecord> {
+    if (!record.superseded_by_publication_id) return record;
+    const visited = new Set<string>([record.id]);
+    const rootInput = getInput(record);
+    const rootProjectId = validateProjectId(rootInput.projectId);
+    let current = record;
+    for (let depth = 0; depth < 50 && current.superseded_by_publication_id; depth++) {
+      const nextId = current.superseded_by_publication_id;
+      if (visited.has(nextId)) {
+        throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '预览替代关系存在循环，请重新提交发布。');
+      }
+      visited.add(nextId);
+      const next = (await config.db.query<PublicationRecord>('SELECT * FROM publications WHERE id = $1', [nextId])).rows[0];
+      if (!next || next.replaces_publication_id !== current.id || next.actor_id !== record.actor_id) {
+        throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览替代链路不一致，无法自动恢复。');
+      }
+      const nextInput = getInput(next);
+      if (validateProjectId(nextInput.projectId) !== rootProjectId || nextInput.appKey !== rootInput.appKey) {
+        throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览替代链路与应用不一致，无法自动恢复。');
+      }
+      current = next;
+    }
+    if (current.superseded_by_publication_id) {
+      throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '预览修订链过长，无法继续自动恢复。');
+    }
+    return current;
+  }
+
+  function supersededSubmitView(original: PublicationRecord, effective: PublicationRecord): SubmitResult {
+    const view = submitView(effective);
+    if (effective.id === original.id) return view;
+    return {
+      ...view,
+      superseded: true,
+      originalPublicationId: original.id,
+      originalStatus: original.status,
+    };
+  }
+
   function getInput(record: PublicationRecord): SubmitInput {
     return parseJsonValue<SubmitInput>(record.submission);
   }
@@ -573,7 +623,8 @@ export function createService(config: ServiceConfig): PlazaService {
   ): Promise<PublicationRecord> {
     const failure = safeFailure(error);
     const mustSubmitAgain = failure.code === "SOURCE_MISMATCH" || failure.code === "VALIDATION_FAILED" ||
-      failure.code === "AUTH_TOKEN_INVALID" || failure.code === "REVISION_CONFLICT" || failure.code === "VERSION_NOT_NEWER";
+      failure.code === "AUTH_TOKEN_INVALID" || failure.code === "REVISION_CONFLICT" || failure.code === "VERSION_NOT_NEWER" ||
+      failure.code === "PUBLICATION_STATE_CONFLICT" || failure.code === "PUBLICATION_CANCELLED";
     const nextAction = mustSubmitAgain
       ? "submit_again"
       : retryAllowed ? "retry" : "submit_again";
@@ -583,9 +634,9 @@ export function createService(config: ServiceConfig): PlazaService {
     await tx.query(
       `UPDATE publications
           SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
-              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER') THEN NULL ELSE confirmed_at END,
+              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED') THEN NULL ELSE confirmed_at END,
               updated_at = now()
-        WHERE id = $1 AND status <> 'registered'`,
+        WHERE id = $1 AND status NOT IN ('registered', 'cancelled')`,
       [id, failure.code, failure.message, nextAction],
     );
     const result = await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id]);
@@ -603,9 +654,22 @@ export function createService(config: ServiceConfig): PlazaService {
     const input = getInput(record);
     const projectId = validateProjectId(input.projectId);
     return config.db.transaction(async (tx) => {
-      const locked = (await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1 FOR UPDATE", [record.id])).rows[0];
+      const lockIds = record.replaces_publication_id
+        ? Array.from(new Set([record.id, record.replaces_publication_id])).sort()
+        : [record.id];
+      const lockedRows = (await tx.query<PublicationRecord>(
+        "SELECT * FROM publications WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+        [lockIds],
+      )).rows;
+      const locked = lockedRows.find(row => row.id === record.id);
       if (!locked) throw notFound();
       if (locked.status === "registered") return locked;
+      if (locked.status === "cancelled" || locked.superseded_by_publication_id) {
+        throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
+      }
+      const replaced = locked.replaces_publication_id
+        ? lockedRows.find(row => row.id === locked.replaces_publication_id)
+        : undefined;
       const existing = await findAppByKey(tx, projectId, input.appKey, true);
       if (existing?.lifecycle_status === 'deleted') {
         throw new DomainError(409, 'APP_RESTORE_REQUIRED', '应用已删除，请先在本地管理后台恢复后再提交新版本。');
@@ -614,11 +678,57 @@ export function createService(config: ServiceConfig): PlazaService {
       if (input.expectedAppRevision !== undefined && input.expectedAppRevision !== currentRevision) {
         throw new DomainError(409, "REVISION_CONFLICT", "应用修订已变化，请重新提交候选并查看新预览。");
       }
+      const supersedeOldPreview = async () => {
+        if (!locked.replaces_publication_id) return;
+        if (!replaced) {
+          throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '未找到待替代的原发布预览。');
+        }
+        if (replaced.superseded_by_publication_id === locked.id) return;
+        if (replaced.status !== 'preview_ready' || replaced.confirmed_at !== null || replaced.superseded_by_publication_id !== null) {
+          throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览已开始确认或已被其他修订替代，请刷新后查看最新状态。');
+        }
+        if (locked.replace_actor_user_id && !existing) {
+          const existingActor = (await tx.query<{ user_id: string }>(
+            'SELECT user_id FROM plaza_publication_actors WHERE publication_id = $1 FOR UPDATE',
+            [replaced.id],
+          )).rows[0];
+          if (existingActor && existingActor.user_id !== locked.replace_actor_user_id) {
+            throw new DomainError(404, 'PUBLICATION_NOT_FOUND', '未找到本次发布。');
+          }
+          if (!existingActor) {
+            await tx.query(
+              'INSERT INTO plaza_publication_actors(publication_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+              [replaced.id, locked.replace_actor_user_id],
+            );
+          }
+          await tx.query(
+            'INSERT INTO plaza_publication_actors(publication_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [locked.id, locked.replace_actor_user_id],
+          );
+        }
+        const cancelled = await tx.query<{ id: string }>(
+          `UPDATE publications
+              SET status = 'cancelled', next_action = 'complete',
+                  superseded_by_publication_id = $2,
+                  token_ciphertext = NULL, token_iv = NULL, token_auth_tag = NULL,
+                  updated_at = now()
+            WHERE id = $1 AND status = 'preview_ready' AND confirmed_at IS NULL AND superseded_by_publication_id IS NULL
+            RETURNING id`,
+          [replaced.id, locked.id],
+        );
+        if (cancelled.rowCount !== 1) {
+          throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览已开始确认或已被其他修订替代，请刷新后查看最新状态。');
+        }
+        await appendBusinessFact(tx, 'publications', replaced.id, config.analytics, 'publication_state_changed', {
+          publicationId: replaced.id, fromState: replaced.status, toState: 'cancelled', supersededByPublicationId: locked.id,
+        });
+      };
       if (
         !config.applicationIdentity && !(existing && await accessRecord(tx, existing.id)) && existing?.digest === source.digest &&
         existing.commit_sha === source.source.commitSha &&
         existing.audience === config.audience
       ) {
+        await supersedeOldPreview();
         const current = appView(existing, true);
         const updated = await tx.query<PublicationRecord>(
           `UPDATE publications
@@ -638,6 +748,7 @@ export function createService(config: ServiceConfig): PlazaService {
       }
 
       requireNewerVersion(existing, source);
+      await supersedeOldPreview();
       const view = candidateView(locked.candidate_app_id, existing, input, source);
       const updated = await tx.query<PublicationRecord>(
         `UPDATE publications
@@ -673,6 +784,9 @@ export function createService(config: ServiceConfig): PlazaService {
       const lockedPublication = (await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1 FOR UPDATE", [record.id])).rows[0];
       if (!lockedPublication) throw notFound();
       if (lockedPublication.status === "registered") return lockedPublication;
+      if (lockedPublication.status === "cancelled" || lockedPublication.superseded_by_publication_id) {
+        throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
+      }
       if (lockedPublication.revision !== record.revision || lockedPublication.digest !== record.digest) {
         throw new DomainError(409, "SOURCE_MISMATCH", "候选修订或摘要已变化，请重新提交预览。");
       }
@@ -828,6 +942,9 @@ export function createService(config: ServiceConfig): PlazaService {
       if (!current) throw notFound();
       await authorizePublication(tx, current, viewerId, true);
       if (current.status === "registered") return current;
+      if (current.status === "cancelled" || current.superseded_by_publication_id) {
+        throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
+      }
       if (current.status !== "preview_ready" || current.revision !== revision || current.digest !== digest) {
         throw new DomainError(409, "SOURCE_MISMATCH", "确认参数与当前预览修订或摘要不一致，请刷新预览。");
       }
@@ -953,8 +1070,9 @@ export function createService(config: ServiceConfig): PlazaService {
             `INSERT INTO publications (
                id, actor_id, idempotency_digest, request_hash, submission, status, revision,
                candidate_app_id, token_ciphertext, token_iv, token_auth_tag,
-               next_action, expires_at, created_at, updated_at, identity_required
-             ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11, $12)
+               next_action, expires_at, created_at, updated_at, identity_required,
+               replaces_publication_id, replace_actor_user_id
+             ) VALUES ($1, $2, $3, $4, $5::jsonb, 'checking', 1, $6, $7, $8, $9, 'checking', $10, $11, $11, $12, $13, $14)
              ON CONFLICT (actor_id, idempotency_digest) DO NOTHING RETURNING *`,
             [
               publicationId,
@@ -969,9 +1087,33 @@ export function createService(config: ServiceConfig): PlazaService {
               expiry,
               now,
               !!config.applicationIdentity,
+              origin?.replacesPublicationId ?? null,
+              origin?.replaceActorUserId ?? null,
             ],
           );
           if (inserted.rows[0]) {
+            if (origin?.replacesPublicationId && origin?.replaceActorUserId) {
+              const existingApp = await findAppByKey(tx, validateProjectId(input.projectId), input.appKey);
+              if (!existingApp) {
+                const existingActor = (await tx.query<{ user_id: string }>(
+                  'SELECT user_id FROM plaza_publication_actors WHERE publication_id = $1 FOR UPDATE',
+                  [origin.replacesPublicationId],
+                )).rows[0];
+                if (existingActor && existingActor.user_id !== origin.replaceActorUserId) {
+                  throw new DomainError(404, 'PUBLICATION_NOT_FOUND', '未找到本次发布。');
+                }
+                if (!existingActor) {
+                  await tx.query(
+                    'INSERT INTO plaza_publication_actors(publication_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                    [origin.replacesPublicationId, origin.replaceActorUserId],
+                  );
+                }
+                await tx.query(
+                  'INSERT INTO plaza_publication_actors(publication_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                  [publicationId, origin.replaceActorUserId],
+                );
+              }
+            }
             const existingForAnalytics = config.analytics && !origin ? await findAppByKey(tx, validateProjectId(input.projectId), input.appKey) : undefined;
             if (!origin) await appendBusinessFact(tx, 'publications', publicationId, config.analytics, 'publish_operation_received', {
               publicationId, publishOperationId: publicationId, attemptId: submitAttempt?.id || publicationId, attemptStartedAt: now.toISOString(),
@@ -993,10 +1135,13 @@ export function createService(config: ServiceConfig): PlazaService {
           return { record: existing, isNew: false };
         });
         if (!created.isNew) {
-          if (new Date(created.record.expires_at).getTime() <= Date.now()) {
+          const effective = origin?.mode === 'managed' && created.record.superseded_by_publication_id
+            ? await resolveSupersededPublication(created.record)
+            : created.record;
+          if (effective.status !== 'registered' && new Date(effective.expires_at).getTime() <= Date.now()) {
             throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
           }
-          return submitView(created.record);
+          return supersededSubmitView(created.record, effective);
         }
 
         try {
@@ -1017,9 +1162,10 @@ export function createService(config: ServiceConfig): PlazaService {
       await cleanupExpiredTokens();
       const record = (await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id])).rows[0];
       if (!record || record.request_hash !== hashInput(input)) throw new DomainError(409, "MANAGED_SOURCE_CONFLICT", "原发布回执与本次固定来源不一致，已停止恢复。");
+      const effective = await resolveSupersededPublication(record);
       // Preview expiry must not hide completed history after ownership and source checks.
-      if (record.status !== 'registered' && new Date(record.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
-      return submitView(record);
+      if (effective.status !== 'registered' && new Date(effective.expires_at).getTime() <= Date.now()) throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，请保留记录并准备新的版本预览。");
+      return supersededSubmitView(record, effective);
     },
 
     async lookupManagedReceipt(input, gitlabToken, idempotencyKey) {
@@ -1037,10 +1183,11 @@ export function createService(config: ServiceConfig): PlazaService {
       if (record.request_hash !== requestHash) {
         throw new DomainError(409, "IDEMPOTENCY_CONFLICT", "相同幂等键已用于不同的候选内容。");
       }
-      if (record.status !== 'registered' && new Date(record.expires_at).getTime() <= Date.now()) {
+      const effective = await resolveSupersededPublication(record);
+      if (effective.status !== 'registered' && new Date(effective.expires_at).getTime() <= Date.now()) {
         throw new DomainError(410, "PUBLICATION_EXPIRED", "原发布回执已过期，无法通过该回执恢复。");
       }
-      return submitView(record);
+      return supersededSubmitView(record, effective);
     },
 
     async publication(id, ticket, viewerId) {

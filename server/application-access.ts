@@ -61,13 +61,13 @@ export function registerApplicationAccess(app: FastifyInstance, db: Database, au
     return setAdministrator(db, actorId, input);
   });
   app.get('/api/access/smart-search-prompt', async request => smartSearchPromptView(db, await user(request)));
-  app.put('/api/access/smart-search-prompt', async request => {
+  app.put('/api/access/smart-search-prompt', { bodyLimit: 64 * 1024 }, async request => {
     const actorId = await user(request, true);
     const { confirmed: _, ...input } = mutation.extend({ template: z.string().min(1).max(6000).nullable() }).strict().parse(request.body);
     return setSmartSearchPrompt(db, actorId, input);
   });
   app.get('/api/access/text-templates', async request => textTemplatesAdminView(db, await user(request)));
-  app.put('/api/access/text-templates', async request => {
+  app.put('/api/access/text-templates', { bodyLimit: 128 * 1024 }, async request => {
     const actorId = await user(request, true);
     const { confirmed: _, ...input } = mutation.extend({
       purpose: z.enum(TEXT_TEMPLATE_PURPOSES),

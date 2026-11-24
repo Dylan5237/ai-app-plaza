@@ -104,7 +104,10 @@ export async function createApp(config: Config, db: Database) {
     return { ...visible, ticket: result.ticket, previewUrl: result.previewUrl,
       ...(result.managedAppId ? { managedAppId: result.managedAppId } : {}),
       ...(result.operationId ? { operationId: result.operationId } : {}),
-      ...(result.sourceUploaded !== undefined ? { sourceUploaded: result.sourceUploaded } : {}) };
+      ...(result.sourceUploaded !== undefined ? { sourceUploaded: result.sourceUploaded } : {}),
+      ...(result.superseded ? { superseded: true } : {}),
+      ...(result.originalPublicationId ? { originalPublicationId: result.originalPublicationId } : {}),
+      ...(result.originalStatus ? { originalStatus: result.originalStatus } : {}) };
   };
   let managedActive = 0;
   let downloadActive = 0;

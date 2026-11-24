@@ -180,10 +180,13 @@ try {
 
   await adminPage.goto(`${h.origin}/plaza/?space=smart-search`);
   await adminPage.getByRole('tab', { name: '发布提示词', exact: true }).click();
+  const updatePublishEditor = adminPage.getByTestId('template-editor-publish_managed_update');
+  await updatePublishEditor.fill('尚未保存的更新模板草稿 {{origin}}');
   const newPublishEditor = adminPage.getByTestId('template-editor-publish_managed_new');
   await newPublishEditor.fill('自定义发布提示词：门户={{origin}} 工具={{publisherUrl}} SHA={{publisherSha256}}');
   await adminPage.getByTestId('template-save-publish_managed_new').click();
   await adminPage.getByText('模板已保存，后续操作立即生效。').waitFor();
+  assert.equal(await updatePublishEditor.inputValue(), '尚未保存的更新模板草稿 {{origin}}', 'saving one template preserves unsaved draft on sibling template');
 
   await adminPage.goto(`${h.origin}/plaza/?discover=catalog`);
   await adminPage.getByTestId('share-button').click();
@@ -323,6 +326,15 @@ try {
   await anonPage.getByTestId('app-detail').waitFor();
   assert.equal(await anonPage.locator('.overview-title-row h2').innerText(), '预览页修订后的应用名');
   assert.equal(await anonPage.getByTestId('detail-visibility').count(), 0, 'public visitors do not see author visibility bar');
+
+  // Management detail also wires "调整分享范围" directly to the access dialog.
+  await memberPage.goto(`${h.origin}/plaza/admin`);
+  await memberPage.getByRole('button', { name: '预览页修订后的应用名', exact: true }).click();
+  await memberPage.getByTestId('app-detail').waitFor();
+  await memberPage.getByTestId('detail-manage-access').click();
+  await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor();
+  await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
+  await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor({ state: 'hidden' });
   report.checks.push('req4-detail-visibility-and-restricted-prompt');
 
   await memberPage.screenshot({ path: 'artifacts/issue-120-detail-visibility.png', fullPage: true });

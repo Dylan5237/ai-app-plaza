@@ -115,9 +115,29 @@ test('text templates endpoint is restricted to super administrators and supports
 
   const tooLongShare = await integrated.app.inject({
     method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
-    payload: { confirmed: true, requestId: randomUUID(), purpose: 'share_agent', template: 'a'.repeat(2001) },
+    payload: { confirmed: true, requestId: randomUUID(), purpose: 'share_agent', template: `{{url}} ${'a'.repeat(2001)}` },
   });
   assert.equal(tooLongShare.statusCode, 400);
+
+  const missingUrlShare = await integrated.app.inject({
+    method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+    payload: { confirmed: true, requestId: randomUUID(), purpose: 'share_agent', template: '自定义但漏掉链接占位符：{{name}}' },
+  });
+  assert.equal(missingUrlShare.statusCode, 400);
+  assert.equal(missingUrlShare.json().error.code, 'TEMPLATE_INVALID');
+
+  // 6,500 Chinese characters (~19.5 KiB UTF-8 JSON) exceeds default 16 KiB bodyLimit but succeeds under 128 KiB route limit.
+  const longChinesePublish = `长中文发布模板 {{origin}} ${'中'.repeat(6500)}`;
+  const longChineseSave = await integrated.app.inject({
+    method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+    payload: { confirmed: true, requestId: randomUUID(), purpose: 'publish_managed_new', template: longChinesePublish },
+  });
+  assert.equal(longChineseSave.statusCode, 200, longChineseSave.body);
+  assert.equal((await integrated.app.inject({ url: '/plaza/api/publish-contract', headers: headers(null) })).json().prompt.length > 6500, true);
+  await integrated.app.inject({
+    method: 'PUT', url: '/plaza/api/access/text-templates', headers: headers(admin),
+    payload: { confirmed: true, requestId: randomUUID(), purpose: 'publish_managed_new', template: null },
+  });
 
   const newReqId = randomUUID();
   const customNewTemplate = '新发布指引：门户={{origin}} 空间={{groupPath}} 工具={{publisherUrl}} SHA={{publisherSha256}} 校验={{validationUrl}} 回执={{receiptUrl}} 提交={{submitUrl}} 清理\u0001控制';
@@ -156,7 +176,7 @@ test('text templates endpoint is restricted to super administrators and supports
   assert.ok(restoredContract.prompt.includes('请在当前项目上下文中把我的 AI 应用发布到 AI应用广场'));
 
   const auditCount = (await h.db.query("SELECT count(*) AS n FROM plaza_access_operations WHERE action = 'text_template_changed'")).rows[0].n;
-  assert.equal(Number(auditCount), 3);
+  assert.equal(Number(auditCount), 5);
 });
 
 test('share templates endpoint and renderer support agent/platform split, empty summary, and single-pass substitution', async t => {
@@ -207,6 +227,10 @@ test('share templates endpoint and renderer support agent/platform split, empty 
   assert.equal(
     renderTemplate('A={{a}} B={{b}}', { a: '{{b}}', b: 'final' }),
     'A={{b}} B=final',
+  );
+  assert.equal(
+    renderShareTemplate('仅有名称：{{name}}', { name: '兜底应用', summary: '', url: 'https://plaza.example/?app=fallback' }),
+    '仅有名称：兜底应用\nhttps://plaza.example/?app=fallback',
   );
 
   // Admin updates share_agent & share_platform -> public endpoint reflects immediately.

@@ -171,11 +171,16 @@ export function renderShareTemplate(
   const normalizedTemplate = summary
     ? template
     : template.split(/\r?\n/).filter(line => line.trim() !== '{{summary}}').join('\n');
-  return renderTemplate(normalizedTemplate, {
+  const rendered = renderTemplate(normalizedTemplate, {
     name: values.name || '未命名应用',
     summary,
     url: values.url,
   });
+  const url = values.url.trim();
+  if (url && !rendered.includes(url)) {
+    return rendered ? `${rendered}\n${url}` : url;
+  }
+  return rendered;
 }
 
 interface TemplateRow {
@@ -233,6 +238,9 @@ export async function setTextTemplate(
     if (!cleaned) throw new DomainError(400, 'TEMPLATE_INVALID', '模板不能为空。');
     if (cleaned.length > limit) {
       throw new DomainError(400, 'TEMPLATE_INVALID', `模板不能超过 ${limit} 个字符。`);
+    }
+    if ((input.purpose === 'share_agent' || input.purpose === 'share_platform') && !cleaned.includes('{{url}}')) {
+      throw new DomainError(400, 'TEMPLATE_INVALID', '分享模板必须包含 {{url}} 占位符，以确保接收者可直达应用。');
     }
     input = { ...input, template: cleaned };
   }

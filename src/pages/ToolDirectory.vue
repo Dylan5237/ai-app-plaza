@@ -20,7 +20,7 @@ import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { discoverTabFromParam } from '../lib/discovery.ts'
-import { currentShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
+import { hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
@@ -778,9 +778,13 @@ async function copyAgentInstructions() {
 
 // Share blurb rendered from configurable agent/platform templates.
 async function copyShareLink(app, placement) {
-  await Promise.race([loadShareTemplates(true), new Promise(resolve => setTimeout(resolve, 300))])
+  const loaded = await loadShareTemplates(true)
   if (disposed) return
-  const templates = currentShareTemplates()
+  if (!loaded.ok && !hasLoadedShareTemplates()) {
+    ElMessage.error('暂时无法获取分享模板，请稍后重试。')
+    return
+  }
+  const templates = loaded.templates
   const usage = catalogUsage(app)
   const template = usage === 'platform' ? templates.platform : templates.agent
   const name = app.manifest?.name || '未命名应用'
@@ -792,7 +796,8 @@ async function copyShareLink(app, placement) {
     : app.visibility && app.visibility.scope !== 'all'
       ? '（当前为受限分享范围，仅获授权同事可打开）'
       : ''
-  const copied = await copyText(text, `分享内容已复制${scopeNote}`)
+  const offlineNote = !loaded.ok ? '（网络波动，已使用上次同步的分享模板）' : ''
+  const copied = await copyText(text, `分享内容已复制${scopeNote}${offlineNote}`)
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
@@ -901,11 +906,13 @@ async function copyExample(text) {
   if (!props.management && context && interactionId) track('prompt_copy_result', eventAttributes({ promptPurpose: 'example', result: copied ? 'success' : 'failure' }), { ...context, interactionId, ...resultContext() })
 }
 
+const memoryPublicationTickets = new Map()
+
 function publicationToken(id) {
   try {
-    return window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) || ''
+    return window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) || memoryPublicationTickets.get(id) || ''
   } catch {
-    return ''
+    return memoryPublicationTickets.get(id) || ''
   }
 }
 
@@ -917,14 +924,16 @@ function preparePublicationRoute() {
   publicationId.value = id
   publicationBusy.value = false
   publicationEditorOpen.value = false
+  publicationEditorToken.value = ''
   detailVisible.value = false
   shareVisible.value = false
   const ticket = props.management ? '' : fragment.get('key')
   if (ticket) {
+    memoryPublicationTickets.set(id, ticket)
     try {
       window.sessionStorage.setItem(`ai-app-plaza:publication:${id}`, ticket)
     } catch {
-      publicationError.value = '浏览器未能保存此私有预览链接的临时授权，请允许当前标签页使用会话存储后重新打开链接。'
+      publicationError.value = '浏览器未能保存此私有预览链接的临时授权到会话存储，当前标签页仍可核对确认；切勿刷新页面。'
     }
   }
   const visibleFragment = new URLSearchParams()
@@ -983,6 +992,10 @@ async function loadPublication(id = publicationId.value, { revalidating = public
     const result = await apiRequest(publicationPath(id), token ? { token } : {})
     if (current()) {
       publication.value = result
+      if (result.requiresIdentity || result.status !== 'preview_ready') {
+        publicationEditorOpen.value = false
+        publicationEditorToken.value = ''
+      }
       if (result.analyticsEnabled === true) {
         measurementEnabled = true; enableAnalytics(true)
         const viewerContext = props.management ? 'management' : 'publication_link'
@@ -994,7 +1007,11 @@ async function loadPublication(id = publicationId.value, { revalidating = public
     }
   } catch (error) {
     if (current()) {
-      if ([401, 403, 404, 410].includes(error.status)) publication.value = null
+      if ([401, 403, 404, 410].includes(error.status)) {
+        publication.value = null
+        publicationEditorOpen.value = false
+        publicationEditorToken.value = ''
+      }
       publicationError.value = errorText(error)
     }
   } finally {
@@ -1047,19 +1064,28 @@ function openPublicationEditor() {
 
 function onPublicationEditorSaved(result) {
   publicationEditorOpen.value = false
+  publicationEditorToken.value = ''
   if (!result?.publicationId) return
   const nextId = result.publicationId
-  if (!props.management && result.ticket) {
-    try {
-      window.sessionStorage.setItem(`ai-app-plaza:publication:${nextId}`, result.ticket)
-    } catch {
-      publicationError.value = '浏览器未能保存新预览的临时授权，请允许当前标签页使用会话存储。'
+  let nextError = ''
+  if (!props.management) {
+    if (result.ticket) {
+      memoryPublicationTickets.set(nextId, result.ticket)
+      try {
+        window.sessionStorage.setItem(`ai-app-plaza:publication:${nextId}`, result.ticket)
+      } catch {
+        nextError = '浏览器未能将新预览的临时授权写入会话存储，当前标签页仍可直接确认，但切勿刷新或关闭标签页。'
+      }
+    } else {
+      nextError = '未能获取新预览的临时授权，请使用原发布记录恢复链接或从管理后台继续确认。'
     }
   }
   publicationRequestSequence += 1
+  publicationLoading.value = false
+  publicationBusy.value = false
   publicationId.value = nextId
   if (result.publication) publication.value = result.publication
-  publicationError.value = ''
+  publicationError.value = nextError
   const visibleFragment = new URLSearchParams()
   visibleFragment.set('publish', nextId)
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${visibleFragment.toString()}`)
@@ -1543,7 +1569,6 @@ onUnmounted(() => {
       />
     </el-dialog>
     <ApplicationAccessDialog
-      v-if="!props.management"
       :app-id="accessDialogAppId"
       @close="accessDialogAppId = ''"
       @saved="onAccessSaved"

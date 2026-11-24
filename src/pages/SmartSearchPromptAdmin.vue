@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElButton, ElInput, ElMessageBox, ElTabPane, ElTabs } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import { formatDateTime } from '../lib/date.ts'
+import { uuid } from '../lib/analytics.js'
 import { loadShareTemplates, renderShareTemplate, renderTemplate } from '../lib/share-template.ts'
 
 const activeTab = ref('smart-search')
@@ -20,14 +21,15 @@ let requestVersion = 0
 const effective = computed(() => view.value?.template ?? view.value?.defaultPrompt ?? '')
 const customized = computed(() => view.value?.template != null)
 const dirty = computed(() => Boolean(view.value) && draft.value.trim() !== effective.value.trim())
-const canSave = computed(() => Boolean(view.value) && !busy.value && dirty.value && draft.value.trim().length > 0)
+const canSave = computed(() => Boolean(view.value) && !busy.value && !uncertain.value && dirty.value && draft.value.trim().length > 0)
 
 const templatesView = ref(null)
 const templateDrafts = reactive({})
 const templateBusy = reactive({})
+const templateUncertain = reactive({})
 const templateErrors = reactive({})
 const templateNotices = reactive({})
-const templatePending = {}
+const templatePending = reactive({})
 let templatesVersion = 0
 
 const publishItems = computed(() => {
@@ -49,7 +51,7 @@ function isTemplateDirty(item) {
   return (templateDrafts[item.purpose] ?? '').trim() !== effectiveTemplate(item).trim()
 }
 function canSaveTemplate(item) {
-  return !templateBusy[item.purpose] && isTemplateDirty(item) && (templateDrafts[item.purpose] ?? '').trim().length > 0
+  return !templateBusy[item.purpose] && !templateUncertain[item.purpose] && isTemplateDirty(item) && (templateDrafts[item.purpose] ?? '').trim().length > 0
 }
 function previewTemplate(item) {
   const body = templateDrafts[item.purpose] ?? effectiveTemplate(item)
@@ -94,14 +96,35 @@ async function load() {
   }
 }
 
-async function reloadTemplates() {
+async function reloadSmartSearchPrompt() {
+  const version = ++requestVersion
+  try {
+    const promptResult = await apiRequest('/api/access/smart-search-prompt')
+    if (version !== requestVersion) return
+    view.value = promptResult
+    draft.value = promptResult.template ?? promptResult.defaultPrompt
+  } catch (err) {
+    if (version === requestVersion) {
+      if (err.status === 401 || err.status === 403) view.value = null
+      error.value = err.message || '提示词配置加载失败，请稍后重试。'
+    }
+  }
+}
+
+async function reloadTemplates(updatedPurpose = '') {
   const version = ++templatesVersion
   try {
     const result = await apiRequest('/api/access/text-templates')
     if (version !== templatesVersion) return
+    const prevEffective = Object.fromEntries(
+      Object.entries(templatesView.value?.items || {}).map(([purpose, item]) => [purpose, effectiveTemplate(item)]),
+    )
     templatesView.value = result
     for (const [purpose, item] of Object.entries(result?.items || {})) {
-      templateDrafts[purpose] = item.template ?? item.defaultTemplate
+      const nextValue = effectiveTemplate(item)
+      if (purpose === updatedPurpose || templateDrafts[purpose] === undefined || templateDrafts[purpose] === prevEffective[purpose]) {
+        templateDrafts[purpose] = nextValue
+      }
     }
   } catch (err) {
     if (version === templatesVersion) error.value = err.message || '模板配置加载失败，请稍后重试。'
@@ -110,7 +133,15 @@ async function reloadTemplates() {
 
 async function write(template) {
   if (busy.value) return
-  if (!pending) pending = { requestId: crypto.randomUUID(), confirmed: true, template }
+  if (!pending) {
+    if (uncertain.value) return
+    const requestId = uuid()
+    if (!requestId) {
+      error.value = '当前浏览器无法生成安全请求标识，请更换现代浏览器或通过 HTTPS 访问后再保存。'
+      return
+    }
+    pending = { requestId, confirmed: true, template }
+  }
   const request = pending
   busy.value = true
   error.value = ''
@@ -119,8 +150,8 @@ async function write(template) {
     await apiRequest('/api/access/smart-search-prompt', { method: 'PUT', body: request })
     pending = null
     uncertain.value = false
-    notice.value = template === null ? '已恢复默认提示词，后续检索立即使用默认模板。' : '提示词已保存，后续检索立即生效。'
-    await load()
+    notice.value = request.template === null ? '已恢复默认提示词，后续检索立即使用默认模板。' : '提示词已保存，后续检索立即生效。'
+    await reloadSmartSearchPrompt()
   } catch (err) {
     uncertain.value = !err.status || err.status >= 500
     if (uncertain.value) error.value = '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。'
@@ -139,7 +170,7 @@ async function save() {
 }
 
 async function resetDefault() {
-  if (busy.value || !customized.value) return
+  if (busy.value || uncertain.value || !customized.value) return
   try {
     await ElMessageBox.confirm('恢复默认提示词后，自定义内容将被清除，后续检索立即使用默认模板。', '恢复默认', {
       confirmButtonText: '恢复默认', cancelButtonText: '取消', type: 'warning',
@@ -151,7 +182,13 @@ async function resetDefault() {
 async function writeTemplate(purpose, template) {
   if (templateBusy[purpose]) return
   if (!templatePending[purpose]) {
-    templatePending[purpose] = { requestId: crypto.randomUUID(), confirmed: true, purpose, template }
+    if (templateUncertain[purpose]) return
+    const requestId = uuid()
+    if (!requestId) {
+      templateErrors[purpose] = '当前浏览器无法生成安全请求标识，请更换现代浏览器或通过 HTTPS 访问后再保存。'
+      return
+    }
+    templatePending[purpose] = { requestId, confirmed: true, purpose, template }
   }
   const request = templatePending[purpose]
   templateBusy[purpose] = true
@@ -160,11 +197,13 @@ async function writeTemplate(purpose, template) {
   try {
     await apiRequest('/api/access/text-templates', { method: 'PUT', body: request })
     delete templatePending[purpose]
-    templateNotices[purpose] = template === null ? '已恢复默认模板，后续操作立即使用默认内容。' : '模板已保存，后续操作立即生效。'
+    templateUncertain[purpose] = false
+    templateNotices[purpose] = request.template === null ? '已恢复默认模板，后续操作立即使用默认内容。' : '模板已保存，后续操作立即生效。'
     if (purpose === 'share_agent' || purpose === 'share_platform') void loadShareTemplates(true)
-    await reloadTemplates()
+    await reloadTemplates(purpose)
   } catch (err) {
     const isUncertain = !err.status || err.status >= 500
+    templateUncertain[purpose] = isUncertain
     if (isUncertain) {
       templateErrors[purpose] = '保存结果尚未确认。可重试同一请求，或刷新后核对当前模板。'
     } else {
@@ -184,7 +223,7 @@ async function saveTemplate(purpose) {
 
 async function resetTemplate(purpose) {
   const item = templatesView.value?.items?.[purpose]
-  if (!item || templateBusy[purpose] || !isTemplateCustomized(item)) return
+  if (!item || templateBusy[purpose] || templateUncertain[purpose] || !isTemplateCustomized(item)) return
   try {
     await ElMessageBox.confirm('恢复默认模板后，自定义内容将被清除，后续操作立即使用默认内容。', '恢复默认', {
       confirmButtonText: '恢复默认', cancelButtonText: '取消', type: 'warning',
@@ -221,7 +260,7 @@ onMounted(load)
             <div class="editor-head-right">
               <span class="status-chip" :class="{ custom: customized }">{{ customized ? `已自定义 · ${formatDateTime(view.updatedAt)}` : '使用默认' }}</span>
               <div class="editor-actions">
-                <el-button :disabled="!customized || busy" data-testid="prompt-reset" @click="resetDefault">恢复默认</el-button>
+                <el-button :disabled="!customized || busy || uncertain" data-testid="prompt-reset" @click="resetDefault">恢复默认</el-button>
                 <el-button type="primary" :disabled="!canSave" data-testid="prompt-save" @click="save">{{ busy ? '正在保存…' : '保存模板' }}</el-button>
               </div>
             </div>
@@ -230,6 +269,7 @@ onMounted(load)
             v-model="draft"
             type="textarea"
             :rows="16"
+            :disabled="busy || uncertain"
             :maxlength="view.limit"
             show-word-limit
             resize="vertical"
@@ -254,20 +294,21 @@ onMounted(load)
                   {{ isTemplateCustomized(item) ? `已自定义 · ${formatDateTime(item.updatedAt)}` : '使用默认' }}
                 </span>
                 <div class="editor-actions">
-                  <el-button :disabled="!isTemplateCustomized(item) || templateBusy[item.purpose]" :data-testid="`template-reset-${item.purpose}`" @click="resetTemplate(item.purpose)">恢复默认</el-button>
+                  <el-button :disabled="!isTemplateCustomized(item) || templateBusy[item.purpose] || Boolean(templateUncertain[item.purpose])" :data-testid="`template-reset-${item.purpose}`" @click="resetTemplate(item.purpose)">恢复默认</el-button>
                   <el-button type="primary" :disabled="!canSaveTemplate(item)" :data-testid="`template-save-${item.purpose}`" @click="saveTemplate(item.purpose)">{{ templateBusy[item.purpose] ? '正在保存…' : '保存模板' }}</el-button>
                 </div>
               </div>
             </div>
             <div v-if="templateErrors[item.purpose]" class="state error" role="alert">
               <span>{{ templateErrors[item.purpose] }}</span>
-              <button v-if="templatePending[item.purpose]" type="button" @click="writeTemplate(item.purpose, templatePending[item.purpose].template)">重试同一请求</button>
+              <button v-if="templatePending[item.purpose]" type="button" :disabled="Boolean(templateBusy[item.purpose])" @click="writeTemplate(item.purpose, templatePending[item.purpose].template)">重试同一请求</button>
             </div>
             <div v-if="templateNotices[item.purpose]" class="state ok" role="status">{{ templateNotices[item.purpose] }}</div>
             <el-input
               v-model="templateDrafts[item.purpose]"
               type="textarea"
               :rows="12"
+              :disabled="Boolean(templateBusy[item.purpose] || templateUncertain[item.purpose])"
               :maxlength="item.limit"
               show-word-limit
               resize="vertical"
@@ -305,20 +346,21 @@ onMounted(load)
                   {{ isTemplateCustomized(item) ? `已自定义 · ${formatDateTime(item.updatedAt)}` : '使用默认' }}
                 </span>
                 <div class="editor-actions">
-                  <el-button :disabled="!isTemplateCustomized(item) || templateBusy[item.purpose]" :data-testid="`template-reset-${item.purpose}`" @click="resetTemplate(item.purpose)">恢复默认</el-button>
+                  <el-button :disabled="!isTemplateCustomized(item) || templateBusy[item.purpose] || Boolean(templateUncertain[item.purpose])" :data-testid="`template-reset-${item.purpose}`" @click="resetTemplate(item.purpose)">恢复默认</el-button>
                   <el-button type="primary" :disabled="!canSaveTemplate(item)" :data-testid="`template-save-${item.purpose}`" @click="saveTemplate(item.purpose)">{{ templateBusy[item.purpose] ? '正在保存…' : '保存模板' }}</el-button>
                 </div>
               </div>
             </div>
             <div v-if="templateErrors[item.purpose]" class="state error" role="alert">
               <span>{{ templateErrors[item.purpose] }}</span>
-              <button v-if="templatePending[item.purpose]" type="button" @click="writeTemplate(item.purpose, templatePending[item.purpose].template)">重试同一请求</button>
+              <button v-if="templatePending[item.purpose]" type="button" :disabled="Boolean(templateBusy[item.purpose])" @click="writeTemplate(item.purpose, templatePending[item.purpose].template)">重试同一请求</button>
             </div>
             <div v-if="templateNotices[item.purpose]" class="state ok" role="status">{{ templateNotices[item.purpose] }}</div>
             <el-input
               v-model="templateDrafts[item.purpose]"
               type="textarea"
               :rows="4"
+              :disabled="Boolean(templateBusy[item.purpose] || templateUncertain[item.purpose])"
               :maxlength="item.limit"
               show-word-limit
               resize="vertical"
