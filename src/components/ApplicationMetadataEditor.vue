@@ -3,7 +3,12 @@ import { computed, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 
-const props = defineProps({ appId: { type: String, default: '' } })
+const props = defineProps({
+  appId: { type: String, default: '' },
+  publicationId: { type: String, default: '' },
+  publicationToken: { type: String, default: '' },
+  management: { type: Boolean, default: false },
+})
 const emit = defineEmits(['close', 'saved'])
 const loading = ref(false)
 const saving = ref(false)
@@ -11,9 +16,21 @@ const error = ref('')
 const context = ref(null)
 const manifest = ref(null)
 const documents = ref({})
+const expectedRevision = ref(0)
 const activeTab = ref('overview')
 const pending = ref(null)
 const pendingRequests = new Map()
+const isPublicationMode = computed(() => Boolean(props.publicationId))
+const targetKey = computed(() => isPublicationMode.value ? `pub:${props.publicationId}` : props.appId ? `app:${props.appId}` : '')
+const editorEndpoint = computed(() => {
+  if (isPublicationMode.value) {
+    return props.management
+      ? `/api/management/publications/${encodeURIComponent(props.publicationId)}/editor`
+      : `/api/publications/${encodeURIComponent(props.publicationId)}/editor`
+  }
+  return `/api/management/apps/${encodeURIComponent(props.appId)}/editor`
+})
+const requestToken = computed(() => isPublicationMode.value && !props.management ? props.publicationToken : '')
 const locked = computed(() => saving.value || Boolean(pending.value))
 let sequence = 0
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -44,19 +61,20 @@ async function load() {
   pending.value = null
   activeTab.value = 'overview'
   try {
-    const result = await apiRequest(`/api/management/apps/${encodeURIComponent(props.appId)}/editor`)
+    const result = await apiRequest(editorEndpoint.value, requestToken.value ? { token: requestToken.value } : {})
     if (current !== sequence) return
     context.value = result
     if (!result.editable) return
+    expectedRevision.value = result.expectedAppRevision ?? result.app.revision
     manifest.value = clone(result.app.manifest)
     manifest.value.projectVersion = result.suggestedVersion
     documents.value = clone(result.app.documents)
-    const saved = pendingRequests.get(props.appId)
+    const saved = pendingRequests.get(targetKey.value)
     if (saved) { pending.value = saved; manifest.value = clone(saved.body.manifest); documents.value = clone(saved.body.documents) }
   } catch (e) { if (current === sequence) error.value = e.message }
   finally { if (current === sequence) loading.value = false }
 }
-watch(() => props.appId, id => { sequence++; if (id) load() }, { immediate: true })
+watch(targetKey, key => { sequence++; if (key) load() }, { immediate: true })
 async function close() {
   if (saving.value) return
   if (pending.value) {
@@ -71,36 +89,60 @@ async function save() {
   if (!pending.value) {
     pending.value = {
       key: crypto.randomUUID(),
-      appId: props.appId,
-      body: clone({ expectedAppRevision: context.value.app.revision, manifest: manifest.value, documents: documents.value }),
+      cacheKey: targetKey.value,
+      endpoint: editorEndpoint.value,
+      token: requestToken.value,
+      publicationMode: isPublicationMode.value,
+      management: props.management,
+      body: clone({ expectedAppRevision: expectedRevision.value, manifest: manifest.value, documents: documents.value }),
     }
   }
   const operation = pending.value
-  pendingRequests.set(operation.appId, operation)
+  pendingRequests.set(operation.cacheKey, operation)
   saving.value = true
   error.value = ''
   try {
-    const result = await apiRequest(`/api/management/apps/${encodeURIComponent(operation.appId)}/editor`, { method: 'POST', body: operation.body, idempotencyKey: operation.key })
-    if (!result.managementPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
-    pendingRequests.delete(operation.appId)
-    pending.value = null
-    emit('saved', result.managementPublication.id)
+    const result = await apiRequest(operation.endpoint, {
+      method: 'POST',
+      body: operation.body,
+      idempotencyKey: operation.key,
+      ...(operation.token ? { token: operation.token } : {}),
+    })
+    if (operation.publicationMode) {
+      const nextPublication = operation.management ? result.managementPublication : result.publication
+      if (!nextPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
+      pendingRequests.delete(operation.cacheKey)
+      pending.value = null
+      emit('saved', {
+        publicationId: nextPublication.id,
+        publication: nextPublication,
+        ...(result.ticket ? { ticket: result.ticket } : {}),
+      })
+    } else {
+      if (!result.managementPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
+      pendingRequests.delete(operation.cacheKey)
+      pending.value = null
+      emit('saved', result.managementPublication.id)
+    }
   } catch (e) {
     error.value = e.message || '保存未完成。'
     // Deterministic validation failures have no partial GitLab write; uncertain failures retain the exact request.
-    if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER'].includes(e.code))) { pendingRequests.delete(operation.appId); pending.value = null }
+    if ([400, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT'].includes(e.code))) {
+      pendingRequests.delete(operation.cacheKey)
+      pending.value = null
+    }
   } finally { saving.value = false }
 }
 </script>
 
 <template>
-  <el-dialog :model-value="Boolean(appId)" title="修改应用详情" width="min(860px, 94vw)" class="metadata-editor" data-testid="metadata-editor" :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" :before-close="close">
+  <el-dialog :model-value="Boolean(targetKey)" :title="isPublicationMode ? '编辑应用信息' : '修改应用详情'" width="min(860px, 94vw)" class="metadata-editor" data-testid="metadata-editor" :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" :before-close="close">
     <div v-loading="loading" class="metadata-content">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="editor-alert" />
       <el-alert v-if="context && !context.editable" :title="context.reason || '当前来源暂不支持后台修改。'" type="info" :closable="false" />
       <template v-if="manifest">
         <p class="editor-context">{{ context.app.manifest.name }} · 当前 v{{ context.app.version }} · {{ context.app.manifest.appKey }}</p>
-        <p class="editor-note">保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。</p>
+        <p class="editor-note">{{ isPublicationMode ? '保存会将资料写回托管仓库并生成最新预览。核对无误后点击「确认收录」或「确认更新」，广场才会展示最新内容。' : '保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。' }}</p>
         <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
         <el-alert v-if="pending && !saving" title="保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
@@ -149,7 +191,7 @@ async function save() {
     <template #footer>
       <el-button :disabled="saving" @click="close">取消</el-button>
       <el-button v-if="error && !pending" :disabled="saving" @click="load">重新读取</el-button>
-      <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading || (!changed && !pending)" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : '保存到 GitLab 并预览' }}</el-button>
+      <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading || (!changed && !pending)" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : isPublicationMode ? '保存并刷新预览' : '保存到 GitLab 并预览' }}</el-button>
     </template>
   </el-dialog>
 </template>

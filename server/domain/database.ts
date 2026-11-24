@@ -239,6 +239,12 @@ const MIGRATIONS = [
     updated_at timestamptz NOT NULL DEFAULT now(),
     updated_by uuid
   )`,
+  `CREATE TABLE IF NOT EXISTS plaza_text_templates (
+    purpose text PRIMARY KEY,
+    template text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    updated_by uuid
+  )`,
   `CREATE TABLE IF NOT EXISTS plaza_smart_search_requests (
     id uuid PRIMARY KEY,
     description text NOT NULL,

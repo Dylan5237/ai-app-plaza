@@ -6,7 +6,38 @@ const props = defineProps({
   app: { type: Object, required: true },
 })
 
-const emit = defineEmits(['read-documents', 'read-source'])
+const emit = defineEmits(['read-documents', 'read-source', 'manage-access'])
+
+const visibilityMeta = computed(() => {
+  const v = props.app?.visibility
+  if (!v) return null
+  if (v.scope === 'self') {
+    return {
+      tone: 'warning',
+      label: '仅自己可见',
+      detail: '仅你本人可在广场查看此应用；他人打开分享链接将无法访问。',
+    }
+  }
+  if (v.scope === 'members') {
+    return {
+      tone: 'info',
+      label: '指定成员可见',
+      detail: `当前仅已指定的 ${v.memberCount} 位成员可查看此应用。`,
+    }
+  }
+  if (v.scope === 'groups') {
+    return {
+      tone: 'info',
+      label: '指定小组可见',
+      detail: `当前仅已指定的 ${v.groupCount} 个小组成员可查看此应用。`,
+    }
+  }
+  return {
+    tone: 'public',
+    label: '全体成员公开',
+    detail: '广场所有访问者（含未登录同事）均可查看此应用。',
+  }
+})
 
 const manifest = computed(() => props.app?.manifest || {})
 const capabilities = computed(() => manifest.value.capabilities || {})
@@ -99,6 +130,14 @@ function formatVersion(value) {
       </div>
     </header>
 
+    <section v-if="visibilityMeta" class="overview-visibility" :class="`is-${visibilityMeta.tone}`" data-testid="detail-visibility" role="status">
+      <div class="overview-visibility-copy">
+        <strong class="overview-visibility-badge">可见范围：{{ visibilityMeta.label }}</strong>
+        <span class="overview-visibility-note">{{ visibilityMeta.detail }}</span>
+      </div>
+      <button v-if="app.visibility?.canShare" type="button" class="overview-visibility-action" data-testid="detail-manage-access" @click="emit('manage-access')">调整分享范围</button>
+    </section>
+
     <section v-if="disabledEntries.length" class="overview-unavailable" data-testid="disabled-agent-reason" role="note">
       <strong>安装入口暂不可用</strong>
       <p v-for="(item, index) in disabledEntries" :key="index">{{ item.reason }}</p>
@@ -148,6 +187,15 @@ function formatVersion(value) {
 </template>
 
 <style scoped>
+.overview-visibility { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; margin-top: 14px; padding: 10px 14px; border: 1px solid var(--plaza-line); border-radius: 9px; background: var(--plaza-surface); font-size: 12.5px; line-height: 19px; }
+.overview-visibility.is-warning { border-color: #e4c28e; background: #fff9ef; color: #7a490c; }
+.overview-visibility.is-info { border-color: #c8d2f4; background: var(--plaza-brand-soft); color: #2b3f9e; }
+.overview-visibility.is-public { border-color: #c3dfce; background: #f2f9f5; color: #216147; }
+.overview-visibility-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.overview-visibility-badge { font-weight: 650; }
+.overview-visibility-note { font-size: 12px; opacity: .92; }
+.overview-visibility-action { flex: none; padding: 4px 10px; border: 1px solid currentColor; border-radius: 7px; background: var(--plaza-surface); color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.overview-visibility-action:hover { opacity: .86; }
 .overview-unavailable { margin-top: 16px; padding: 10px 12px; border-radius: 6px; background: var(--plaza-surface); color: var(--plaza-warning); font-size: 12px; line-height:18px; }
 .overview-unavailable p { margin: 4px 0 0; }
 .detail-overview { min-width: 0; color: var(--plaza-ink); }

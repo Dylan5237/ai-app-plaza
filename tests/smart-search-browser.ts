@@ -353,7 +353,7 @@ try {
     await memberPage.goto(`${promptHarness.origin}/fixture/portal`);
     await memberPage.getByRole('button', { name: '以测试普通成员进入', exact: true }).click();
     await memberPage.getByRole('button', { name: '退出广场', exact: true }).waitFor();
-    assert.equal(await memberPage.getByRole('link', { name: '智能查找', exact: true }).count(), 0, 'members do not see the admin entry');
+    assert.equal(await memberPage.getByRole('link', { name: '提示词与模板', exact: true }).count(), 0, 'members do not see the admin entry');
     await memberPage.goto(`${promptHarness.origin}/?space=smart-search`);
     await memberPage.getByRole('heading', { name: '当前身份没有此页面权限', exact: true }).waitFor();
     report.checks.push('prompt-config');

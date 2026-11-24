@@ -47,4 +47,31 @@ export function registerManagementEditor(
       release?.();
     }
   });
+
+  app.get('/api/management/publications/:id/editor', async request => {
+    const id = appId.parse((request.params as { id?: unknown }).id);
+    if (!managed) {
+      const pub = await service.managementPublication(id, request.plazaUserId);
+      return { ...(pub.preview ? { app: pub.preview } : {}), editable: false, reason: '当前服务未启用统一托管发布，请修改来源仓库后重新生成预览。' };
+    }
+    return managed.publicationEditorContext(id, { management: true, viewerId: request.plazaUserId });
+  });
+
+  app.post('/api/management/publications/:id/editor', { bodyLimit: 1024 * 1024 }, async request => {
+    const id = appId.parse((request.params as { id?: unknown }).id);
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务未启用统一托管发布，请修改来源仓库后重新生成预览。');
+    (request as any).managedRunning = true;
+    try {
+      const idempotencyKey = z.string().uuid().parse(request.headers['idempotency-key']);
+      const input = editRequest.parse(request.body);
+      const result = await managed.editPublicationMetadata(id, input, idempotencyKey, { management: true, viewerId: request.plazaUserId });
+      if (result.mode !== 'management') {
+        throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '托管修订预览与原始提交记录不一致。');
+      }
+      return { managementPublication: result.managementPublication, operationId: result.operationId };
+    } finally {
+      const release = (request as any).releaseManagedSlot as (() => void) | undefined;
+      release?.();
+    }
+  });
 }

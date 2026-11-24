@@ -1,4 +1,4 @@
-import { appAccessPredicate, requireAppAction, initializePrivateApplication, accessRecord } from './app-access.js';
+import { appAccessPredicate, requireAppAction, initializePrivateApplication, accessRecord, type AppAccess, type ShareScope } from './app-access.js';
 import { rankSmartSearchCandidates, sanitizeModelQuestion, type SmartSearchAiConfig } from './smart-search-ai.js';
 import { effectiveSmartSearchPrompt } from './smart-search-prompt.js';
 import {
@@ -39,6 +39,13 @@ import { disabledLegacyEntry, normalizeLegacyGuide, normalizeLegacyRequirements,
 import { appendBusinessFact } from './analytics-journal.js';
 import type { Config } from '../config.js';
 
+export interface AppVisibility {
+  scope: ShareScope;
+  canShare: boolean;
+  memberCount: number;
+  groupCount: number;
+}
+
 export interface AppView {
   id: string;
   snapshotId?: string;
@@ -57,6 +64,8 @@ export interface AppView {
   installationBasis?: string;
   /** Present only in the private publication preview response. */
   isAuthorPreview?: boolean;
+  /** Present only when the authenticated viewer is the app owner or an explicit maintainer. */
+  visibility?: AppVisibility;
   lifecycle?: AppLifecycle;
 }
 
@@ -454,6 +463,36 @@ export function createService(config: ServiceConfig): PlazaService {
       if (status) disabled[entry.id] = status;
     }
     return disabled;
+  }
+
+  function visibilityFromAccess(access: AppAccess, viewerId: string): AppVisibility | undefined {
+    const isOwner = access.owner_id === viewerId;
+    const isMaintainer = access.maintainer_ids.includes(viewerId);
+    if (!isOwner && !isMaintainer) return undefined;
+    return {
+      scope: access.scope,
+      canShare: isOwner,
+      memberCount: access.member_ids.length,
+      groupCount: access.group_ids.length,
+    };
+  }
+
+  async function attachVisibilities(items: AppView[], viewerId?: string): Promise<AppView[]> {
+    if (!viewerId || !items.length) return items;
+    const rows = (await config.db.query<AppAccess>(
+      'SELECT * FROM plaza_app_access WHERE app_id = ANY($1::uuid[]) AND (owner_id = $2::uuid OR $2::uuid = ANY(maintainer_ids))',
+      [items.map(item => item.id), viewerId],
+    )).rows;
+    if (!rows.length) return items;
+    const byApp = new Map<string, AppVisibility>();
+    for (const row of rows) {
+      const visibility = visibilityFromAccess(row, viewerId);
+      if (visibility) byApp.set(row.app_id, visibility);
+    }
+    return items.map(item => {
+      const visibility = byApp.get(item.id);
+      return visibility ? { ...item, visibility } : item;
+    });
   }
 
   function publicCard(record: AppRecord): AppView {
@@ -1132,7 +1171,10 @@ export function createService(config: ServiceConfig): PlazaService {
         itemParams,
       );
       return {
-        items: itemResult.rows.map((row) => options.sort === 'updated' ? publicCard(row) : appView(row, false)),
+        items: await attachVisibilities(
+          itemResult.rows.map((row) => options.sort === 'updated' ? publicCard(row) : appView(row, false)),
+          options.viewerId,
+        ),
         total,
         page,
         pageSize,
@@ -1170,7 +1212,7 @@ export function createService(config: ServiceConfig): PlazaService {
           AND ${appAccessPredicate('$3::uuid')} ORDER BY array_position($1::uuid[],a.id)`,
         [ids, config.audience, viewerId ?? null],
       );
-      return { items: result.rows.map(publicCard), allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
+      return { items: await attachVisibilities(result.rows.map(publicCard), viewerId), allShown: Number(selection.rows[0]?.total_count ?? 0) <= 6 };
     },
 
     async smartSearch(query: string, viewerId?: string) {
@@ -1250,7 +1292,7 @@ export function createService(config: ServiceConfig): PlazaService {
             reasons[pick.id] = pick.why.trim();
             if (items.length >= 3) break;
           }
-          return { mode: 'ai' as const, items, matches, reasons, question: sanitizeModelQuestion(ranking.question) };
+          return { mode: 'ai' as const, items: await attachVisibilities(items, viewerId), matches, reasons, question: sanitizeModelQuestion(ranking.question) };
         } catch {
           // Model unavailable or its reply was unusable: answer with the keyword path below.
         }
@@ -1264,13 +1306,20 @@ export function createService(config: ServiceConfig): PlazaService {
         })
         .sort((left, right) => right.relevance - left.relevance)
         .map(entry => entry.item);
-      return { mode: 'basic' as const, items: ranked.slice(0, 8), matches, reasons: {}, question: null };
+      return { mode: 'basic' as const, items: await attachVisibilities(ranked.slice(0, 8), viewerId), matches, reasons: {}, question: null };
     },
 
     async app(id, options = {}) {
       const record = await findAppById(id, config.db, options.includeHidden === true, options.viewerId, options.management);
       if (!record) throw new DomainError(404, "APP_NOT_FOUND", "应用不存在。");
       const view = appView(record, true);
+      if (options.viewerId) {
+        const access = await accessRecord(config.db, id);
+        if (access) {
+          const visibility = visibilityFromAccess(access, options.viewerId);
+          if (visibility) view.visibility = visibility;
+        }
+      }
       const assets = (await config.db.query<DistributionAssetRecord>('SELECT * FROM distribution_assets WHERE snapshot_id = $1 ORDER BY entry_id', [record.snap_id])).rows;
       const disabled = entryAvailability(record, view.manifest);
       if ((record.lifecycle_status ?? 'published') === 'published' && view.manifest.entries.some(entry => entry.kind === 'agent')) {

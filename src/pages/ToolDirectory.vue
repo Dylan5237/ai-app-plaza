@@ -6,6 +6,8 @@ import PlazaIcon from '../components/PlazaIcon.vue'
 import '../styles/design-tokens.css'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
+import ApplicationAccessDialog from '../components/ApplicationAccessDialog.vue'
+import ApplicationMetadataEditor from '../components/ApplicationMetadataEditor.vue'
 import { identity } from '../lib/identity.js'
 import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
@@ -16,8 +18,9 @@ import FavoriteButton from '../components/FavoriteButton.vue'
 import { apiRequest } from '../lib/api.js'
 import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
-import { catalogPageCapacity, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
+import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { discoverTabFromParam } from '../lib/discovery.ts'
+import { currentShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
@@ -329,6 +332,8 @@ const detailVisible = ref(false)
 let detailRequestSequence = 0
 const detailLoading = ref(false)
 const detailError = ref('')
+const detailErrorStatus = ref(0)
+const accessDialogAppId = ref('')
 const selectedApp = ref(null)
 const detailDocumentsVisible = ref(false)
 const detailSourceVisible = ref(false)
@@ -364,6 +369,8 @@ const publication = ref(null)
 const publicationLoading = ref(false)
 const publicationBusy = ref(false)
 const publicationError = ref('')
+const publicationEditorOpen = ref(false)
+const publicationEditorToken = ref('')
 
 const catalogGroups = computed(() => [{ value: selectedUsage.value, label: '应用目录', apps: apps.value }])
 const selectedAppEntries = computed(() => {
@@ -586,6 +593,7 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
   clearExposureObserver()
   detailLoading.value = true
   detailError.value = ''
+  detailErrorStatus.value = 0
   if (!revalidating) {
     instructionRequestSequence += 1
     detailDocumentsVisible.value = false
@@ -621,6 +629,7 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
         closeAgentInstructions(); copyFallbackVisible.value = false; copyFallbackText.value = ''
         if (shareAppId.value === id) { shareVisible.value = false; closeShareDialog() }
       }
+      detailErrorStatus.value = Number(error?.status) || 0
       detailError.value = errorText(error)
       if (!props.management) recordFailure('detail', error)
     }
@@ -685,7 +694,7 @@ async function handlePopState() {
 }
 
 function handleDetailKey(event) {
-  if (event.key !== 'Escape' || props.management || !detailVisible.value || instructionDialogVisible.value || detailDocumentsVisible.value || detailSourceVisible.value || shareVisible.value || copyFallbackVisible.value) return
+  if (event.key !== 'Escape' || props.management || !detailVisible.value || instructionDialogVisible.value || detailDocumentsVisible.value || detailSourceVisible.value || shareVisible.value || copyFallbackVisible.value || accessDialogAppId.value) return
   returnFromDetail()
 }
 
@@ -693,6 +702,9 @@ function closeDetail() {
   detailRequestSequence += 1
   instructionRequestSequence += 1
   detailVisible.value = false
+  detailError.value = ''
+  detailErrorStatus.value = 0
+  accessDialogAppId.value = ''
   detailDocumentsVisible.value = false
   detailSourceVisible.value = false
   instructionDialogVisible.value = false
@@ -712,6 +724,7 @@ function closeAgentInstructions() {
 }
 
 function refreshVisibleAccess() {
+  void loadShareTemplates(true)
   if (!identity.user || !identity.enabled) return
   if (shareVisible.value && shareAppId.value) void openShareDialog(shareAppId.value, { revalidating: true })
   if (publicationId.value) { if (!publicationBusy.value) void loadPublication(publicationId.value, { revalidating: true }); return }
@@ -763,15 +776,31 @@ async function copyAgentInstructions() {
   }
 }
 
-// Share blurb (name + summary + deep link) ready to paste into chat.
+// Share blurb rendered from configurable agent/platform templates.
 async function copyShareLink(app, placement) {
+  await Promise.race([loadShareTemplates(true), new Promise(resolve => setTimeout(resolve, 300))])
+  if (disposed) return
+  const templates = currentShareTemplates()
+  const usage = catalogUsage(app)
+  const template = usage === 'platform' ? templates.platform : templates.agent
   const name = app.manifest?.name || '未命名应用'
   const summary = app.manifest?.summary || ''
   const link = `${location.origin}${publicPath(`/?app=${encodeURIComponent(app.id)}`)}`
-  const copied = await copyText([name, summary, link].filter(Boolean).join('\n'), '分享内容已复制，发给同事即可打开')
+  const text = renderShareTemplate(template, { name, summary, url: link })
+  const scopeNote = app.visibility?.scope === 'self'
+    ? '（当前仅自己可见，他人打开需先设为公开或授权）'
+    : app.visibility && app.visibility.scope !== 'all'
+      ? '（当前为受限分享范围，仅获授权同事可打开）'
+      : ''
+  const copied = await copyText(text, `分享内容已复制${scopeNote}`)
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
+}
+
+function onAccessSaved() {
+  refreshOnReturn = true
+  if (selectedApp.value?.id) void openApp(selectedApp.value.id, { fromHistory: true, revalidating: true })
 }
 
 async function copyText(text, successMessage) {  if (!text || disposed) return false
@@ -887,6 +916,7 @@ function preparePublicationRoute() {
 
   publicationId.value = id
   publicationBusy.value = false
+  publicationEditorOpen.value = false
   detailVisible.value = false
   shareVisible.value = false
   const ticket = props.management ? '' : fragment.get('key')
@@ -917,6 +947,7 @@ async function handleHashChange() {
   publication.value = null
   publicationError.value = ''
   publicationLoading.value = false
+  publicationEditorOpen.value = false
   if (props.management) return
   await nextTick()
   catalogReady = true
@@ -1004,6 +1035,37 @@ async function mutatePublication(action) {
   }
 }
 
+function openPublicationEditor() {
+  if (!publicationId.value || publication.value?.status !== 'preview_ready' || publicationExpired.value) return
+  publicationEditorToken.value = props.management ? '' : publicationToken(publicationId.value)
+  if (!props.management && !publicationEditorToken.value) {
+    publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
+    return
+  }
+  publicationEditorOpen.value = true
+}
+
+function onPublicationEditorSaved(result) {
+  publicationEditorOpen.value = false
+  if (!result?.publicationId) return
+  const nextId = result.publicationId
+  if (!props.management && result.ticket) {
+    try {
+      window.sessionStorage.setItem(`ai-app-plaza:publication:${nextId}`, result.ticket)
+    } catch {
+      publicationError.value = '浏览器未能保存新预览的临时授权，请允许当前标签页使用会话存储。'
+    }
+  }
+  publicationRequestSequence += 1
+  publicationId.value = nextId
+  if (result.publication) publication.value = result.publication
+  publicationError.value = ''
+  const visibleFragment = new URLSearchParams()
+  visibleFragment.set('publish', nextId)
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${visibleFragment.toString()}`)
+  if (props.management) void loadPublication(nextId, { revalidating: false })
+}
+
 function applicationUrl(appId) {
   const url = new URL(props.management ? publicPath('/') : window.location.pathname, window.location.origin)
   url.searchParams.set('app', appId)
@@ -1033,6 +1095,7 @@ async function returnToCatalog() {
 }
 
 onMounted(async () => {
+  void loadShareTemplates()
   window.addEventListener('hashchange', handleHashChange)
   window.addEventListener('popstate', handlePopState)
   window.addEventListener('keydown', handleDetailKey, true)
@@ -1140,6 +1203,16 @@ onUnmounted(() => {
             {{ publicationBusy ? '正在确认…' : isUpdate ? '确认更新' : '确认收录' }}
           </button>
           <button
+            v-if="publication?.status === 'preview_ready' && !publicationExpired && !publication.requiresIdentity"
+            type="button"
+            class="secondary-button"
+            data-testid="edit-publication"
+            :disabled="publicationBusy || publicationLoading"
+            @click="openPublicationEditor"
+          >
+            编辑应用信息
+          </button>
+          <button
             v-if="publication?.status === 'failed' && publication.nextAction !== 'submit_again'"
             class="primary-button"
             data-testid="retry-publication"
@@ -1190,6 +1263,13 @@ onUnmounted(() => {
         <AppPublicContent :app="publication.preview" @access-lost="loadPublication()" />
       </section>
     </main>
+    <ApplicationMetadataEditor
+      :publication-id="publicationEditorOpen ? publicationId : ''"
+      :publication-token="publicationEditorToken"
+      :management="props.management"
+      @close="publicationEditorOpen = false"
+      @saved="onPublicationEditorSaved"
+    />
   </div>
 
   <div v-else class="directory-shell" :class="{ 'plaza-public': !props.management }">
@@ -1281,7 +1361,12 @@ onUnmounted(() => {
         </div>
       </template>
       <div v-if="detailLoading" class="dialog-state" role="status">{{ selectedApp ? '正在更新应用详情…' : '正在读取应用详情…' }}</div>
-      <div v-if="detailError" class="dialog-state is-error" role="alert">
+      <div v-if="detailError && !props.management && detailErrorStatus === 404 && !selectedApp" class="dialog-state is-restricted" data-testid="detail-restricted" role="alert">
+        <strong>当前无法访问此应用</strong>
+        <p v-if="identity.enabled && !identity.user">请先登录天宫账号核验访问权限。如果这是作者分享给你的链接，请联系作者将应用设为公开或向你授权；若应用已更新或下架，请返回刷新列表。</p>
+        <p v-else>如果这是作者分享给你的链接，请联系作者将应用设为公开或向你授权；若应用已更新或下架，请返回刷新列表。</p>
+      </div>
+      <div v-else-if="detailError" class="dialog-state is-error" role="alert">
         <strong>{{ selectedApp ? '应用详情更新未完成' : '应用详情暂时无法加载' }}</strong>
         <p>{{ detailError }} 请返回刷新，查看当前可用的应用。</p>
         <button v-if="selectedApp" class="secondary-button" @click="openApp(selectedApp.id, { fromHistory: true, revalidating: true })">重试</button>
@@ -1292,6 +1377,7 @@ onUnmounted(() => {
             :app="selectedApp"
             @read-documents="detailDocumentsVisible = true"
             @read-source="detailSourceVisible = true"
+            @manage-access="accessDialogAppId = selectedApp.id"
           />
         </div>
         <aside class="detail-actions" aria-label="应用使用入口" data-testid="detail-actions">
@@ -1456,6 +1542,12 @@ onUnmounted(() => {
         @focus="selectManualCopyText"
       />
     </el-dialog>
+    <ApplicationAccessDialog
+      v-if="!props.management"
+      :app-id="accessDialogAppId"
+      @close="accessDialogAppId = ''"
+      @saved="onAccessSaved"
+    />
   </div>
 </template>
 
@@ -1510,6 +1602,8 @@ onUnmounted(() => {
 .dialog-state p { max-width: 560px; margin: 0; line-height: 1.6; }
 .dialog-state.is-error { color: var(--plaza-danger); }
 .dialog-state.is-error strong { color: var(--plaza-danger); }
+.dialog-state.is-restricted { margin: 8px 0; padding: 32px 24px; border: 1px solid var(--plaza-line); border-radius: 14px; background: var(--plaza-surface); }
+.dialog-state.is-restricted strong { color: var(--plaza-ink); }
 .share-flow { color: var(--plaza-text); }
 .share-intro { margin: 0 0 15px; font-size: 14px; line-height:22px; }
 .share-steps { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; counter-reset: share-step; }

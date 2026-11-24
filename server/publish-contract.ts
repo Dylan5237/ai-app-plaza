@@ -3,10 +3,10 @@ import type { Config } from './config.js';
 import type { AppView } from './domain/service.js';
 import { managedPublishContract, type ManagedTarget } from './managed-publish-contract.js';
 
-export async function publishContract(config: Pick<Config, 'publicOrigin' | 'publicBasePath' | 'gitlabUrl' | 'audience' | 'managedPublishing' | 'tiangong'>, current?: AppView, managedTarget?: ManagedTarget, direct = false, existingTags: string[] = []) {
+export async function publishContract(config: Pick<Config, 'publicOrigin' | 'publicBasePath' | 'gitlabUrl' | 'audience' | 'managedPublishing' | 'tiangong'>, current?: AppView, managedTarget?: ManagedTarget, direct = false, existingTags: string[] = [], customManagedTemplate?: string) {
   const schema = JSON.parse(await readFile(new URL('./contracts/app-manifest.schema.json', import.meta.url), 'utf8'));
   const tagPolicy = { maxTagsPerApp: 3, existingTags };
-  if (config.managedPublishing && !direct && (!current || managedTarget)) return { ...await managedPublishContract(config, schema, current, managedTarget), tagPolicy };
+  if (config.managedPublishing && !direct && (!current || managedTarget)) return { ...await managedPublishContract(config, schema, current, managedTarget, customManagedTemplate), tagPolicy };
   const publicUrl = `${config.publicOrigin}${config.publicBasePath || ''}`;
   const submitUrl = `${publicUrl}/api/publications`;
   const updateTarget = current ? {
