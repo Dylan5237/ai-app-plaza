@@ -614,6 +614,10 @@ export function createService(config: ServiceConfig): PlazaService {
     return { ...app, distributions: distributionViews(source), change: prior ?? { kind: "unchanged", changedFields: [] } };
   }
 
+  const isCallerAccessError = (error: unknown): error is DomainError =>
+    error instanceof DomainError &&
+    (error.code === 'APP_NOT_FOUND' || error.code === 'PUBLICATION_NOT_FOUND' || error.code === 'LOGIN_REQUIRED');
+
   async function markFailed(
     id: string,
     error: unknown,
@@ -982,6 +986,14 @@ export function createService(config: ServiceConfig): PlazaService {
       await finishAttempt(record.id, attempt, 'success');
       return recordView(registered);
     } catch (error) {
+      if (isCallerAccessError(error)) {
+        await config.db.query(
+          "UPDATE publications SET confirmed_at = NULL, updated_at = now() WHERE id = $1 AND status = 'preview_ready'",
+          [record.id],
+        );
+        await finishAttempt(record.id, attempt, 'failure', error.code);
+        throw error;
+      }
       const failed = await markFailed(record.id, error);
       await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
       return recordView(failed);
@@ -1027,6 +1039,10 @@ export function createService(config: ServiceConfig): PlazaService {
       await finishAttempt(record.id, attempt, 'success');
       return recordView(prepared);
     } catch (error) {
+      if (isCallerAccessError(error)) {
+        await finishAttempt(record.id, attempt, 'failure', error.code);
+        throw error;
+      }
       const failed = await markFailed(record.id, error);
       await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
       return recordView(failed);

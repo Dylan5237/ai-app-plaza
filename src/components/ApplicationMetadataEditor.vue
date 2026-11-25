@@ -149,11 +149,12 @@ async function save() {
   saving.value = true
   error.value = ''
   try {
+    const token = operation.token || (operation.publicationMode && !operation.management ? requestToken.value : '')
     const result = await apiRequest(operation.endpoint, {
       method: 'POST',
       body: operation.body,
       idempotencyKey: operation.key,
-      ...(operation.token ? { token: operation.token } : {}),
+      ...(token ? { token } : {}),
     })
     if (operation.publicationMode) {
       const nextPublication = operation.management ? result.managementPublication : result.publication

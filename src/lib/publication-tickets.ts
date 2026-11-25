@@ -1,13 +1,20 @@
 import { publicBasePath } from './public-path.js'
 
-const mountKey = () => (typeof document !== 'undefined' ? publicBasePath() || '/' : '/')
+export const getMountKey = (): string => (typeof document !== 'undefined' ? publicBasePath() || '/' : '/')
+const mountKey = getMountKey
 const ticketPrefix = () => `ai-app-plaza:publication:${mountKey()}:`
 const ownerStorageKey = () => `ai-app-plaza:publication-owner:${mountKey()}`
+const LEGACY_TICKET_PREFIX = 'ai-app-plaza:publication:'
+const isLegacyTicketKey = (key: string) => /^ai-app-plaza:publication:[^/:]+$/.test(key)
 const memoryTickets = new Map<string, string>()
 const storageFallbackIds = new Set<string>()
 const currentRouteTicketIds = new Set<string>()
 let currentTicketOwnerId: string | null = null
 let ticketsSuspended = false
+
+export function getCurrentTicketOwnerId(): string | null {
+  return currentTicketOwnerId
+}
 
 function removeStorageTickets(preserveIds?: Set<string>): void {
   if (typeof window === 'undefined') return
@@ -25,6 +32,10 @@ function removeStorageTickets(preserveIds?: Set<string>): void {
       if (key.startsWith(prefix)) {
         const id = key.slice(prefix.length)
         if (!preserveIds?.has(id)) keysToRemove.push(key)
+        continue
+      }
+      if (!preserveIds && isLegacyTicketKey(key)) {
+        keysToRemove.push(key)
       }
     }
     for (const key of keysToRemove) window.sessionStorage.removeItem(key)
@@ -77,6 +88,30 @@ export function readPublicationTicket(id: string): string {
     }
   }
   return getPublicationTicket(id)
+}
+
+export function readLegacyPublicationTicket(id: string): string {
+  if (!id || ticketsSuspended || id.includes('/') || id.includes(':') || typeof window === 'undefined') return ''
+  try {
+    return window.sessionStorage.getItem(`${LEGACY_TICKET_PREFIX}${id}`) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function removeLegacyPublicationTicket(id: string): void {
+  if (!id || id.includes('/') || id.includes(':') || typeof window === 'undefined') return
+  try {
+    window.sessionStorage.removeItem(`${LEGACY_TICKET_PREFIX}${id}`)
+  } catch {
+    // Ignore storage access errors in restricted frames or memory-only environments.
+  }
+}
+
+export function promoteLegacyPublicationTicket(id: string, ticket: string): void {
+  if (!id || !ticket) return
+  savePublicationTicket(id, ticket, false)
+  removeLegacyPublicationTicket(id)
 }
 
 export function hasTicketStorageFallback(id: string): boolean {

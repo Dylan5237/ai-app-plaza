@@ -21,7 +21,7 @@ import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
 import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { discoverTabFromParam } from '../lib/discovery.ts'
 import { currentShareTemplates, hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
-import { hasTicketStorageFallback, readPublicationTicket, savePublicationTicket as storePublicationTicket } from '../lib/publication-tickets.ts'
+import { hasTicketStorageFallback, promoteLegacyPublicationTicket, readLegacyPublicationTicket, readPublicationTicket, savePublicationTicket as storePublicationTicket, removeLegacyPublicationTicket } from '../lib/publication-tickets.ts'
 import { hasPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
@@ -173,7 +173,17 @@ async function revalidateRandomBatch(batch) {
   return { items, allShown: randomAllShown.value, error }
 }
 
+let lastShareTemplateSyncAt = 0
+function refreshShareTemplatesThrottled() {
+  if (Date.now() - lastShareTemplateSyncAt <= 15_000) return
+  lastShareTemplateSyncAt = Date.now()
+  void loadShareTemplates(true).then((result) => {
+    if (result.ok) lastShareTemplateSyncAt = Date.now()
+  })
+}
+
 async function loadRandom({ revalidating = false } = {}) {
+  refreshShareTemplatesThrottled()
   if (revalidating && !randomItems.value.length) return
   const sequence = ++randomRequestSequence
   randomLoading.value = true
@@ -387,7 +397,10 @@ const selectedAppEntries = computed(() => {
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
 const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= Date.now())
-const hasPendingPublicationEdit = computed(() => Boolean(publicationId.value && hasPendingMetadataEdit(`pub:${publicationId.value}`)))
+const hasPendingPublicationEdit = computed(() => {
+  void identity.epoch
+  return Boolean(publicationId.value && hasPendingMetadataEdit(`pub:${publicationId.value}`))
+})
 const isUpdate = computed(() => publication.value?.change?.kind === 'update')
 const isUnchanged = computed(() => publication.value?.change?.kind === 'unchanged')
 const publicationStatusText = computed(() => ({
@@ -414,6 +427,7 @@ function fireCatalogView(trigger, queryLength = [...query.value.trim()].length) 
 }
 
 async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' } = {}) {
+  refreshShareTemplatesThrottled()
   const requestSequence = ++catalogRequestSequence
   catalogLoading.value = true
   catalogError.value = ''
@@ -583,6 +597,7 @@ function appPath(id) { return `${props.management && props.managementEnabled ? '
 
 async function openApp(id, { fromHistory = false, entryContext = null, revalidating = false } = {}) {
   if (!id) return
+  refreshShareTemplatesThrottled()
   if (!revalidating) primaryRequestSequence += 1
   if (!props.management) {
     if (!detailVisible.value) {
@@ -809,7 +824,17 @@ async function copyShareLink(app, placement) {
       ? '（当前为受限分享范围，仅获授权同事可打开）'
       : ''
   const copied = await copyText(text, `分享内容已复制${scopeNote}`)
-  if (fromCache) void loadShareTemplates(true)
+  if (fromCache) {
+    lastShareTemplateSyncAt = Date.now()
+    void loadShareTemplates(true).then((refreshed) => {
+      if (disposed || !refreshed.ok) return
+      lastShareTemplateSyncAt = Date.now()
+      const latestTemplate = usage === 'platform' ? refreshed.templates.platform : refreshed.templates.agent
+      if (latestTemplate !== template) {
+        ElMessage.info('分享模板刚刚已更新，请再点一次「分享」获取最新文案。')
+      }
+    })
+  }
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
@@ -1008,7 +1033,9 @@ async function loadPublication(id = publicationId.value, { revalidating = public
   publicationLoading.value = true
   publicationError.value = storageFallback ? STORAGE_FALLBACK_NOTICE : ''
   if (!revalidating) publication.value = null
-  const token = props.management ? '' : publicationToken(id)
+  const directToken = props.management ? '' : publicationToken(id)
+  const legacyToken = !props.management && !directToken ? readLegacyPublicationTicket(id) : ''
+  const token = directToken || legacyToken
   if (!props.management && !token) {
     publication.value = null
     publicationEditorOpen.value = false
@@ -1020,6 +1047,9 @@ async function loadPublication(id = publicationId.value, { revalidating = public
   }
   try {
     const result = await apiRequest(publicationPath(id), token ? { token } : {})
+    if (legacyToken && !result.requiresIdentity) {
+      promoteLegacyPublicationTicket(id, legacyToken)
+    }
     if (current()) {
       publication.value = result
       if (result.status === 'registered') publicationError.value = ''
@@ -1033,6 +1063,9 @@ async function loadPublication(id = publicationId.value, { revalidating = public
       await recordPublicationPreviewViewed(id, result)
     }
   } catch (error) {
+    if (legacyToken && [403, 404, 410].includes(error.status)) {
+      removeLegacyPublicationTicket(id)
+    }
     if (current()) {
       if ([401, 403, 404, 410].includes(error.status)) {
         publication.value = null

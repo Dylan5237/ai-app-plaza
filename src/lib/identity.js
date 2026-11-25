@@ -15,19 +15,21 @@ function suppress(value) {
   suppressed = value
   try { value ? sessionStorage.setItem(suppressionKey, '1') : sessionStorage.removeItem(suppressionKey) } catch { /* Optional storage. */ }
 }
-function clearUser(clearTickets = false) {
+function clearUser(clearTickets = false, preserveCurrentRouteTickets = false) {
   if (clearTickets) {
     syncPublicationTicketIdentity(null)
-    clearMemoryPublicationTickets(false)
+    clearMemoryPublicationTickets(preserveCurrentRouteTickets)
     clearPendingMetadataEdits()
     lastUserId = null
+    if (preserveCurrentRouteTickets) setPublicationTicketsSuspended(true)
   }
   generation++; advanceIdentityRequests(); configureWebIdentity(false); identity.user = null; identity.busy = false; identity.retryable = false; identity.epoch++
 }
 function failed(error) {
   const switchedOrLoggedOut = error?.code === 'ACCOUNT_SWITCH_REQUIRED' || Boolean(lastUserId && !readPortalToken())
+  const preserveRouteTickets = error?.code === 'ACCOUNT_SWITCH_REQUIRED' && !lastUserId
   if (!switchedOrLoggedOut && lastUserId) setPublicationTicketsSuspended(true)
-  clearUser(switchedOrLoggedOut)
+  clearUser(switchedOrLoggedOut, preserveRouteTickets)
   identity.error = error.message
   identity.switchRequired = error.code === 'ACCOUNT_SWITCH_REQUIRED'
 }

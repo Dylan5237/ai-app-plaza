@@ -1067,3 +1067,88 @@ test('retry after old preview expired is rejected inside preparePreview without 
   assert.equal(firstAfter.status, 'preview_ready');
   assert.equal(firstAfter.superseded_by_publication_id, null);
 });
+
+test('revoking maintainer mid-confirm rejects revoked caller without poisoning preview_ready candidate for owner', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let onGitLabConfirmRead: (() => Promise<void>) | null = null;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      const chunks: Buffer[] = [];
+      upstreamRes.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      upstreamRes.on('end', () => {
+        const finalize = async () => {
+          if (onGitLabConfirmRead && req.method === 'GET' && /\/api\/v4\/projects\/\d+$/.test((req.url ?? '').split('?')[0])) {
+            const hook = onGitLabConfirmRead;
+            onGitLabConfirmRead = null;
+            await hook();
+          }
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          res.end(Buffer.concat(chunks));
+        };
+        void finalize();
+      });
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const access = createAppAccessService(h.db, h.config.audience);
+  const publishKey = randomBytes(32).toString('base64url');
+  const v1 = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: 1, digest: v1.digest! }, owner.user.id);
+  const appId = reg1.appId!;
+  await access.update(owner.user.id, appId, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: v1.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  assert.equal(v11.status, 'preview_ready');
+
+  onGitLabConfirmRead = async () => {
+    await access.update(owner.user.id, appId, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+  };
+
+  const revokedConfirm = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/confirm`,
+    headers: h.headers({ cookie: maintainer.cookie, 'x-plaza-portal-token': 'fixture-admin' }),
+    payload: { revision: 1, digest: v11.digest },
+  });
+  assert.equal(revokedConfirm.statusCode, 404);
+
+  const v11Row = (await h.db.query<{ status: string; confirmed_at: Date | null }>('SELECT status, confirmed_at FROM publications WHERE id = $1', [v11.id])).rows[0];
+  assert.equal(v11Row.status, 'preview_ready');
+  assert.equal(v11Row.confirmed_at, null);
+
+  const ownerConfirm = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/confirm`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member' }),
+    payload: { revision: 1, digest: v11.digest },
+  });
+  assert.equal(ownerConfirm.statusCode, 200, ownerConfirm.body);
+  assert.equal(ownerConfirm.json().status, 'registered');
+});
