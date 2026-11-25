@@ -667,6 +667,7 @@ export function createService(config: ServiceConfig): PlazaService {
     return config.db.transaction(async tx => {
     const before = (await tx.query<PublicationRecord>('SELECT * FROM publications WHERE id=$1 FOR UPDATE', [id])).rows[0];
     if (!before) throw notFound();
+    if (before.next_action === 'submit_again') return before;
     const statusFilter = onlyFromStatuses?.length ? 'status = ANY($5::text[])' : "status NOT IN ('registered', 'cancelled')";
     const params: unknown[] = [id, failure.code, failure.message, nextAction];
     if (onlyFromStatuses?.length) params.push(onlyFromStatuses);
@@ -690,7 +691,7 @@ export function createService(config: ServiceConfig): PlazaService {
   async function preparePreview(
     record: PublicationRecord,
     source: LoadedSource,
-    options?: { verifyCaller?: boolean; retryCallerId?: string },
+    options?: { verifyCaller?: boolean; retryCallerId?: string; onlyFromStatuses?: PublicationStatus[] },
   ): Promise<PublicationRecord> {
     validateTagReuse(source.manifest.tags, await catalogTags(config.db, config.audience, ALL_APP_LIFECYCLE_STATUSES));
     for (const pack of source.distributions) await storeDistribution(distributionDir, pack, config.staticDir);
@@ -709,6 +710,12 @@ export function createService(config: ServiceConfig): PlazaService {
       if (locked.status === "registered") return locked;
       if (locked.status === "cancelled" || locked.superseded_by_publication_id) {
         throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
+      }
+      if (options?.onlyFromStatuses?.length && !options.onlyFromStatuses.includes(locked.status)) {
+        return locked;
+      }
+      if (locked.confirmed_at !== null || locked.next_action === 'submit_again') {
+        return locked;
       }
       const replaced = locked.replaces_publication_id
         ? lockedRows.find(row => row.id === locked.replaces_publication_id)
@@ -838,8 +845,8 @@ export function createService(config: ServiceConfig): PlazaService {
   async function register(
     record: PublicationRecord,
     source: LoadedSource,
-    viewerId?: string,
-    options?: { fromConfirm?: boolean },
+    viewerId: string | undefined,
+    options: { allowedStatuses: PublicationStatus[]; expectedConfirmedAt: Date | string | null },
   ): Promise<PublicationRecord> {
     if (!record.digest || record.digest !== source.digest) {
       throw new DomainError(409, "SOURCE_MISMATCH", "固定来源内容已变化，请重新提交并确认新的预览。");
@@ -857,8 +864,15 @@ export function createService(config: ServiceConfig): PlazaService {
       if (lockedPublication.revision !== record.revision || lockedPublication.digest !== record.digest) {
         throw new DomainError(409, "SOURCE_MISMATCH", "候选修订或摘要已变化，请重新提交预览。");
       }
-      if (!options?.fromConfirm && !lockedPublication.confirmed_at) {
+      if (!lockedPublication.confirmed_at) {
         throw new DomainError(409, "CONFIRMATION_REQUIRED", "请先确认与当前摘要一致的预览。");
+      }
+      if (
+        !options.allowedStatuses.includes(lockedPublication.status) ||
+        lockedPublication.next_action === 'submit_again' ||
+        (options.expectedConfirmedAt !== null && new Date(lockedPublication.confirmed_at).getTime() !== new Date(options.expectedConfirmedAt).getTime())
+      ) {
+        throw new DomainError(409, "SOURCE_MISMATCH", "该发布候选的确认状态已失效或发生变化，请刷新后查看最新状态。");
       }
 
       // Serialize catalog writers across service instances before checking the
@@ -1089,7 +1103,10 @@ export function createService(config: ServiceConfig): PlazaService {
         if (source.digest !== confirmation.digest) {
           throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
         }
-        const registered = await register(confirmed, source, viewerId, { fromConfirm: true });
+        const registered = await register(confirmed, source, viewerId, {
+          allowedStatuses: ['preview_ready'],
+          expectedConfirmedAt: confirmed.confirmed_at,
+        });
         await finishAttempt(record.id, attempt, 'success');
         return recordView(registered);
       } catch (error) {
@@ -1142,11 +1159,18 @@ export function createService(config: ServiceConfig): PlazaService {
         if (!record.digest || source.digest !== record.digest) {
           throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
         }
-        const registered = await register(record, source, viewerId);
+        const registered = await register(record, source, viewerId, {
+          allowedStatuses: ['failed'],
+          expectedConfirmedAt: record.confirmed_at,
+        });
         await finishAttempt(record.id, attempt, 'success');
         return recordView(registered);
       }
-      const prepared = await preparePreview(record, source, { verifyCaller: true, retryCallerId: viewerId });
+      const prepared = await preparePreview(record, source, {
+        verifyCaller: true,
+        retryCallerId: viewerId,
+        onlyFromStatuses: [startingStatus],
+      });
       await finishAttempt(record.id, attempt, 'success');
       return recordView(prepared);
     } catch (error) {
@@ -1294,9 +1318,11 @@ export function createService(config: ServiceConfig): PlazaService {
 
         try {
           const source = await load();
-          const prepared = await preparePreview(created.record, source);
-          await finishAttempt(created.record.id, submitAttempt, 'success');
-          return submitView(prepared);
+          const prepared = await preparePreview(created.record, source, { onlyFromStatuses: ['checking'] });
+          const effective = await resolveSupersededPublication(prepared);
+          const succeeded = effective.status === 'registered' || effective.status === 'preview_ready';
+          await finishAttempt(created.record.id, submitAttempt, succeeded ? 'success' : 'failure', succeeded ? undefined : (effective.error_code || undefined));
+          return supersededSubmitView(prepared, effective);
         } catch (error) {
           const failed = await markFailed(created.record.id, error, true, ['checking']);
           const effective = await resolveSupersededPublication(failed);
@@ -1333,8 +1359,9 @@ export function createService(config: ServiceConfig): PlazaService {
       }
       try {
         const source = await assertAuthorAndSource(record);
-        const prepared = await preparePreview(record, source);
-        return submitView(prepared);
+        const prepared = await preparePreview(record, source, { onlyFromStatuses: ['checking'] });
+        const effective = await resolveSupersededPublication(prepared);
+        return supersededSubmitView(prepared, effective);
       } catch (error) {
         const current = await markFailed(record.id, error, true, ['checking']);
         const effective = await resolveSupersededPublication(current);

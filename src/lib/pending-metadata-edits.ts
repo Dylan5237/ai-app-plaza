@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { getCurrentTicketOwnerId, getMountKey } from './publication-tickets.ts'
+import { getCurrentTicketOwnerId, getMountKey, onTicketOwnerChanged } from './publication-tickets.ts'
 
 export interface PendingMetadataEdit {
   key: string
@@ -75,14 +75,21 @@ export function setPendingMetadataEdit(cacheKey: string, operation: PendingMetad
   }
 }
 
-export function deletePendingMetadataEdit(cacheKey: string): void {
-  if (!cacheKey) return
-  pendingEdits.delete(cacheKey)
-  if (typeof window === 'undefined') return
+export function deletePendingMetadataEdit(cacheKey: string, expectedOperationKey?: string): boolean {
+  if (!cacheKey) return false
+  const cached = pendingEdits.get(cacheKey)
+  if (expectedOperationKey && cached && cached.key !== expectedOperationKey) return false
+  if (!expectedOperationKey || cached?.key === expectedOperationKey) pendingEdits.delete(cacheKey)
+  if (typeof window === 'undefined') return true
   try {
+    if (expectedOperationKey) {
+      const stored = readStoredEntry(cacheKey)
+      if (stored && stored.operation.key !== expectedOperationKey) return false
+    }
     window.sessionStorage.removeItem(`${pendingPrefix()}${cacheKey}`)
+    return true
   } catch {
-    // Ignore storage removal errors.
+    return false
   }
 }
 
@@ -107,3 +114,7 @@ export function clearPendingMetadataEdits(): void {
     // Ignore storage cleanup error.
   }
 }
+
+onTicketOwnerChanged(() => {
+  clearPendingMetadataEdits()
+})

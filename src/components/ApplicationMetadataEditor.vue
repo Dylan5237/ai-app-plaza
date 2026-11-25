@@ -25,6 +25,13 @@ const expectedRevision = ref(0)
 const activeTab = ref('overview')
 const pending = ref(null)
 const persistenceFallback = ref(false)
+const localReadOnlyReason = ref('')
+const TERMINAL_READONLY_CONFLICTS = new Set([
+  'PUBLICATION_STATE_CONFLICT',
+  'PUBLICATION_CANCELLED',
+  'APP_DELETED',
+  'APP_RESTORE_REQUIRED',
+])
 let unmounted = false
 onUnmounted(() => {
   unmounted = true
@@ -44,7 +51,7 @@ const editorEndpoint = computed(() => {
 })
 const requestToken = computed(() => isPublicationMode.value && !props.management ? props.publicationToken : '')
 const locked = computed(() => saving.value || Boolean(pending.value))
-const readOnlyContext = computed(() => Boolean(!pending.value && (props.readOnly || (context.value && !context.value.editable))))
+const readOnlyContext = computed(() => Boolean(!pending.value && (props.readOnly || localReadOnlyReason.value || (context.value && !context.value.editable))))
 const formDisabled = computed(() => locked.value || readOnlyContext.value)
 watch(locked, value => emit('pending-change', value), { immediate: true })
 let sequence = 0
@@ -73,6 +80,7 @@ async function load() {
   const saved = getPendingMetadataEdit(key)
   loading.value = true
   error.value = ''
+  localReadOnlyReason.value = ''
   context.value = null
   manifest.value = null
   pending.value = null
@@ -123,6 +131,7 @@ watch(targetKey, key => {
   }
   loading.value = false
   error.value = ''
+  localReadOnlyReason.value = ''
   context.value = null
   manifest.value = null
   documents.value = {}
@@ -192,18 +201,18 @@ async function save() {
         publication: nextPublication,
         ...(result.ticket ? { ticket: result.ticket } : {}),
       })
-      deletePendingMetadataEdit(operation.cacheKey)
+      deletePendingMetadataEdit(operation.cacheKey, operation.key)
     } else {
       if (!result.managementPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
       if (!isCurrent()) return
       pending.value = null
       persistenceFallback.value = false
       emit('saved', result.managementPublication.id)
-      deletePendingMetadataEdit(operation.cacheKey)
+      deletePendingMetadataEdit(operation.cacheKey, operation.key)
     }
   } catch (e) {
     if ([401, 403, 404].includes(e?.status)) {
-      if ([403, 404].includes(e.status)) deletePendingMetadataEdit(operation.cacheKey)
+      if ([403, 404].includes(e.status)) deletePendingMetadataEdit(operation.cacheKey, operation.key)
       if (isCurrent()) {
         context.value = null
         manifest.value = null
@@ -228,10 +237,15 @@ async function save() {
       'IDEMPOTENCY_CONFLICT',
       'MANAGED_SOURCE_CONFLICT',
     ].includes(e.code))) {
-      deletePendingMetadataEdit(operation.cacheKey)
+      deletePendingMetadataEdit(operation.cacheKey, operation.key)
       if (isCurrent()) {
-        pending.value = null
-        persistenceFallback.value = false
+        if (!pending.value || pending.value.key === operation.key) {
+          pending.value = null
+          persistenceFallback.value = false
+        }
+        if (e.status === 409 && TERMINAL_READONLY_CONFLICTS.has(e.code)) {
+          localReadOnlyReason.value = e.message || '当前原预览已失效，无法再保存；以下草稿已切换为只读，方便复制后前往最新预览继续编辑。'
+        }
       }
     }
     if (isCurrent()) error.value = e.message || '保存未完成。'
@@ -252,7 +266,7 @@ async function save() {
         <p class="editor-note">{{ isPublicationMode ? '保存会将资料写回托管仓库并生成最新预览。核对无误后点击「确认收录」或「确认更新」，广场才会展示最新内容。' : '保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。' }}</p>
         <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
         <el-alert v-if="persistenceFallback && (saving || pending)" title="浏览器会话存储空间不足，本次编辑恢复记录仅保存在当前标签页内存中；请勿刷新或关闭标签页，直至保存完成并确认新预览。" type="warning" :closable="false" class="editor-alert" data-testid="editor-storage-fallback" />
-        <el-alert v-if="readOnlyContext && manifest" :title="props.readOnlyReason || '当前旧预览已不可保存修改，以下草稿仅供核对或复制；请关闭后打开最新预览继续编辑。'" type="info" :closable="false" class="editor-alert" data-testid="editor-readonly-notice" />
+        <el-alert v-if="readOnlyContext && manifest" :title="localReadOnlyReason || props.readOnlyReason || '当前旧预览已不可保存修改，以下草稿仅供核对或复制；请关闭后打开最新预览继续编辑。'" type="info" :closable="false" class="editor-alert" data-testid="editor-readonly-notice" />
         <el-alert v-if="pending && !saving" :title="context && !context.editable ? '该原预览已不可继续新建修改；如果此前保存可能已生成新预览，请点击「重试本次保存」找回结果与新授权。' : '保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。'" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基本资料" name="overview">
@@ -299,7 +313,7 @@ async function save() {
     </div>
     <template #footer>
       <el-button :disabled="saving" @click="close">取消</el-button>
-      <el-button v-if="error && !pending" :disabled="saving" @click="load">重新读取</el-button>
+      <el-button v-if="error && !pending && !(readOnlyContext && manifest)" :disabled="saving" @click="load">重新读取</el-button>
       <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading || readOnlyContext || (!changed && !pending)" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : isPublicationMode ? '保存并刷新预览' : '保存到 GitLab 并预览' }}</el-button>
     </template>
   </el-dialog>

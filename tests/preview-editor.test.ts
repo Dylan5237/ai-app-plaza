@@ -1978,3 +1978,233 @@ test('loadShareTemplates coalesces concurrent refreshes and preserves earlier su
   assert.equal(hasLoadedShareTemplates(), true);
   assert.equal(currentShareTemplates().agent, '较早成功 {{url}}');
 });
+
+test('switching accounts clears persisted pending metadata edits across reload and deletePendingMetadataEdit checks operation key', async t => {
+  const { syncPublicationTicketIdentity } = await import(new URL('../src/lib/publication-tickets.ts', import.meta.url).href);
+  const {
+    setPendingMetadataEdit,
+    getPendingMetadataEdit,
+    deletePendingMetadataEdit,
+  } = await import(new URL('../src/lib/pending-metadata-edits.ts', import.meta.url).href);
+
+  const prevWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const prevDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const backing = new Map<string, string>();
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      baseURI: 'http://127.0.0.1/plaza/',
+      querySelector: () => ({ getAttribute: () => '/plaza' }),
+    },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { origin: 'http://127.0.0.1' },
+      sessionStorage: {
+        get length() { return backing.size; },
+        key(index: number) { return [...backing.keys()][index] ?? null; },
+        getItem(key: string) { return backing.get(key) ?? null; },
+        setItem(key: string, value: string) { backing.set(key, value); },
+        removeItem(key: string) { backing.delete(key); },
+      },
+    },
+  });
+  t.after(() => {
+    syncPublicationTicketIdentity(null);
+    if (prevWindow) Object.defineProperty(globalThis, 'window', prevWindow);
+    else delete (globalThis as any).window;
+    if (prevDocument) Object.defineProperty(globalThis, 'document', prevDocument);
+    else delete (globalThis as any).document;
+  });
+
+  backing.set('ai-app-plaza:publication-owner:/plaza', 'user-a');
+  backing.set('ai-app-plaza:pending-edit:/plaza:pub:old-draft', JSON.stringify({
+    ownerId: 'user-a',
+    operation: { key: 'old-op', cacheKey: 'pub:old-draft', endpoint: '/e', token: '', publicationMode: true, management: false, body: { expectedAppRevision: 0, manifest: { name: 'secret' }, documents: {} } },
+  }));
+  backing.set('ai-app-plaza:pending-edit:/other-plaza:pub:keep', JSON.stringify({
+    ownerId: 'user-a',
+    operation: { key: 'other-op', cacheKey: 'pub:keep', endpoint: '/e', token: '', publicationMode: true, management: false, body: { expectedAppRevision: 0, manifest: { name: 'other' }, documents: {} } },
+  }));
+  setPendingMetadataEdit('pub:mem', {
+    key: 'mem-op', cacheKey: 'pub:mem', endpoint: '/e', token: '', publicationMode: true, management: false,
+    body: { expectedAppRevision: 0, manifest: { name: 'mem-secret' }, documents: {} },
+  });
+
+  // Simulate post-reload login as a different account without calling logout first.
+  syncPublicationTicketIdentity('user-b');
+  assert.equal(backing.has('ai-app-plaza:pending-edit:/plaza:pub:old-draft'), false);
+  assert.equal(getPendingMetadataEdit('pub:mem'), undefined);
+  assert.equal(backing.has('ai-app-plaza:pending-edit:/other-plaza:pub:keep'), true);
+
+  setPendingMetadataEdit('pub:race', {
+    key: 'newer-op-key', cacheKey: 'pub:race', endpoint: '/e', token: '', publicationMode: true, management: false,
+    body: { expectedAppRevision: 0, manifest: { name: 'newer' }, documents: {} },
+  });
+  assert.equal(deletePendingMetadataEdit('pub:race', 'stale-op-key'), false);
+  assert.equal(getPendingMetadataEdit('pub:race')?.key, 'newer-op-key');
+  assert.equal(deletePendingMetadataEdit('pub:race', 'newer-op-key'), true);
+  assert.equal(getPendingMetadataEdit('pub:race'), undefined);
+});
+
+test('concurrent confirmPublication cannot register a candidate invalidated in DB by another instance', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const directGitlab = await startGitLabFixture(1);
+  let holdNextConfirmProjectRead = false;
+  let markConfirmReadStarted!: () => void;
+  let releaseConfirmReadOk!: () => void;
+  const confirmReadStarted = new Promise<void>(resolve => { markConfirmReadStarted = resolve; });
+  const confirmReadGate = new Promise<void>(resolve => { releaseConfirmReadOk = resolve; });
+  const targetUrl = new URL(directGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (holdNextConfirmProjectRead && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
+      holdNextConfirmProjectRead = false;
+      markConfirmReadStarted();
+      void confirmReadGate.then(() => {
+        const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+          method: req.method,
+          headers: req.headers,
+        }, upstreamRes => {
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+        });
+        req.pipe(upstreamReq);
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await directGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const submitInput = { projectId: '1', appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const preview = await integrated.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  assert.equal(preview.status, 'preview_ready');
+
+  holdNextConfirmProjectRead = true;
+  const confirmPromise = integrated.service.confirm(preview.id, preview.ticket, { revision: 1, digest: preview.digest! }, owner.user.id);
+  await confirmReadStarted;
+
+  // Simulate another service instance failing this candidate with SOURCE_MISMATCH and clearing confirmed_at.
+  await h.db.query(
+    "UPDATE publications SET status = 'failed', error_code = 'SOURCE_MISMATCH', error_message = '固定来源内容已变化', next_action = 'submit_again', confirmed_at = NULL WHERE id = $1",
+    [preview.id],
+  );
+
+  releaseConfirmReadOk();
+  const result = await confirmPromise;
+  assert.equal(result.status, 'failed');
+  assert.equal(result.nextAction, 'submit_again');
+  const dbRow = (await h.db.query<{ status: string; next_action: string; confirmed_at: Date | null }>(
+    'SELECT status, next_action, confirmed_at FROM publications WHERE id = $1',
+    [preview.id],
+  )).rows[0];
+  assert.equal(dbRow.status, 'failed');
+  assert.equal(dbRow.next_action, 'submit_again');
+  assert.equal(dbRow.confirmed_at, null);
+  assert.equal((await h.db.query('SELECT count(*)::int AS c FROM catalog_apps')).rows[0].c, 0);
+});
+
+test('resumeCheckingPublication success path does not overwrite failed/retry or confirmed_at', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const directGitlab = await startGitLabFixture(1);
+  let holdNextResumeProjectRead = false;
+  let markResumeReadStarted!: () => void;
+  let releaseResumeReadOk!: () => void;
+  const resumeReadStarted = new Promise<void>(resolve => { markResumeReadStarted = resolve; });
+  const resumeReadGate = new Promise<void>(resolve => { releaseResumeReadOk = resolve; });
+  const targetUrl = new URL(directGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (holdNextResumeProjectRead && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
+      holdNextResumeProjectRead = false;
+      markResumeReadStarted();
+      void resumeReadGate.then(() => {
+        const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+          method: req.method,
+          headers: req.headers,
+        }, upstreamRes => {
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+        });
+        req.pipe(upstreamReq);
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await directGitlab.close();
+    await h.close();
+  });
+
+  const submitInput = { projectId: '1', appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const initial = await integrated.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  assert.equal(initial.status, 'preview_ready');
+
+  await h.db.query("UPDATE publications SET status = 'checking', next_action = 'checking', digest = NULL, preview_jsonb = NULL WHERE id = $1", [initial.id]);
+  holdNextResumeProjectRead = true;
+  const resumePromise = integrated.service.resumeCheckingPublication(initial.id, submitInput);
+  await resumeReadStarted;
+
+  // Simulate another worker completing preview and then a confirm attempt failing with retryable GITLAB_UNAVAILABLE.
+  const confirmStamp = new Date();
+  await h.db.query(
+    "UPDATE publications SET status = 'failed', next_action = 'retry', error_code = 'GITLAB_UNAVAILABLE', error_message = 'GitLab 暂不可用', confirmed_at = $2 WHERE id = $1",
+    [initial.id, confirmStamp],
+  );
+
+  releaseResumeReadOk();
+  const result = await resumePromise;
+  assert.equal(result.id, initial.id);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.nextAction, 'retry');
+  const dbRow = (await h.db.query<{ status: string; next_action: string; confirmed_at: Date | null }>(
+    'SELECT status, next_action, confirmed_at FROM publications WHERE id = $1',
+    [initial.id],
+  )).rows[0];
+  assert.equal(dbRow.status, 'failed');
+  assert.equal(dbRow.next_action, 'retry');
+  assert.ok(dbRow.confirmed_at instanceof Date);
+});

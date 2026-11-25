@@ -867,6 +867,42 @@ try {
   await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
   report.checks.push('req3-req4-round13-browser-regressions');
 
+  // --- Regression R14-1: Immediate read-only switch when save returns PUBLICATION_STATE_CONFLICT ---
+  const conflictRoDraft = await h.managed.submit(makeBundle({
+    appKey: 'conflict-immediate-readonly',
+    name: '保存冲突立即切只读测试',
+    summary: '验证保存遇到 PUBLICATION_STATE_CONFLICT 时立即切只读并保留草稿。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await adminPage.goto(conflictRoDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('直接冲突切换只读草稿');
+
+  let stateConflictDirectOnce = true;
+  const directRoConflictHandler = (route: any) => {
+    if (stateConflictDirectOnce && route.request().method() === 'POST') {
+      stateConflictDirectOnce = false;
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'PUBLICATION_STATE_CONFLICT', message: '该原预览已被其他修订替代。' } }),
+      });
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${conflictRoDraft.id}/editor*`, directRoConflictHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByTestId('editor-readonly-notice').waitFor();
+  await adminPage.unroute(`**/api/publications/${conflictRoDraft.id}/editor*`, directRoConflictHandler);
+  assert.equal(await adminPage.getByTestId('editor-name').inputValue(), '直接冲突切换只读草稿');
+  assert.equal(await adminPage.getByTestId('editor-name').isDisabled(), true);
+  assert.equal(await adminPage.getByTestId('editor-save').isDisabled(), true);
+  assert.equal(await adminPage.getByTestId('metadata-editor').getByRole('button', { name: '重新读取', exact: true }).count(), 0);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+  report.checks.push('req3-round14-browser-regressions');
+
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);
   report.status = 'PASS';

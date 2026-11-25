@@ -3,14 +3,35 @@ import { publicBasePath } from './public-path.js'
 export const getMountKey = (): string => (typeof document !== 'undefined' ? publicBasePath() || '/' : '/')
 const mountKey = getMountKey
 const ticketPrefix = () => `ai-app-plaza:publication:${mountKey()}:`
+const pendingEditPrefix = () => `ai-app-plaza:pending-edit:${mountKey()}:`
 const ownerStorageKey = () => `ai-app-plaza:publication-owner:${mountKey()}`
 const LEGACY_TICKET_PREFIX = 'ai-app-plaza:publication:'
 const isLegacyTicketKey = (key: string) => /^ai-app-plaza:publication:[^/:]+$/.test(key)
 const memoryTickets = new Map<string, string>()
 const storageFallbackIds = new Set<string>()
 const currentRouteTicketIds = new Set<string>()
+const ownerChangeListeners = new Set<() => void>()
 let currentTicketOwnerId: string | null = null
 let ticketsSuspended = false
+
+export function onTicketOwnerChanged(listener: () => void): void {
+  ownerChangeListeners.add(listener)
+}
+
+function clearStoragePendingEdits(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const prefix = pendingEditPrefix()
+    const keysToRemove: string[] = []
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index)
+      if (key && key.startsWith(prefix)) keysToRemove.push(key)
+    }
+    for (const key of keysToRemove) window.sessionStorage.removeItem(key)
+  } catch {
+    // Ignore storage cleanup errors in restricted frames or memory-only environments.
+  }
+}
 
 export function getCurrentTicketOwnerId(): string | null {
   return currentTicketOwnerId
@@ -152,6 +173,8 @@ export function syncPublicationTicketIdentity(userId: string | null): void {
       const previousOwner = window.sessionStorage.getItem(ownerKey)
       if (previousOwner && previousOwner !== userId) {
         clearMemoryPublicationTickets(true)
+        clearStoragePendingEdits()
+        for (const listener of ownerChangeListeners) listener()
       }
       window.sessionStorage.setItem(ownerKey, userId)
     } catch {
