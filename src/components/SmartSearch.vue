@@ -211,22 +211,48 @@ async function revalidateResults() {
   const checked = await Promise.allSettled(message.candidates.map(candidate => apiRequest(`/api/apps/${encodeURIComponent(candidate.app.id)}`)))
   if (messages.value[activeResultsIndex.value] !== message) return
   let dropped = false
+  let updated = false
   const candidates = []
   for (const [position, result] of checked.entries()) {
     const candidate = message.candidates[position]
-    if (result.status === 'fulfilled') candidates.push({ ...candidate, app: { ...candidate.app, ...result.value, documents: {} } })
-    else if ([403, 404].includes(result.reason?.status)) dropped = true
+    if (result.status === 'fulfilled') {
+      if (JSON.stringify(candidate.app.visibility ?? null) !== JSON.stringify(result.value.visibility ?? null)
+        || candidate.app.revision !== result.value.revision
+        || candidate.app.snapshotId !== result.value.snapshotId) {
+        updated = true
+      }
+      candidates.push({ ...candidate, app: { ...candidate.app, ...result.value, documents: {}, visibility: result.value.visibility } })
+    } else if ([403, 404].includes(result.reason?.status)) dropped = true
     else candidates.push(candidate)
   }
-  if (!dropped) return
+  if (!dropped && !updated) return
   if (!candidates.length) messages.value[index] = { kind: 'empty', taskSummary: message.taskSummary, payload: message.payload, resultSetId: message.resultSetId, followUp: message.followUp, suggested: message.suggested }
   else message.candidates = candidates
   // Keep the original result-set id so refreshed exposures stay linked to the completion event.
   emit('results', candidates.map(candidate => candidate.app), message.resultSetId)
 }
 
+function syncApp(updatedApp) {
+  if (!updatedApp?.id) return
+  for (const [index, message] of messages.value.entries()) {
+    if (message.kind !== 'results' || !Array.isArray(message.candidates)) continue
+    let matched = false
+    const candidates = message.candidates.map(candidate => {
+      if (candidate.app?.id !== updatedApp.id) return candidate
+      matched = true
+      return { ...candidate, app: { ...candidate.app, ...updatedApp, documents: {}, visibility: updatedApp.visibility } }
+    })
+    if (!matched) continue
+    message.candidates = candidates
+    if (index === activeResultsIndex.value) {
+      emit('results', candidates.map(candidate => candidate.app), message.resultSetId)
+    }
+  }
+}
+
 onMounted(() => window.addEventListener('focus', revalidateResults))
 onUnmounted(() => window.removeEventListener('focus', revalidateResults))
+defineExpose({ syncApp })
 </script>
 
 <template>

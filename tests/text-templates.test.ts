@@ -11,6 +11,7 @@ import {
   DEFAULT_SHARE_PLATFORM_TEMPLATE,
   renderShareTemplate,
   renderTemplate,
+  setTextTemplate,
 } from '../server/domain/text-templates.js';
 import { manifest } from './helpers/gitlab-fixture.js';
 import { startIdentityHarness } from './helpers/identity-fixture.js';
@@ -180,7 +181,7 @@ test('text templates endpoint is restricted to super administrators and supports
 });
 
 test('share templates endpoint and renderer support agent/platform split, empty summary, and single-pass substitution', async t => {
-  const { h, integrated, admin, appId, headers } = await setup(t);
+  const { h, integrated, admin, member, appId, headers } = await setup(t);
 
   const pubInitial = await integrated.app.inject({ url: '/plaza/api/share-templates', headers: headers(null) });
   assert.equal(pubInitial.statusCode, 200);
@@ -316,4 +317,15 @@ test('share templates endpoint and renderer support agent/platform split, empty 
   assert.ok(fallbackContract.prompt.includes(appId));
   assert.ok(fallbackContract.prompt.includes('--managed-app-id'));
   assert.ok(fallbackContract.prompt.includes('--expected-revision 1'));
+
+  // Demoting a super-administrator revokes template write access under transaction ordering.
+  await setAdministrator(h.db, admin.user.id, { userId: member.user.id, role: 'super_administrator', revision: 0, requestId: randomUUID() });
+  await setTextTemplate(h.db, member.user.id, { requestId: randomUUID(), purpose: 'share_agent', template: '临时超管模板 {{url}}' });
+  await setAdministrator(h.db, admin.user.id, { userId: member.user.id, role: 'member', revision: 1, requestId: randomUUID() });
+  await assert.rejects(
+    setTextTemplate(h.db, member.user.id, { requestId: randomUUID(), purpose: 'share_agent', template: '降级后禁止写入 {{url}}' }),
+    (err: any) => err?.code === 'ADMINISTRATOR_REQUIRED' && err?.statusCode === 403,
+  );
+  const currentShareTemplates = (await integrated.app.inject({ url: '/plaza/api/share-templates', headers: headers(null) })).json();
+  assert.equal(currentShareTemplates.agent, '临时超管模板 {{url}}');
 });

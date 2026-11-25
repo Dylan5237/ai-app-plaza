@@ -41,6 +41,7 @@ let randomLoaded = false
 let randomRequestSequence = 0
 const scrollPositions = { catalog: 0, random: 0, search: 0 }
 const searchResultItems = ref([])
+const smartSearchRef = ref(null)
 let smartSearchResultSetId = null
 let measurementEnabled = false
 let portalViewed = false
@@ -639,6 +640,7 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
     if (requestSequence !== detailRequestSequence) return
     const snapshotChanged = selectedApp.value?.snapshotId !== result.snapshotId
     selectedApp.value = result
+    syncAppAcrossViews(result)
     if (revalidating && snapshotChanged && instructionDialogVisible.value && instructionEntry.value) {
       const entry = result.manifest.entries.find(item => item.id === instructionEntry.value.id && item.kind === 'agent')
       if (entry) void loadAgentInstructions(entry, { revalidating: true })
@@ -842,6 +844,15 @@ async function copyShareLink(app, placement) {
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
+}
+
+function syncAppAcrossViews(updatedApp) {
+  if (!updatedApp?.id) return
+  const merge = items => items.map(item => (item.id === updatedApp.id ? { ...item, ...updatedApp, documents: {}, visibility: updatedApp.visibility } : item))
+  if (apps.value.some(item => item.id === updatedApp.id)) apps.value = merge(apps.value)
+  if (randomItems.value.some(item => item.id === updatedApp.id)) randomItems.value = merge(randomItems.value)
+  if (searchResultItems.value.some(item => item.id === updatedApp.id)) searchResultItems.value = merge(searchResultItems.value)
+  smartSearchRef.value?.syncApp?.(updatedApp)
 }
 
 function onAccessSaved() {
@@ -1389,7 +1400,7 @@ onUnmounted(() => {
         </div>
         <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
       </header>
-      <SmartSearch v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" @share="app => copyShareLink(app, 'card')" />
+      <SmartSearch ref="smartSearchRef" v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" @share="app => copyShareLink(app, 'card')" />
       <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @share="app => copyShareLink(app, 'card')" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">

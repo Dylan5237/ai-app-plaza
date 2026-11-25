@@ -44,6 +44,7 @@ export interface AppVisibility {
   canShare: boolean;
   memberCount: number;
   groupCount: number;
+  activeGroupCount?: number;
 }
 
 export interface AppView {
@@ -529,7 +530,17 @@ export function createService(config: ServiceConfig): PlazaService {
     return disabled;
   }
 
-  function visibilityFromAccess(access: AppAccess, viewerId: string): AppVisibility | undefined {
+  async function enabledGroupIdSet(queryable: Queryable, groupIds: readonly string[]): Promise<Set<string>> {
+    const ids = [...new Set(groupIds)].filter(Boolean);
+    if (!ids.length) return new Set();
+    const rows = (await queryable.query<{ id: string }>(
+      'SELECT id FROM plaza_groups WHERE id = ANY($1::uuid[]) AND enabled = true',
+      [ids],
+    )).rows;
+    return new Set(rows.map(row => row.id));
+  }
+
+  function visibilityFromAccess(access: AppAccess, viewerId: string, enabledGroupIds?: ReadonlySet<string>): AppVisibility | undefined {
     const isOwner = access.owner_id === viewerId;
     const isMaintainer = access.maintainer_ids.includes(viewerId);
     if (!isOwner && !isMaintainer) return undefined;
@@ -538,6 +549,9 @@ export function createService(config: ServiceConfig): PlazaService {
       canShare: isOwner,
       memberCount: access.member_ids.length,
       groupCount: access.group_ids.length,
+      ...(access.scope === 'groups'
+        ? { activeGroupCount: enabledGroupIds ? access.group_ids.filter(id => enabledGroupIds.has(id)).length : access.group_ids.length }
+        : {}),
     };
   }
 
@@ -548,9 +562,11 @@ export function createService(config: ServiceConfig): PlazaService {
       [items.map(item => item.id), viewerId],
     )).rows;
     if (!rows.length) return items;
+    const groupIds = rows.filter(row => row.scope === 'groups').flatMap(row => row.group_ids);
+    const enabledGroupIds = groupIds.length ? await enabledGroupIdSet(config.db, groupIds) : undefined;
     const byApp = new Map<string, AppVisibility>();
     for (const row of rows) {
-      const visibility = visibilityFromAccess(row, viewerId);
+      const visibility = visibilityFromAccess(row, viewerId, enabledGroupIds);
       if (visibility) byApp.set(row.app_id, visibility);
     }
     return items.map(item => {
@@ -638,6 +654,7 @@ export function createService(config: ServiceConfig): PlazaService {
     id: string,
     error: unknown,
     retryAllowed = true,
+    onlyFromStatuses?: PublicationStatus[],
   ): Promise<PublicationRecord> {
     const failure = safeFailure(error);
     const mustSubmitAgain = failure.code === "SOURCE_MISMATCH" || failure.code === "VALIDATION_FAILED" ||
@@ -650,13 +667,16 @@ export function createService(config: ServiceConfig): PlazaService {
     return config.db.transaction(async tx => {
     const before = (await tx.query<PublicationRecord>('SELECT * FROM publications WHERE id=$1 FOR UPDATE', [id])).rows[0];
     if (!before) throw notFound();
+    const statusFilter = onlyFromStatuses?.length ? 'status = ANY($5::text[])' : "status NOT IN ('registered', 'cancelled')";
+    const params: unknown[] = [id, failure.code, failure.message, nextAction];
+    if (onlyFromStatuses?.length) params.push(onlyFromStatuses);
     await tx.query(
       `UPDATE publications
           SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
               confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED', 'APP_NOT_FOUND', 'PUBLICATION_NOT_FOUND', 'LOGIN_REQUIRED') THEN NULL ELSE confirmed_at END,
               updated_at = now()
-        WHERE id = $1 AND status NOT IN ('registered', 'cancelled')`,
-      [id, failure.code, failure.message, nextAction],
+        WHERE id = $1 AND ${statusFilter}`,
+      params,
     );
     const result = await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id]);
     if (!result.rows[0]) throw notFound();
@@ -1170,9 +1190,15 @@ export function createService(config: ServiceConfig): PlazaService {
         const expiry = new Date(now.getTime() + PUBLICATION_TTL_MS);
         const projectId = validateProjectId(input.projectId);
         const created = await config.db.transaction(async (tx) => {
-          const existingApp = await findAppByKey(tx, projectId, input.appKey);
+          const needExistingCheck = Boolean(origin?.replacesPublicationId) || Boolean(config.analytics && !origin);
+          const hasExistingApp = needExistingCheck
+            ? Boolean((await tx.query<{ id: string }>(
+                'SELECT id FROM catalog_apps WHERE instance_id = $1 AND project_id = $2 AND app_key = $3',
+                [instanceId, projectId, input.appKey],
+              )).rows[0])
+            : false;
           let candidateAppId: string = randomUUID();
-          if (!existingApp && origin?.replacesPublicationId) {
+          if (!hasExistingApp && origin?.replacesPublicationId) {
             const replaced = (await tx.query<{ candidate_app_id: string }>(
               'SELECT candidate_app_id FROM publications WHERE id = $1',
               [origin.replacesPublicationId],
@@ -1207,7 +1233,7 @@ export function createService(config: ServiceConfig): PlazaService {
           );
           if (inserted.rows[0]) {
             if (origin?.replacesPublicationId && origin?.replaceActorUserId) {
-              if (!existingApp) {
+              if (!hasExistingApp) {
                 const existingActor = (await tx.query<{ user_id: string }>(
                   'SELECT user_id FROM plaza_publication_actors WHERE publication_id = $1 FOR UPDATE',
                   [origin.replacesPublicationId],
@@ -1227,10 +1253,9 @@ export function createService(config: ServiceConfig): PlazaService {
                 );
               }
             }
-            const existingForAnalytics = config.analytics && !origin ? await findAppByKey(tx, validateProjectId(input.projectId), input.appKey) : undefined;
             if (!origin) await appendBusinessFact(tx, 'publications', publicationId, config.analytics, 'publish_operation_received', {
               publicationId, publishOperationId: publicationId, attemptId: submitAttempt?.id || publicationId, attemptStartedAt: now.toISOString(),
-              publishMode: 'direct', publishKind: existingForAnalytics ? 'update' : 'new',
+              publishMode: 'direct', publishKind: hasExistingApp ? 'update' : 'new',
             });
             await appendBusinessFact(tx, 'publications', publicationId, config.analytics, 'publication_state_changed', {
               publicationId, publishOperationId: origin?.operationId || publicationId, fromState: 'none', toState: 'checking',
@@ -1300,7 +1325,9 @@ export function createService(config: ServiceConfig): PlazaService {
         const prepared = await preparePreview(record, source);
         return submitView(prepared);
       } catch (error) {
-        return submitView(await markFailed(record.id, error));
+        const current = await markFailed(record.id, error, true, ['checking']);
+        const effective = await resolveSupersededPublication(current);
+        return supersededSubmitView(current, effective);
       }
     },
 
@@ -1599,7 +1626,10 @@ export function createService(config: ServiceConfig): PlazaService {
       if (options.viewerId) {
         const access = await accessRecord(config.db, id);
         if (access) {
-          const visibility = visibilityFromAccess(access, options.viewerId);
+          const enabledGroupIds = access.scope === 'groups' && access.group_ids.length
+            ? await enabledGroupIdSet(config.db, access.group_ids)
+            : undefined;
+          const visibility = visibilityFromAccess(access, options.viewerId, enabledGroupIds);
           if (visibility) view.visibility = visibility;
         }
       }

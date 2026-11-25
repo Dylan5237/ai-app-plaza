@@ -42,6 +42,8 @@ const editorEndpoint = computed(() => {
 })
 const requestToken = computed(() => isPublicationMode.value && !props.management ? props.publicationToken : '')
 const locked = computed(() => saving.value || Boolean(pending.value))
+const readOnlyContext = computed(() => Boolean(context.value && !context.value.editable && !pending.value))
+const formDisabled = computed(() => locked.value || readOnlyContext.value)
 watch(locked, value => emit('pending-change', value), { immediate: true })
 let sequence = 0
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -248,10 +250,11 @@ async function save() {
         <p class="editor-note">{{ isPublicationMode ? '保存会将资料写回托管仓库并生成最新预览。核对无误后点击「确认收录」或「确认更新」，广场才会展示最新内容。' : '保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。' }}</p>
         <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
         <el-alert v-if="persistenceFallback && (saving || pending)" title="浏览器会话存储空间不足，本次编辑恢复记录仅保存在当前标签页内存中；请勿刷新或关闭标签页，直至保存完成并确认新预览。" type="warning" :closable="false" class="editor-alert" data-testid="editor-storage-fallback" />
+        <el-alert v-if="readOnlyContext && manifest" title="当前旧预览已不可保存修改，以下草稿仅供核对或复制；请关闭后打开最新预览继续编辑。" type="info" :closable="false" class="editor-alert" data-testid="editor-readonly-notice" />
         <el-alert v-if="pending && !saving" :title="context && !context.editable ? '该原预览已不可继续新建修改；如果此前保存可能已生成新预览，请点击「重试本次保存」找回结果与新授权。' : '保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。'" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基本资料" name="overview">
-            <el-form label-position="top" :disabled="locked">
+            <el-form label-position="top" :disabled="formDisabled">
               <div class="editor-grid">
                 <el-form-item label="应用名称"><el-input v-model="manifest.name" data-testid="editor-name" /></el-form-item>
                 <el-form-item label="新版本号"><el-input v-model="manifest.projectVersion" data-testid="editor-version" placeholder="例如 1.2.1" /></el-form-item>
@@ -267,7 +270,7 @@ async function save() {
             </el-form>
           </el-tab-pane>
           <el-tab-pane label="能力与示例" name="capabilities">
-            <el-form label-position="top" :disabled="locked">
+            <el-form label-position="top" :disabled="formDisabled">
               <el-form-item v-for="[field, label] in arrayFields" :key="field" :label="`${label}（每行一项）`"><el-input type="textarea" :rows="3" :model-value="lines(manifest.capabilities[field])" @update:model-value="setLines(manifest.capabilities, field, $event)" /></el-form-item>
               <div v-for="(example, index) in manifest.examples" :key="index" class="editor-example">
                 <el-form-item :label="`示例 ${index + 1} · 用户请求`"><el-input v-model="example.request" type="textarea" :rows="2" /></el-form-item>
@@ -280,7 +283,7 @@ async function save() {
             </el-form>
           </el-tab-pane>
           <el-tab-pane label="入口与完整说明" name="documents">
-            <el-form label-position="top" :disabled="locked">
+            <el-form label-position="top" :disabled="formDisabled">
               <template v-for="entry in manifest.entries" :key="entry.id">
                 <el-form-item :label="`${entry.kind === 'web' ? 'Web' : 'Agent'} 入口名称`"><el-input v-model="entry.label" /></el-form-item>
                 <el-form-item v-if="entry.kind === 'web'" label="应用访问地址"><el-input v-model="entry.url" /></el-form-item>
@@ -295,7 +298,7 @@ async function save() {
     <template #footer>
       <el-button :disabled="saving" @click="close">取消</el-button>
       <el-button v-if="error && !pending" :disabled="saving" @click="load">重新读取</el-button>
-      <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading || (!changed && !pending)" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : isPublicationMode ? '保存并刷新预览' : '保存到 GitLab 并预览' }}</el-button>
+      <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading || readOnlyContext || (!changed && !pending)" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : isPublicationMode ? '保存并刷新预览' : '保存到 GitLab 并预览' }}</el-button>
     </template>
   </el-dialog>
 </template>

@@ -1645,3 +1645,82 @@ test('editing a full_source update preview before confirm preserves version_upda
   assert.equal(await rowFor(editedUpdatePub.id), 'version_update');
   assert.equal(await rowFor(directPub.id), 'metadata_edit');
 });
+
+test('resumeCheckingPublication does not overwrite concurrent preview_ready transition with failed on GitLab outage', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let onResumeGitLabRead: (() => Promise<void>) | null = null;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (onResumeGitLabRead && req.method === 'GET' && /\/api\/v4\/projects\/\d+$/.test(pathOnly)) {
+      const hook = onResumeGitLabRead;
+      onResumeGitLabRead = null;
+      void hook().then(() => {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'outage during concurrent resume' }));
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const publishKey = randomBytes(32).toString('base64url');
+  const first = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const editKey = randomUUID();
+  const edited = structuredClone(first.preview!.manifest);
+  edited.name = '并发核验不覆盖';
+  edited.projectVersion = '1.0.1';
+  const payload = { expectedAppRevision: 0, manifest: edited, documents: first.preview!.documents };
+  const editHeaders = h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', authorization: `Bearer ${first.ticket}`, 'idempotency-key': editKey });
+
+  const editRes = await integrated.app.inject({ method: 'POST', url: `/plaza/api/publications/${first.id}/editor`, headers: editHeaders, payload });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  const editedPub = editRes.json().publication;
+  const opId = editRes.json().operationId;
+
+  // Reset candidate to checking while operation isn't marked submitted yet, then advance it during another resume attempt's GitLab failure.
+  await h.db.query("UPDATE managed_publish_operations SET status = 'release_ready', publication_id = NULL WHERE id = $1", [opId]);
+  await h.db.query("UPDATE publications SET status = 'checking', next_action = 'checking' WHERE id = $1", [editedPub.id]);
+
+  onResumeGitLabRead = async () => {
+    await h.db.query(
+      "UPDATE publications SET status = 'preview_ready', next_action = 'confirm', digest = $2, preview_jsonb = $3::jsonb WHERE id = $1",
+      [editedPub.id, editedPub.digest, JSON.stringify(editedPub.preview)],
+    );
+  };
+
+  const resumed = await integrated.app.inject({ method: 'POST', url: `/plaza/api/publications/${first.id}/editor`, headers: editHeaders, payload });
+  assert.equal(resumed.statusCode, 200, resumed.body);
+  assert.equal(resumed.json().publication.id, editedPub.id);
+  assert.equal(resumed.json().publication.status, 'preview_ready');
+  const rowAfter = (await h.db.query<{ status: string }>('SELECT status FROM publications WHERE id = $1', [editedPub.id])).rows[0];
+  assert.equal(rowAfter.status, 'preview_ready');
+});

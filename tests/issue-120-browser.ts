@@ -712,6 +712,83 @@ try {
   await adminPage.getByTestId('confirm-publication').waitFor();
   report.checks.push('req3-round10-browser-regressions');
 
+  // --- Regression R11-1: Changing visibility in SmartSearch detail syncs SmartSearch card share reminder ---
+  await adminPage.goto(`${h.origin}/plaza/`);
+  await adminPage.getByRole('textbox', { name: '描述你想完成的任务', exact: true }).fill('周报汇总平台');
+  await adminPage.getByRole('button', { name: '发送', exact: true }).click();
+  const smartCard = adminPage.locator('.smart-search [data-testid="app-card"]').filter({ hasText: '周报汇总平台' }).first();
+  await smartCard.waitFor();
+  await smartCard.getByTestId('card-title').click();
+  await adminPage.getByTestId('app-detail').waitFor();
+  await adminPage.getByTestId('detail-manage-access').click();
+  await adminPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor();
+  await selectOption(adminPage, '分享范围', '仅自己');
+  await adminPage.getByRole('button', { name: '确认更改分享范围', exact: true }).click();
+  await adminPage.getByText('配置已保存，已回读当前结果。', { exact: true }).waitFor();
+  await adminPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
+  await adminPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor({ state: 'hidden' });
+  await adminPage.getByTestId('detail-visibility').getByText('仅自己可见').waitFor();
+  await adminPage.getByTestId('return-discovery').click();
+  await smartCard.waitFor();
+  await smartCard.getByTestId('card-share').click();
+  await adminPage.locator('.el-message').getByText(/当前仅自己可见/).first().waitFor();
+
+  // --- Regression R11-2: Read-only draft after editable:false + PUBLICATION_STATE_CONFLICT locks form and disables save ---
+  const readOnlyDraft = await h.managed.submit(makeBundle({
+    appKey: 'readonly-conflict-draft',
+    name: '只读冲突表单测试',
+    summary: '验证 editable:false 冲突后表单与保存按钮只读。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await adminPage.goto(readOnlyDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('只读冲突保留草稿');
+
+  let abortRoSave = true;
+  const roAbortHandler = (route: any) => {
+    if (abortRoSave && route.request().method() === 'POST') {
+      abortRoSave = false;
+      return route.abort('failed');
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${readOnlyDraft.id}/editor*`, roAbortHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByRole('button', { name: '重试本次保存', exact: true }).waitFor();
+  await adminPage.unroute(`**/api/publications/${readOnlyDraft.id}/editor*`, roAbortHandler);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.locator('.el-message-box').getByRole('button', { name: '关闭', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  await h.db.query("UPDATE publications SET status = 'cancelled', next_action = 'complete' WHERE id = $1", [readOnlyDraft.id]);
+  await adminPage.reload();
+  await adminPage.getByTestId('recover-publication-edit').waitFor();
+  await adminPage.getByTestId('recover-publication-edit').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByRole('button', { name: '重试本次保存', exact: true }).waitFor();
+
+  let stateConflictOnce = true;
+  const roConflictHandler = (route: any) => {
+    if (stateConflictOnce && route.request().method() === 'POST') {
+      stateConflictOnce = false;
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'PUBLICATION_STATE_CONFLICT', message: '该原预览已被其他修订替代。' } }),
+      });
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${readOnlyDraft.id}/editor*`, roConflictHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByTestId('editor-readonly-notice').waitFor();
+  await adminPage.unroute(`**/api/publications/${readOnlyDraft.id}/editor*`, roConflictHandler);
+  assert.equal(await adminPage.getByTestId('editor-name').inputValue(), '只读冲突保留草稿');
+  assert.equal(await adminPage.getByTestId('editor-name').isDisabled(), true);
+  assert.equal(await adminPage.getByTestId('editor-save').isDisabled(), true);
+  report.checks.push('req2-req3-round11-browser-regressions');
+
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);
   report.status = 'PASS';

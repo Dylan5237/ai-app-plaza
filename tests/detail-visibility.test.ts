@@ -66,7 +66,15 @@ test('detail visibility is returned only to owner/maintainers, reflects sharing 
   await h.db.query('INSERT INTO plaza_groups(id, name) VALUES($1, $2)', [groupId, '测试可见性小组']);
   await access.update(owner.user.id, appId, { revision: 3, requestId: randomUUID(), scope: 'groups', memberIds: [], groupIds: [groupId] });
   const ownerGroupsRes = await h.app.inject({ url: `/plaza/api/apps/${appId}`, headers: headers(owner) });
-  assert.deepEqual(ownerGroupsRes.json().visibility, { scope: 'groups', canShare: true, memberCount: 0, groupCount: 1 });
+  assert.deepEqual(ownerGroupsRes.json().visibility, { scope: 'groups', canShare: true, memberCount: 0, groupCount: 1, activeGroupCount: 1 });
+
+  await h.db.query('UPDATE plaza_groups SET enabled = false WHERE id = $1', [groupId]);
+  const ownerDisabledGroupRes = await h.app.inject({ url: `/plaza/api/apps/${appId}`, headers: headers(owner) });
+  assert.deepEqual(ownerDisabledGroupRes.json().visibility, { scope: 'groups', canShare: true, memberCount: 0, groupCount: 1, activeGroupCount: 0 });
+
+  await h.db.query('UPDATE plaza_groups SET enabled = true WHERE id = $1', [groupId]);
+  const ownerReenabledGroupRes = await h.app.inject({ url: `/plaza/api/apps/${appId}`, headers: headers(owner) });
+  assert.deepEqual(ownerReenabledGroupRes.json().visibility, { scope: 'groups', canShare: true, memberCount: 0, groupCount: 1, activeGroupCount: 1 });
 
   await access.update(owner.user.id, appId, { revision: 4, requestId: randomUUID(), scope: 'all', memberIds: [], groupIds: [] });
   const ownerAllRes = await h.app.inject({ url: `/plaza/api/apps/${appId}`, headers: headers(owner) });

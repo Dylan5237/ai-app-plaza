@@ -45,10 +45,23 @@ const visibilityMeta = computed(() => {
     }
   }
   if (v.scope === 'groups') {
+    const configured = v.groupCount ?? 0
+    const active = v.activeGroupCount ?? configured
+    if (active === 0) {
+      return {
+        tone: 'warning',
+        label: scopeTitle,
+        detail: configured > 0
+          ? `已配置 ${configured} 个小组，但当前均已停用；暂无小组成员可通过分享链接访问此应用。`
+          : '当前尚未指定有效小组；他人暂无法通过分享链接访问此应用。',
+      }
+    }
     return {
       tone: 'info',
       label: scopeTitle,
-      detail: `当前仅已指定的 ${v.groupCount} 个小组成员可查看此应用。`,
+      detail: active < configured
+        ? `当前仅已启用的 ${active} 个小组成员可查看此应用（另有 ${configured - active} 个已配置小组已停用）。`
+        : `当前仅已指定的 ${active} 个小组成员可查看此应用。`,
     }
   }
   return {
