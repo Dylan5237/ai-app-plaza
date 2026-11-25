@@ -351,6 +351,10 @@ const detailLoading = ref(false)
 const detailError = ref('')
 const detailErrorStatus = ref(0)
 const accessDialogAppId = ref('')
+const managementDetailSuspendedId = ref('')
+let accessSavedWhileSuspended = false
+let restoreAccessFocusPending = false
+let managementDetailOpened = false
 const selectedApp = ref(null)
 const detailDocumentsVisible = ref(false)
 const detailSourceVisible = ref(false)
@@ -399,6 +403,14 @@ const selectedAppEntries = computed(() => {
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
 const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= Date.now())
+const publicationEditorReadOnly = computed(() => Boolean(
+  publication.value && !publication.value.requiresIdentity && (publication.value.status !== 'preview_ready' || publicationExpired.value),
+))
+const publicationEditorReadOnlyReason = computed(() => (
+  publicationEditorReadOnly.value
+    ? '该预览状态已变更（已确认收录、已取消或已过期），无法再保存；当前草稿已切换为只读，方便复制后前往最新预览继续编辑。'
+    : ''
+))
 function publicationEditCacheKey(id = publicationId.value) {
   return id ? `${props.management ? 'mgmt-pub' : 'pub'}:${id}` : ''
 }
@@ -618,7 +630,11 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
     }
   }
   const requestSequence = ++detailRequestSequence
-  if (!revalidating) detailVisible.value = true
+  if (!revalidating) {
+    managementDetailSuspendedId.value = ''
+    accessSavedWhileSuspended = false
+    detailVisible.value = true
+  }
   clearExposureObserver()
   detailLoading.value = true
   detailError.value = ''
@@ -729,6 +745,12 @@ function handleDetailKey(event) {
 }
 
 function closeDetail() {
+  managementDetailOpened = false
+  if (managementDetailSuspendedId.value) {
+    detailVisible.value = false
+    return
+  }
+  restoreAccessFocusPending = false
   detailRequestSequence += 1
   instructionRequestSequence += 1
   detailVisible.value = false
@@ -863,9 +885,57 @@ function syncAppAcrossViews(updatedApp) {
   window.dispatchEvent(new CustomEvent('plaza-app-updated', { detail: updatedApp }))
 }
 
+async function maybeRestoreManageAccessFocus() {
+  if (!props.management || !restoreAccessFocusPending || !managementDetailOpened || !detailVisible.value) return
+  await nextTick()
+  if (!restoreAccessFocusPending || !managementDetailOpened || !detailVisible.value) return
+  const trigger = document.querySelector('[data-testid="detail-manage-access"]')
+  if (!trigger) return
+  restoreAccessFocusPending = false
+  trigger.focus?.({ preventScroll: true })
+}
+
+function onDetailDialogOpened() {
+  managementDetailOpened = true
+  void maybeRestoreManageAccessFocus()
+}
+
+function openAccessDialog(appId) {
+  if (!appId) return
+  restoreAccessFocusPending = false
+  if (props.management && detailVisible.value) {
+    managementDetailOpened = false
+    managementDetailSuspendedId.value = selectedApp.value?.id || appId
+    accessSavedWhileSuspended = false
+    detailVisible.value = false
+  }
+  accessDialogAppId.value = appId
+}
+
+async function closeAccessDialog() {
+  accessDialogAppId.value = ''
+  const restoreId = managementDetailSuspendedId.value
+  if (!restoreId) return
+  managementDetailSuspendedId.value = ''
+  const shouldRefresh = accessSavedWhileSuspended
+  accessSavedWhileSuspended = false
+  restoreAccessFocusPending = true
+  if (selectedApp.value?.id === restoreId) {
+    detailVisible.value = true
+    if (shouldRefresh) await openApp(restoreId, { fromHistory: true, revalidating: true })
+  } else {
+    await openApp(restoreId, { fromHistory: true })
+  }
+  await maybeRestoreManageAccessFocus()
+}
+
 function onAccessSaved() {
   refreshOnReturn = true
   window.dispatchEvent(new CustomEvent('plaza-favorites-changed'))
+  if (managementDetailSuspendedId.value) {
+    accessSavedWhileSuspended = true
+    return
+  }
   if (selectedApp.value?.id) void openApp(selectedApp.value.id, { fromHistory: true, revalidating: true })
 }
 
@@ -1077,12 +1147,12 @@ async function loadPublication(id = publicationId.value, { revalidating = public
     if (current()) {
       publication.value = result
       if (result.status === 'registered') publicationError.value = ''
-      const keepPendingRetry = !result.requiresIdentity &&
-        publicationEditorOpen.value && (publicationEditorPending.value || hasPendingPublicationEdit.value) && result.status === 'cancelled'
-      if (result.requiresIdentity || (result.status !== 'preview_ready' && !keepPendingRetry)) {
+      if (result.requiresIdentity) {
         publicationEditorOpen.value = false
         publicationEditorToken.value = ''
         publicationEditorPending.value = false
+      } else if (result.status !== 'preview_ready' && !publicationEditorOpen.value) {
+        publicationEditorToken.value = ''
       }
       await recordPublicationPreviewViewed(id, result)
     }
@@ -1392,6 +1462,8 @@ onUnmounted(() => {
       :publication-id="publicationEditorOpen ? publicationId : ''"
       :publication-token="publicationEditorToken"
       :management="props.management"
+      :read-only="publicationEditorReadOnly"
+      :read-only-reason="publicationEditorReadOnlyReason"
       @pending-change="publicationEditorPending = $event"
       @close="publicationEditorOpen = false; publicationEditorPending = false"
       @saved="onPublicationEditorSaved"
@@ -1475,6 +1547,7 @@ onUnmounted(() => {
       v-bind="props.management ? { modelValue: detailVisible, width: 'min(1180px, 94vw)', alignCenter: true, destroyOnClose: true } : {}"
       :class="props.management ? 'app-detail-dialog' : 'public-detail'"
       @close="closeDetail"
+      @opened="onDetailDialogOpened"
     >
       <header v-if="!props.management" class="public-detail-heading">
         <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ props.personalReturn ? '返回我的收藏' : detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : discoveryTab === 'search' ? '返回智能查找' : '返回应用目录' }}</button>
@@ -1504,7 +1577,7 @@ onUnmounted(() => {
             :app="selectedApp"
             @read-documents="detailDocumentsVisible = true"
             @read-source="detailSourceVisible = true"
-            @manage-access="accessDialogAppId = selectedApp.id"
+            @manage-access="openAccessDialog(selectedApp.id)"
           />
         </div>
         <aside class="detail-actions" aria-label="应用使用入口" data-testid="detail-actions">
@@ -1671,7 +1744,7 @@ onUnmounted(() => {
     </el-dialog>
     <ApplicationAccessDialog
       :app-id="accessDialogAppId"
-      @close="accessDialogAppId = ''"
+      @close="closeAccessDialog"
       @saved="onAccessSaved"
     />
   </div>

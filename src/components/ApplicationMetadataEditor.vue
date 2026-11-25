@@ -11,6 +11,8 @@ const props = defineProps({
   publicationId: { type: String, default: '' },
   publicationToken: { type: String, default: '' },
   management: { type: Boolean, default: false },
+  readOnly: { type: Boolean, default: false },
+  readOnlyReason: { type: String, default: '' },
 })
 const emit = defineEmits(['close', 'saved', 'pending-change', 'access-lost'])
 const loading = ref(false)
@@ -42,7 +44,7 @@ const editorEndpoint = computed(() => {
 })
 const requestToken = computed(() => isPublicationMode.value && !props.management ? props.publicationToken : '')
 const locked = computed(() => saving.value || Boolean(pending.value))
-const readOnlyContext = computed(() => Boolean(context.value && !context.value.editable && !pending.value))
+const readOnlyContext = computed(() => Boolean(!pending.value && (props.readOnly || (context.value && !context.value.editable))))
 const formDisabled = computed(() => locked.value || readOnlyContext.value)
 watch(locked, value => emit('pending-change', value), { immediate: true })
 let sequence = 0
@@ -136,7 +138,7 @@ async function close() {
   emit('close')
 }
 async function save() {
-  if (saving.value || (!pending.value && !context.value?.editable) || !manifest.value) return
+  if (saving.value || readOnlyContext.value || (!pending.value && !context.value?.editable) || !manifest.value) return
   if (!pending.value && !changed.value) return
   if (!pending.value) {
     const key = uuid()
@@ -250,7 +252,7 @@ async function save() {
         <p class="editor-note">{{ isPublicationMode ? '保存会将资料写回托管仓库并生成最新预览。核对无误后点击「确认收录」或「确认更新」，广场才会展示最新内容。' : '保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。' }}</p>
         <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
         <el-alert v-if="persistenceFallback && (saving || pending)" title="浏览器会话存储空间不足，本次编辑恢复记录仅保存在当前标签页内存中；请勿刷新或关闭标签页，直至保存完成并确认新预览。" type="warning" :closable="false" class="editor-alert" data-testid="editor-storage-fallback" />
-        <el-alert v-if="readOnlyContext && manifest" title="当前旧预览已不可保存修改，以下草稿仅供核对或复制；请关闭后打开最新预览继续编辑。" type="info" :closable="false" class="editor-alert" data-testid="editor-readonly-notice" />
+        <el-alert v-if="readOnlyContext && manifest" :title="props.readOnlyReason || '当前旧预览已不可保存修改，以下草稿仅供核对或复制；请关闭后打开最新预览继续编辑。'" type="info" :closable="false" class="editor-alert" data-testid="editor-readonly-notice" />
         <el-alert v-if="pending && !saving" :title="context && !context.editable ? '该原预览已不可继续新建修改；如果此前保存可能已生成新预览，请点击「重试本次保存」找回结果与新授权。' : '保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。'" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基本资料" name="overview">

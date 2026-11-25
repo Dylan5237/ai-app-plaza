@@ -1103,7 +1103,7 @@ export function createService(config: ServiceConfig): PlazaService {
           await finishAttempt(record.id, attempt, 'failure', error.code);
           throw error;
         }
-        const failed = await markFailed(record.id, error);
+        const failed = await markFailed(record.id, error, true, ['preview_ready']);
         await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
         return recordView(failed);
       }
@@ -1135,6 +1135,7 @@ export function createService(config: ServiceConfig): PlazaService {
       if (current.status === 'cancelled' || current.next_action === 'submit_again') throw new DomainError(409, current.error_code || 'PUBLICATION_CANCELLED', '当前候选无法继续重试。');
       record = current;
     }
+    const startingStatus = record.status;
     try {
       const source = await assertAuthorAndSource(record);
       if (record.confirmed_at) {
@@ -1153,8 +1154,9 @@ export function createService(config: ServiceConfig): PlazaService {
         await finishAttempt(record.id, attempt, 'failure', error.code);
         throw error;
       }
-      const failed = await markFailed(record.id, error);
-      await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
+      const failed = await markFailed(record.id, error, true, [startingStatus]);
+      const succeeded = failed.status === 'registered' || failed.status === 'preview_ready';
+      await finishAttempt(record.id, attempt, succeeded ? 'success' : 'failure', succeeded ? undefined : (failed.error_code || undefined));
       return recordView(failed);
     }
   }

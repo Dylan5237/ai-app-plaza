@@ -1841,3 +1841,140 @@ test('late submit failure does not overwrite preview_ready achieved by overlappi
   const rowAfter = (await h.db.query<{ status: string }>('SELECT status FROM publications WHERE id = $1', [checkingRow.id])).rows[0];
   assert.equal(rowAfter.status, 'preview_ready');
 });
+
+test('late retryPublication failure does not overwrite preview_ready achieved by overlapping resumeCheckingPublication', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const directGitlab = await startGitLabFixture(1);
+  let holdNextRetryProjectRead = false;
+  let markRetryReadStarted!: () => void;
+  let releaseRetryReadAs503!: () => void;
+  const retryReadStarted = new Promise<void>(resolve => { markRetryReadStarted = resolve; });
+  const retryReadGate = new Promise<void>(resolve => { releaseRetryReadAs503 = resolve; });
+  const targetUrl = new URL(directGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (holdNextRetryProjectRead && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
+      holdNextRetryProjectRead = false;
+      markRetryReadStarted();
+      void retryReadGate.then(() => {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'late retry gitlab outage' }));
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await directGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const submitInput = { projectId: '1', appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const initial = await integrated.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  assert.equal(initial.status, 'preview_ready');
+
+  await h.db.query("UPDATE publications SET status = 'checking', next_action = 'checking', digest = NULL, preview_jsonb = NULL WHERE id = $1", [initial.id]);
+  holdNextRetryProjectRead = true;
+  const retryPromise = integrated.service.managementRetry(initial.id, owner.user.id);
+  await retryReadStarted;
+
+  const resumed = await integrated.service.resumeCheckingPublication(initial.id, submitInput);
+  assert.equal(resumed.status, 'preview_ready');
+
+  releaseRetryReadAs503();
+  const retryResult = await retryPromise;
+  assert.equal(retryResult.id, initial.id);
+  assert.equal(retryResult.status, 'preview_ready');
+  const rowAfter = (await h.db.query<{ status: string }>('SELECT status FROM publications WHERE id = $1', [initial.id])).rows[0];
+  assert.equal(rowAfter.status, 'preview_ready');
+});
+
+test('loadShareTemplates coalesces concurrent refreshes and preserves earlier success on later failure', async t => {
+  const {
+    loadShareTemplates,
+    currentShareTemplates,
+    hasLoadedShareTemplates,
+    resetShareTemplatesCache,
+  } = await import(new URL('../src/lib/share-template.ts', import.meta.url).href);
+
+  const prevDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const prevFetch = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      baseURI: 'http://127.0.0.1/plaza/',
+      querySelector: () => ({ getAttribute: () => '/plaza' }),
+    },
+  });
+
+  let fetchCalls: Array<() => Promise<{ ok: boolean; json: () => Promise<any> }>> = [];
+  let resolvers: Array<(value: any) => void> = [];
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: () => {
+      const idx = fetchCalls.length;
+      return new Promise(resolve => {
+        resolvers[idx] = resolve;
+        fetchCalls.push(() => resolve as any);
+      });
+    },
+  });
+
+  t.after(() => {
+    resetShareTemplatesCache();
+    if (prevDocument) Object.defineProperty(globalThis, 'document', prevDocument);
+    else delete (globalThis as any).document;
+    if (prevFetch) Object.defineProperty(globalThis, 'fetch', prevFetch);
+    else delete (globalThis as any).fetch;
+  });
+
+  resetShareTemplatesCache();
+  const firstConcurrent = loadShareTemplates(true);
+  const secondConcurrent = loadShareTemplates(true);
+  assert.equal(resolvers.length, 1, 'concurrent force=true refreshes share one in-flight request');
+  resolvers[0]({
+    ok: true,
+    json: async () => ({ agent: '自定义 Agent {{url}}', platform: '自定义平台 {{url}}' }),
+  });
+  const [res1, res2] = await Promise.all([firstConcurrent, secondConcurrent]);
+  assert.equal(res1.ok, true);
+  assert.equal(res2.ok, true);
+  assert.equal(currentShareTemplates().agent, '自定义 Agent {{url}}');
+
+  resetShareTemplatesCache();
+  resolvers = [];
+  fetchCalls = [];
+  const slowSuccess = loadShareTemplates(true);
+  const fastFailure = loadShareTemplates(true, { bypassInFlight: true });
+  assert.equal(resolvers.length, 2, 'bypassInFlight starts a fresh request for post-mutation invalidation');
+  resolvers[1]({ ok: false, status: 500, json: async () => ({ error: { message: 'boom' } }) });
+  const failRes = await fastFailure;
+  assert.equal(failRes.ok, false);
+  resolvers[0]({
+    ok: true,
+    json: async () => ({ agent: '较早成功 {{url}}', platform: '较早成功平台 {{url}}' }),
+  });
+  const okRes = await slowSuccess;
+  assert.equal(okRes.ok, true);
+  assert.equal(hasLoadedShareTemplates(), true);
+  assert.equal(currentShareTemplates().agent, '较早成功 {{url}}');
+});

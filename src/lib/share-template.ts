@@ -9,6 +9,7 @@ let cached = { ...DEFAULT_SHARE_TEMPLATES }
 let loadedOnce = false
 let inFlight: Promise<{ templates: typeof DEFAULT_SHARE_TEMPLATES; ok: boolean }> | null = null
 let requestSequence = 0
+let latestCompletedSequence = 0
 
 export function currentShareTemplates() {
   return cached
@@ -18,19 +19,31 @@ export function hasLoadedShareTemplates() {
   return loadedOnce
 }
 
-export async function loadShareTemplates(force = false): Promise<{ templates: typeof DEFAULT_SHARE_TEMPLATES; ok: boolean }> {
+export function resetShareTemplatesCache() {
+  cached = { ...DEFAULT_SHARE_TEMPLATES }
+  loadedOnce = false
+  inFlight = null
+  requestSequence = 0
+  latestCompletedSequence = 0
+}
+
+export async function loadShareTemplates(
+  force = false,
+  options: { bypassInFlight?: boolean } = {},
+): Promise<{ templates: typeof DEFAULT_SHARE_TEMPLATES; ok: boolean }> {
   if (loadedOnce && !force) return { templates: cached, ok: true }
-  if (inFlight && !force) return inFlight
+  if (inFlight && !options.bypassInFlight) return inFlight
   const seq = ++requestSequence
   const request = apiRequest('/api/share-templates')
     .then((result) => {
       if (result && typeof result.agent === 'string' && typeof result.platform === 'string') {
         const fetched = { agent: result.agent, platform: result.platform }
-        if (seq === requestSequence) {
+        if (seq > latestCompletedSequence) {
+          latestCompletedSequence = seq
           cached = fetched
           loadedOnce = true
         }
-        return { templates: loadedOnce && seq < requestSequence ? cached : fetched, ok: true }
+        return { templates: cached, ok: true }
       }
       return { templates: cached, ok: false }
     })

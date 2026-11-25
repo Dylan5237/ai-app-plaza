@@ -346,14 +346,17 @@ try {
   assert.equal(await anonPage.locator('.overview-title-row h2').innerText(), '预览页修订后的应用名');
   assert.equal(await anonPage.getByTestId('detail-visibility').count(), 0, 'public visitors do not see author visibility bar');
 
-  // Management detail also wires "调整分享范围" directly to the access dialog.
+  // Management detail also wires "调整分享范围" directly to the access dialog without stacking two modals.
   await memberPage.goto(`${h.origin}/plaza/admin`);
   await memberPage.getByRole('button', { name: '预览页修订后的应用名', exact: true }).click();
   await memberPage.getByTestId('app-detail').waitFor();
   await memberPage.getByTestId('detail-manage-access').click();
   await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor();
+  await memberPage.getByTestId('app-detail').waitFor({ state: 'hidden' });
   await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
   await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor({ state: 'hidden' });
+  await memberPage.getByTestId('app-detail').waitFor();
+  await memberPage.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'detail-manage-access');
   report.checks.push('req4-detail-visibility-and-restricted-prompt');
 
   // --- Publication ticket sessionStorage isolation across logout & first login ---
@@ -841,6 +844,28 @@ try {
   await syncedCard.getByTestId('card-primary-agent').waitFor();
   assert.equal(await syncedCard.getByTestId('primary-disabled-reason').count(), 0);
   report.checks.push('req2-req4-round12-browser-regressions');
+
+  // --- Regression R13-1: Background status shift keeps open editor draft in read-only mode instead of closing ---
+  const statusShiftDraft = await h.managed.submit(makeBundle({
+    appKey: 'status-shift-readonly-draft',
+    name: '状态变更保留未提交草稿应用',
+    summary: '验证后台变为 cancelled 时已打开的编辑器保留草稿并切为只读。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await adminPage.goto(statusShiftDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('状态变更后保留的未提交草稿');
+  await h.db.query("UPDATE publications SET status = 'cancelled', next_action = 'complete' WHERE id = $1", [statusShiftDraft.id]);
+  await adminPage.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await adminPage.getByTestId('editor-readonly-notice').waitFor();
+  assert.equal(await adminPage.getByTestId('metadata-editor').isVisible(), true);
+  assert.equal(await adminPage.getByTestId('editor-name').inputValue(), '状态变更后保留的未提交草稿');
+  assert.equal(await adminPage.getByTestId('editor-name').isDisabled(), true);
+  assert.equal(await adminPage.getByTestId('editor-save').isDisabled(), true);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+  report.checks.push('req3-req4-round13-browser-regressions');
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);

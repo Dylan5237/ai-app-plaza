@@ -256,7 +256,7 @@ async function writeTemplate(purpose, template) {
     delete templatePending[purpose]
     templateUncertain[purpose] = false
     templateNotices[purpose] = request.template === null ? '已恢复默认模板，后续操作立即使用默认内容。' : '模板已保存，后续操作立即生效。'
-    if (purpose === 'share_agent' || purpose === 'share_platform') void loadShareTemplates(true)
+    if (purpose === 'share_agent' || purpose === 'share_platform') void loadShareTemplates(true, { bypassInFlight: true })
     await reloadTemplates(purpose, draftAtSave)
   } catch (err) {
     const isUncertain = !err.status || err.status >= 500
