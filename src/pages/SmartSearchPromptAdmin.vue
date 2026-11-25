@@ -13,8 +13,10 @@ const draft = ref('')
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
+const templatesError = ref('')
 const notice = ref('')
 const uncertain = ref(false)
+const hasPendingPromptWrite = ref(false)
 let pending = null
 let requestVersion = 0
 
@@ -105,6 +107,7 @@ async function load() {
   const version = ++requestVersion
   loading.value = true
   error.value = ''
+  templatesError.value = ''
   try {
     const [promptResult, templatesResult] = await Promise.all([
       apiRequest('/api/access/smart-search-prompt'),
@@ -152,20 +155,18 @@ async function reloadSmartSearchPrompt(expectedDraft = undefined) {
 
 async function reloadTemplates(updatedPurpose = '', expectedDraft = undefined) {
   const version = ++templatesVersion
-  error.value = ''
+  templatesError.value = ''
   try {
     const result = await apiRequest('/api/access/text-templates')
     if (version !== templatesVersion) return
-    retryAction.value = 'load'
     failedTemplatePurpose = ''
     failedTemplateDraft = undefined
     applyTemplatesResult(result, updatedPurpose, expectedDraft)
   } catch (err) {
     if (version === templatesVersion) {
-      retryAction.value = 'reload-templates'
       failedTemplatePurpose = updatedPurpose
       failedTemplateDraft = expectedDraft
-      error.value = err.message || '模板配置加载失败，请稍后重试。'
+      templatesError.value = err.message || '模板配置加载失败，请稍后重试。'
     }
   }
 }
@@ -173,10 +174,6 @@ async function reloadTemplates(updatedPurpose = '', expectedDraft = undefined) {
 function retryTopError() {
   if (pending) {
     void write(pending.template)
-    return
-  }
-  if (retryAction.value === 'reload-templates') {
-    void reloadTemplates(failedTemplatePurpose, failedTemplateDraft)
     return
   }
   if (retryAction.value === 'reload-prompt') {
@@ -196,6 +193,7 @@ async function write(template) {
       return
     }
     pending = { requestId, confirmed: true, template }
+    hasPendingPromptWrite.value = true
   }
   const request = pending
   busy.value = true
@@ -205,6 +203,7 @@ async function write(template) {
     const draftAtSave = draft.value
     await apiRequest('/api/access/smart-search-prompt', { method: 'PUT', body: request })
     pending = null
+    hasPendingPromptWrite.value = false
     uncertain.value = false
     notice.value = request.template === null ? '已恢复默认提示词，后续检索立即使用默认模板。' : '提示词已保存，后续检索立即生效。'
     await reloadSmartSearchPrompt(draftAtSave)
@@ -213,6 +212,7 @@ async function write(template) {
     if (uncertain.value) error.value = '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。'
     else {
       pending = null
+      hasPendingPromptWrite.value = false
       error.value = err.message
     }
   } finally {
@@ -302,7 +302,8 @@ onMounted(load)
       </div>
     </header>
 
-    <div v-if="error" class="state error" role="alert"><span>{{ error }}</span><button type="button" @click="retryTopError">{{ pending ? '重试同一请求' : '重试' }}</button></div>
+    <div v-if="error || hasPendingPromptWrite" class="state error" role="alert"><span>{{ error || '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。' }}</span><button type="button" @click="retryTopError">{{ hasPendingPromptWrite ? '重试同一请求' : '重试' }}</button></div>
+    <div v-if="templatesError" class="state error" role="alert"><span>{{ templatesError }}</span><button type="button" @click="reloadTemplates(failedTemplatePurpose, failedTemplateDraft)">重试</button></div>
     <div v-if="loading && !view" class="state" role="status">正在读取提示词与模板配置…</div>
 
     <el-tabs v-if="view" v-model="activeTab" class="template-tabs">

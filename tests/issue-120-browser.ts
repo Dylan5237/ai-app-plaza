@@ -903,6 +903,118 @@ try {
   await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
   report.checks.push('req3-round14-browser-regressions');
 
+  // --- Regression R15: Access revalidation on closeAccessDialog, expiry auto-readonly, REVISION_CONFLICT readonly, isolated prompt retry ---
+  await memberPage.goto(`${h.origin}/plaza/admin`);
+  await memberPage.getByRole('button', { name: '预览页修订后的应用名', exact: true }).click();
+  await memberPage.getByTestId('app-detail').waitFor();
+  await memberPage.getByTestId('detail-manage-access').click();
+  await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor();
+  const mgmt404Handler = (route: any) => {
+    const req = route.request();
+    const pathname = new URL(req.url()).pathname;
+    if (req.method() === 'GET' && /\/api\/management\/apps\/[^/]+$/.test(pathname)) {
+      return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'APP_NOT_FOUND', message: '当前已无权访问此应用。' } }) });
+    }
+    return route.continue();
+  };
+  await memberPage.route('**/api/management/apps/*', mgmt404Handler);
+  await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
+  await memberPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor({ state: 'hidden' });
+  await memberPage.getByRole('alert').getByText('当前已无权访问此应用。').waitFor();
+  await memberPage.unroute('**/api/management/apps/*', mgmt404Handler);
+  assert.equal(await memberPage.getByTestId('app-detail').count(), 0, 'stale cached management detail is never shown after access loss');
+  await memberPage.keyboard.press('Escape');
+
+  // Active expiry timer transitions open editor draft to read-only automatically without losing edits.
+  const expiryTimerDraft = await h.managed.submit(makeBundle({
+    appKey: 'expiry-timer-readonly-draft',
+    name: '到期自动切只读测试应用',
+    summary: '验证预览在打开编辑期间到期时自动切只读。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  const shortExpiryHandler = async (route: any) => {
+    if (route.request().method() === 'GET' && !route.request().url().includes('/editor')) {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.expiresAt = new Date(Date.now() + 900).toISOString();
+      return route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(body) });
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${expiryTimerDraft.id}*`, shortExpiryHandler);
+  await adminPage.goto(expiryTimerDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('即将过期自动只读草稿');
+  await adminPage.getByTestId('editor-readonly-notice').waitFor();
+  await adminPage.unroute(`**/api/publications/${expiryTimerDraft.id}*`, shortExpiryHandler);
+  assert.equal(await adminPage.getByTestId('editor-name').inputValue(), '即将过期自动只读草稿');
+  assert.equal(await adminPage.getByTestId('editor-name').isDisabled(), true);
+  assert.equal(await adminPage.getByTestId('editor-save').isDisabled(), true);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  // REVISION_CONFLICT in publication mode transitions open editor immediately to read-only.
+  const revConflictDraft = await h.managed.submit(makeBundle({
+    appKey: 'revision-conflict-readonly-draft',
+    name: '修订冲突切只读测试应用',
+    summary: '验证 REVISION_CONFLICT 后保留草稿且禁改禁用保存。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await adminPage.goto(revConflictDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('修订冲突只读保留草稿');
+  let revConflictOnce = true;
+  const revConflictHandler = (route: any) => {
+    if (revConflictOnce && route.request().method() === 'POST') {
+      revConflictOnce = false;
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'REVISION_CONFLICT', message: '应用修订已变化，请重新提交候选并查看新预览。' } }),
+      });
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${revConflictDraft.id}/editor*`, revConflictHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByTestId('editor-readonly-notice').waitFor();
+  await adminPage.unroute(`**/api/publications/${revConflictDraft.id}/editor*`, revConflictHandler);
+  assert.equal(await adminPage.getByTestId('editor-name').inputValue(), '修订冲突只读保留草稿');
+  assert.equal(await adminPage.getByTestId('editor-name').isDisabled(), true);
+  assert.equal(await adminPage.getByTestId('editor-save').isDisabled(), true);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  // SmartSearchPromptAdmin preserves uncertain smart-search save retry button after saving a template in another tab.
+  await adminPage.goto(`${h.origin}/plaza/?space=smart-search`);
+  await adminPage.getByTestId('prompt-editor').waitFor();
+  const originalPromptVal = await adminPage.getByTestId('prompt-editor').inputValue();
+  let failPromptOnce = true;
+  const prompt503Handler = (route: any) => {
+    if (failPromptOnce && route.request().method() === 'PUT') {
+      failPromptOnce = false;
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '暂不可用' } }) });
+    }
+    return route.continue();
+  };
+  await adminPage.route('**/api/access/smart-search-prompt', prompt503Handler);
+  await adminPage.getByTestId('prompt-editor').fill(`${originalPromptVal}\n补充规则`);
+  await adminPage.getByTestId('prompt-save').click();
+  await adminPage.getByRole('button', { name: '重试同一请求', exact: true }).waitFor();
+  await adminPage.unroute('**/api/access/smart-search-prompt', prompt503Handler);
+
+  await adminPage.getByRole('tab', { name: '应用分享模板', exact: true }).click();
+  const origShareTpl = await adminPage.getByTestId('template-editor-share_agent').inputValue();
+  await adminPage.getByTestId('template-editor-share_agent').fill(`${origShareTpl}\n[附注]`);
+  await adminPage.getByTestId('template-save-share_agent').click();
+  await adminPage.getByText('模板已保存，后续操作立即生效。', { exact: true }).waitFor();
+  await adminPage.getByRole('tab', { name: '智能查找提示词', exact: true }).click();
+  assert.equal(await adminPage.getByRole('button', { name: '重试同一请求', exact: true }).isVisible(), true);
+  assert.equal(await adminPage.getByTestId('prompt-editor').isDisabled(), true);
+  report.checks.push('req1-req3-req4-round15-browser-regressions');
+
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);
   report.status = 'PASS';

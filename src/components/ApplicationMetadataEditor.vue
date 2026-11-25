@@ -13,6 +13,7 @@ const props = defineProps({
   management: { type: Boolean, default: false },
   readOnly: { type: Boolean, default: false },
   readOnlyReason: { type: String, default: '' },
+  expiresAt: { type: String, default: '' },
 })
 const emit = defineEmits(['close', 'saved', 'pending-change', 'access-lost'])
 const loading = ref(false)
@@ -148,6 +149,11 @@ async function close() {
 }
 async function save() {
   if (saving.value || readOnlyContext.value || (!pending.value && !context.value?.editable) || !manifest.value) return
+  if (isPublicationMode.value && !pending.value && props.expiresAt && new Date(props.expiresAt).getTime() <= Date.now()) {
+    localReadOnlyReason.value = '该预览已过期，无法再保存；当前草稿已切换为只读，方便复制后重新提交或前往最新预览继续编辑。'
+    error.value = '此预览已过期，不能再确认或保存。'
+    return
+  }
   if (!pending.value && !changed.value) return
   if (!pending.value) {
     const key = uuid()
@@ -225,7 +231,7 @@ async function save() {
       return
     }
     // Deterministic validation/conflict failures retain the editable draft while clearing pending retry state.
-    if ([400, 413, 422].includes(e.status) || (e.status === 409 && [
+    if ([400, 410, 413, 422].includes(e.status) || (e.status === 409 && [
       'REVISION_CONFLICT',
       'VERSION_NOT_NEWER',
       'TAG_CONFLICT',
@@ -243,7 +249,9 @@ async function save() {
           pending.value = null
           persistenceFallback.value = false
         }
-        if (e.status === 409 && TERMINAL_READONLY_CONFLICTS.has(e.code)) {
+        if (e.status === 410) {
+          localReadOnlyReason.value = e.message || '该预览已过期，无法再保存；以下草稿已切换为只读，方便复制后重新提交或前往最新预览继续编辑。'
+        } else if (e.status === 409 && (TERMINAL_READONLY_CONFLICTS.has(e.code) || (isPublicationMode.value && e.code === 'REVISION_CONFLICT'))) {
           localReadOnlyReason.value = e.message || '当前原预览已失效，无法再保存；以下草稿已切换为只读，方便复制后前往最新预览继续编辑。'
         }
       }

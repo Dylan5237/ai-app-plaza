@@ -402,7 +402,29 @@ const selectedAppEntries = computed(() => {
   const primaryId = manifest.primaryEntry
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
-const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= Date.now())
+const nowTick = ref(Date.now())
+let publicationExpiryTimer = 0
+function schedulePublicationExpiryTimer(expiresAt) {
+  if (publicationExpiryTimer) {
+    clearTimeout(publicationExpiryTimer)
+    publicationExpiryTimer = 0
+  }
+  const now = Date.now()
+  nowTick.value = now
+  if (!expiresAt) return
+  const target = new Date(expiresAt).getTime()
+  if (!Number.isFinite(target) || target <= now) return
+  const delay = Math.min(target - now + 50, 2_147_483_647)
+  publicationExpiryTimer = window.setTimeout(() => {
+    publicationExpiryTimer = 0
+    schedulePublicationExpiryTimer(publication.value?.expiresAt)
+  }, delay)
+}
+watch(() => publication.value?.expiresAt, expiresAt => {
+  schedulePublicationExpiryTimer(expiresAt)
+}, { immediate: true })
+
+const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= nowTick.value)
 const publicationEditorReadOnly = computed(() => Boolean(
   publication.value && !publication.value.requiresIdentity && (publication.value.status !== 'preview_ready' || publicationExpired.value),
 ))
@@ -917,15 +939,12 @@ async function closeAccessDialog() {
   const restoreId = managementDetailSuspendedId.value
   if (!restoreId) return
   managementDetailSuspendedId.value = ''
-  const shouldRefresh = accessSavedWhileSuspended
   accessSavedWhileSuspended = false
   restoreAccessFocusPending = true
-  if (selectedApp.value?.id === restoreId) {
-    detailVisible.value = true
-    if (shouldRefresh) await openApp(restoreId, { fromHistory: true, revalidating: true })
-  } else {
-    await openApp(restoreId, { fromHistory: true })
-  }
+  await openApp(restoreId, { fromHistory: true, revalidating: true })
+  if (disposed || managementDetailSuspendedId.value || accessDialogAppId.value) return
+  if (selectedApp.value?.id !== restoreId && !detailError.value) return
+  detailVisible.value = true
   await maybeRestoreManageAccessFocus()
 }
 
@@ -1326,6 +1345,10 @@ onUnmounted(() => {
   tagObserver?.disconnect()
   cancelAnimationFrame(layoutFrame)
   cancelAnimationFrame(tagFrame)
+  if (publicationExpiryTimer) {
+    clearTimeout(publicationExpiryTimer)
+    publicationExpiryTimer = 0
+  }
 })
 </script>
 
@@ -1464,6 +1487,7 @@ onUnmounted(() => {
       :management="props.management"
       :read-only="publicationEditorReadOnly"
       :read-only-reason="publicationEditorReadOnlyReason"
+      :expires-at="publication?.expiresAt || ''"
       @pending-change="publicationEditorPending = $event"
       @close="publicationEditorOpen = false; publicationEditorPending = false"
       @saved="onPublicationEditorSaved"

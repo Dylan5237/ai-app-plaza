@@ -251,6 +251,13 @@ const MIGRATIONS = [
     updated_at timestamptz NOT NULL DEFAULT now(),
     updated_by uuid
   )`,
+  `CREATE TABLE IF NOT EXISTS plaza_publication_confirm_claims (
+    claim_id uuid PRIMARY KEY,
+    publication_id uuid NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    expires_at timestamptz NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS plaza_publication_confirm_claims_pub_idx
+    ON plaza_publication_confirm_claims(publication_id, expires_at)`,
   `CREATE TABLE IF NOT EXISTS plaza_smart_search_requests (
     id uuid PRIMARY KEY,
     description text NOT NULL,

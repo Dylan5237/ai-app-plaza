@@ -2208,3 +2208,184 @@ test('resumeCheckingPublication success path does not overwrite failed/retry or 
   assert.equal(dbRow.next_action, 'retry');
   assert.ok(dbRow.confirmed_at instanceof Date);
 });
+
+test('revoked maintainer retrying checking candidate is denied even if concurrent submit already produced preview_ready', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const directGitlab = await startGitLabFixture(1);
+  let holdRetryRead = false;
+  let markRetryReadStarted!: () => void;
+  let releaseRetryRead!: () => void;
+  const retryReadStarted = new Promise<void>(resolve => { markRetryReadStarted = resolve; });
+  const retryReadGate = new Promise<void>(resolve => { releaseRetryRead = resolve; });
+  const targetUrl = new URL(directGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (holdRetryRead && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
+      holdRetryRead = false;
+      markRetryReadStarted();
+      void retryReadGate.then(() => {
+        const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+          method: req.method,
+          headers: req.headers,
+        }, upstreamRes => {
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+        });
+        req.pipe(upstreamReq);
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  const access = createAppAccessService(h.db, h.config.audience);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await directGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const submitInput = { projectId: '1', appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+
+  // Register v1 owned by owner with maintainer authorized, then age snapshot version/digest so next submit creates an update preview.
+  const v1 = await integrated.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  const v1View = await integrated.service.publication(v1.id, v1.ticket, owner.user.id);
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: v1View.revision, digest: v1View.digest! }, owner.user.id);
+  await h.db.query("UPDATE published_snapshots SET digest = 'stale-digest', version = '0.0.1' WHERE app_id = $1", [reg1.appId!]);
+  await access.update(owner.user.id, reg1.appId!, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  // Create a pending second submission stuck in checking.
+  const pending = await integrated.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  await h.db.query("UPDATE publications SET status = 'checking', next_action = 'checking', digest = NULL, preview_jsonb = NULL WHERE id = $1", [pending.id]);
+
+  holdRetryRead = true;
+  const retryPromise = integrated.service.managementRetry(pending.id, maintainer.user.id);
+  await retryReadStarted;
+
+  try {
+    // Owner advances candidate to preview_ready and revokes maintainer before retry acquires transaction lock.
+    const resumed = await integrated.service.resumeCheckingPublication(pending.id, submitInput);
+    assert.equal(resumed.status, 'preview_ready');
+    await access.update(owner.user.id, reg1.appId!, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+  } finally {
+    releaseRetryRead();
+  }
+  await assert.rejects(
+    () => retryPromise,
+    (err: any) => err?.statusCode === 404 && err?.code === 'APP_NOT_FOUND',
+  );
+});
+
+test('two-instance confirm claims prevent revoked maintainer rollback from clearing owner confirmed_at', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const directGitlab = await startGitLabFixture(1);
+  let heldProjectReads = 0;
+  let markBothStarted!: () => void;
+  const bothStarted = new Promise<void>(resolve => { markBothStarted = resolve; });
+  const gates: Array<{ resolve: () => void; promise: Promise<void> }> = [];
+  for (let i = 0; i < 2; i++) {
+    let resolve!: () => void;
+    const promise = new Promise<void>(r => { resolve = r; });
+    gates.push({ resolve, promise });
+  }
+  const targetUrl = new URL(directGitlab.url);
+  let trapConfirmReads = false;
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (trapConfirmReads && heldProjectReads < 2 && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
+      const idx = heldProjectReads++;
+      if (heldProjectReads === 2) markBothStarted();
+      void gates[idx].promise.then(() => {
+        const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+          method: req.method,
+          headers: req.headers,
+        }, upstreamRes => {
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+        });
+        req.pipe(upstreamReq);
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const instanceA = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  const instanceB = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  const access = createAppAccessService(h.db, h.config.audience);
+  t.after(async () => {
+    await instanceA.app.close();
+    await instanceB.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await directGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const submitInput = { projectId: '1', appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+
+  const v1 = await instanceA.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  const v1View = await instanceA.service.publication(v1.id, v1.ticket, owner.user.id);
+  const reg1 = await instanceA.service.confirm(v1.id, v1.ticket, { revision: v1View.revision, digest: v1View.digest! }, owner.user.id);
+  await h.db.query("UPDATE published_snapshots SET digest = 'stale-digest', version = '0.0.1' WHERE app_id = $1", [reg1.appId!]);
+  await access.update(owner.user.id, reg1.appId!, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  const candidate = await instanceA.service.submit({ ...submitInput, tag: DEFAULT_TAG }, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  assert.equal(candidate.status, 'preview_ready');
+  const candView = await instanceA.service.publication(candidate.id, candidate.ticket, owner.user.id);
+
+  trapConfirmReads = true;
+  const maintainerConfirm = instanceA.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, maintainer.user.id);
+  const ownerConfirm = instanceB.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, owner.user.id);
+  await bothStarted;
+
+  // Owner revokes maintainer while both confirm requests hold active confirm claims.
+  await access.update(owner.user.id, reg1.appId!, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+
+  gates[0].resolve();
+  await assert.rejects(
+    () => maintainerConfirm,
+    (err: any) => err?.statusCode === 404 && err?.code === 'APP_NOT_FOUND',
+  );
+
+  // Confirmed timestamp must still exist for owner's active confirm attempt.
+  const midRow = (await h.db.query<{ confirmed_at: Date | null }>('SELECT confirmed_at FROM publications WHERE id = $1', [candidate.id])).rows[0];
+  assert.ok(midRow.confirmed_at instanceof Date);
+
+  gates[1].resolve();
+  const ownerRes = await ownerConfirm;
+  assert.equal(ownerRes.status, 'registered');
+});
