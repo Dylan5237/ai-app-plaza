@@ -1183,15 +1183,15 @@ async function loadPublication(id = publicationId.value, { revalidating = public
       await recordPublicationPreviewViewed(id, result)
     }
   } catch (error) {
-    const keepExpiredReadOnlyDraft = error.status === 410 && publicationEditorOpen.value && !publicationEditorPending.value
-    if (legacyToken && ([403, 404].includes(error.status) || (error.status === 410 && !keepExpiredReadOnlyDraft))) {
+    const keepExpiredDraft = error.status === 410 && id === publicationId.value && publicationEditorOpen.value
+    if (legacyToken && ([403, 404].includes(error.status) || (error.status === 410 && !keepExpiredDraft))) {
       removeLegacyPublicationTicket(id)
     }
-    if ([403, 404, 410].includes(error.status)) {
+    if ([403, 404, 410].includes(error.status) && !(keepExpiredDraft && publicationEditorPending.value)) {
       deletePendingMetadataEdit(publicationEditCacheKey(id))
     }
     if (current()) {
-      if (keepExpiredReadOnlyDraft) {
+      if (keepExpiredDraft) {
         publicationExpiredOnServer.value = true
       } else if ([401, 403, 404, 410].includes(error.status)) {
         publication.value = null

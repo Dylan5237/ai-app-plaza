@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onUnmounted, ref, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import { uuid } from '../lib/analytics.js'
 import { deletePendingMetadataEdit, getPendingMetadataEdit, setPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
@@ -27,6 +27,8 @@ const activeTab = ref('overview')
 const pending = ref(null)
 const persistenceFallback = ref(false)
 const localReadOnlyReason = ref('')
+const draftCopyText = ref('')
+const draftCopyInput = ref(null)
 const TERMINAL_READONLY_CONFLICTS = new Set([
   'PUBLICATION_STATE_CONFLICT',
   'PUBLICATION_CANCELLED',
@@ -126,6 +128,7 @@ async function load() {
 watch(targetKey, key => {
   sequence++
   saving.value = false
+  draftCopyText.value = ''
   if (key) {
     load()
     return
@@ -146,6 +149,38 @@ async function close() {
   }
   sequence++
   emit('close')
+}
+async function copyDraft(event) {
+  if (!readOnlyContext.value || !manifest.value) return
+  const button = event.currentTarget
+  const current = sequence
+  const text = JSON.stringify({ manifest: manifest.value, documents: documents.value }, null, 2)
+  let copied = false
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      copied = true
+    }
+  } catch {
+    // Keep the copy path available on intranet pages and when clipboard permission is denied.
+  }
+  if (current !== sequence) return
+
+  if (!copied) {
+    draftCopyText.value = text
+    await nextTick()
+    if (current !== sequence || !draftCopyInput.value) return
+    draftCopyInput.value.focus()
+    draftCopyInput.value.select()
+    try { copied = document.execCommand('copy') } catch { copied = false }
+    if (!copied) {
+      ElMessage.warning('自动复制不可用，已选中草稿文本，请手动复制。')
+      return
+    }
+    button.focus()
+  }
+  draftCopyText.value = ''
+  ElMessage.success('草稿已复制。')
 }
 async function save() {
   if (saving.value || readOnlyContext.value || (!pending.value && !context.value?.editable) || !manifest.value) return
@@ -275,6 +310,7 @@ async function save() {
         <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
         <el-alert v-if="persistenceFallback && (saving || pending)" title="浏览器会话存储空间不足，本次编辑恢复记录仅保存在当前标签页内存中；请勿刷新或关闭标签页，直至保存完成并确认新预览。" type="warning" :closable="false" class="editor-alert" data-testid="editor-storage-fallback" />
         <el-alert v-if="readOnlyContext && manifest" :title="localReadOnlyReason || props.readOnlyReason || '当前旧预览已不可保存修改，以下草稿仅供核对或复制；请关闭后打开最新预览继续编辑。'" type="info" :closable="false" class="editor-alert" data-testid="editor-readonly-notice" />
+        <el-input v-if="readOnlyContext && draftCopyText" ref="draftCopyInput" :model-value="draftCopyText" type="textarea" :rows="5" readonly aria-label="草稿文本（可手动复制）" class="editor-alert" />
         <el-alert v-if="pending && !saving" :title="context && !context.editable ? '该原预览已不可继续新建修改；如果此前保存可能已生成新预览，请点击「重试本次保存」找回结果与新授权。' : '保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。'" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基本资料" name="overview">
@@ -322,6 +358,7 @@ async function save() {
     <template #footer>
       <el-button :disabled="saving" @click="close">取消</el-button>
       <el-button v-if="error && !pending && !(readOnlyContext && manifest)" :disabled="saving" @click="load">重新读取</el-button>
+      <el-button v-if="readOnlyContext && manifest" data-testid="editor-copy-draft" @click="copyDraft">复制草稿</el-button>
       <el-button v-if="manifest" type="primary" :loading="saving" :disabled="loading || readOnlyContext || (!changed && !pending)" data-testid="editor-save" @click="save">{{ pending && !saving ? '重试本次保存' : isPublicationMode ? '保存并刷新预览' : '保存到 GitLab 并预览' }}</el-button>
     </template>
   </el-dialog>

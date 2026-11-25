@@ -10,14 +10,14 @@ const activeTab = ref('smart-search')
 
 const view = ref(null)
 const draft = ref('')
-const loading = ref(false)
+const promptLoading = ref(false)
 const busy = ref(false)
 const error = ref('')
-const templatesError = ref('')
 const notice = ref('')
 const uncertain = ref(false)
 let pending = null
-let requestVersion = 0
+let failedPromptDraft
+let promptVersion = 0
 
 const effective = computed(() => view.value?.template ?? view.value?.defaultPrompt ?? '')
 const customized = computed(() => view.value?.template != null)
@@ -25,16 +25,16 @@ const dirty = computed(() => Boolean(view.value) && draft.value.trim() !== effec
 const canSave = computed(() => Boolean(view.value) && !busy.value && !uncertain.value && dirty.value && draft.value.trim().length > 0)
 
 const templatesView = ref(null)
+const templatesLoading = ref(false)
+const templatesError = ref('')
 const templateDrafts = reactive({})
 const templateBusy = reactive({})
 const templateUncertain = reactive({})
 const templateErrors = reactive({})
 const templateNotices = reactive({})
 const templatePending = reactive({})
-const retryAction = ref('load')
 let failedTemplatePurpose = ''
 let failedTemplateDraft
-let failedPromptDraft
 let templatesVersion = 0
 
 const publishItems = computed(() => {
@@ -102,65 +102,34 @@ function applyTemplatesResult(result, updatedPurpose = '', expectedDraft = undef
   }
 }
 
-async function load() {
-  const version = ++requestVersion
-  loading.value = true
-  error.value = ''
-  templatesError.value = ''
-  try {
-    const [promptSettled, templatesSettled] = await Promise.allSettled([
-      apiRequest('/api/access/smart-search-prompt'),
-      apiRequest('/api/access/text-templates'),
-    ])
-    if (version !== requestVersion) return
-    if (promptSettled.status === 'fulfilled') {
-      retryAction.value = 'load'
-      failedPromptDraft = undefined
-      applyPromptResult(promptSettled.value)
-    } else {
-      const err = promptSettled.reason
-      if (err?.status === 401 || err?.status === 403) view.value = null
-      retryAction.value = 'reload-prompt'
-      failedPromptDraft = undefined
-      error.value = err?.message || '提示词配置加载失败，请稍后重试。'
-    }
-    if (templatesSettled.status === 'fulfilled') {
-      failedTemplatePurpose = ''
-      failedTemplateDraft = undefined
-      applyTemplatesResult(templatesSettled.value)
-    } else {
-      const err = templatesSettled.reason
-      if (err?.status === 401 || err?.status === 403) templatesView.value = null
-      failedTemplatePurpose = ''
-      failedTemplateDraft = undefined
-      templatesError.value = err?.message || '模板配置加载失败，请稍后重试。'
-    }
-  } finally {
-    if (version === requestVersion) loading.value = false
-  }
+function load() {
+  void reloadSmartSearchPrompt()
+  void reloadTemplates()
 }
 
 async function reloadSmartSearchPrompt(expectedDraft = undefined) {
-  const version = ++requestVersion
+  const version = ++promptVersion
+  promptLoading.value = true
   error.value = ''
   try {
     const promptResult = await apiRequest('/api/access/smart-search-prompt')
-    if (version !== requestVersion) return
-    retryAction.value = 'load'
+    if (version !== promptVersion) return
     failedPromptDraft = undefined
     applyPromptResult(promptResult, expectedDraft)
   } catch (err) {
-    if (version === requestVersion) {
-      if (err.status === 401 || err.status === 403) view.value = null
-      retryAction.value = 'reload-prompt'
+    if (version === promptVersion) {
+      if (err?.status === 401 || err?.status === 403) view.value = null
       failedPromptDraft = expectedDraft
-      error.value = err.message || '提示词配置加载失败，请稍后重试。'
+      error.value = err?.message || '提示词配置加载失败，请稍后重试。'
     }
+  } finally {
+    if (version === promptVersion) promptLoading.value = false
   }
 }
 
 async function reloadTemplates(updatedPurpose = '', expectedDraft = undefined) {
   const version = ++templatesVersion
+  templatesLoading.value = true
   templatesError.value = ''
   try {
     const result = await apiRequest('/api/access/text-templates')
@@ -170,10 +139,13 @@ async function reloadTemplates(updatedPurpose = '', expectedDraft = undefined) {
     applyTemplatesResult(result, updatedPurpose, expectedDraft)
   } catch (err) {
     if (version === templatesVersion) {
+      if (err?.status === 401 || err?.status === 403) templatesView.value = null
       failedTemplatePurpose = updatedPurpose
       failedTemplateDraft = expectedDraft
-      templatesError.value = err.message || '模板配置加载失败，请稍后重试。'
+      templatesError.value = err?.message || '模板配置加载失败，请稍后重试。'
     }
+  } finally {
+    if (version === templatesVersion) templatesLoading.value = false
   }
 }
 
@@ -182,11 +154,7 @@ function retryTopError() {
     void write(pending.template)
     return
   }
-  if (retryAction.value === 'reload-prompt') {
-    void reloadSmartSearchPrompt(failedPromptDraft)
-    return
-  }
-  void load()
+  void reloadSmartSearchPrompt(failedPromptDraft)
 }
 
 async function write(template) {
@@ -307,10 +275,9 @@ onMounted(load)
 
     <div v-if="error || (uncertain && !busy)" class="state error" role="alert"><span>{{ error || '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。' }}</span><button type="button" :disabled="busy" @click="retryTopError">{{ uncertain ? '重试同一请求' : '重试' }}</button></div>
     <div v-if="templatesError" class="state error" role="alert"><span>{{ templatesError }}</span><button type="button" @click="reloadTemplates(failedTemplatePurpose, failedTemplateDraft)">重试</button></div>
-    <div v-if="loading && !view && !templatesView" class="state" role="status">正在读取提示词与模板配置…</div>
-
-    <el-tabs v-if="view || templatesView" v-model="activeTab" class="template-tabs">
+    <el-tabs v-model="activeTab" class="template-tabs">
       <el-tab-pane label="智能查找提示词" name="smart-search">
+        <div v-if="promptLoading" class="state" role="status">正在读取智能查找提示词…</div>
         <div v-if="notice" class="state ok" role="status">{{ notice }}</div>
         <section v-if="view" class="panel editor" aria-label="提示词编辑">
           <div class="editor-head">
@@ -340,10 +307,10 @@ onMounted(load)
           />
           <p class="hint">服务端输出校验始终生效：推荐只允许候选内应用、最多 3 项、失败自动降级为关键词检索；提示词只影响推荐质量，不影响权限与数据范围。</p>
         </section>
-        <div v-else class="state" role="status">智能查找提示词暂未加载，请点击上方重试按钮。</div>
       </el-tab-pane>
 
       <el-tab-pane label="发布提示词" name="publish">
+        <div v-if="templatesLoading" class="state" role="status">正在读取发布提示词…</div>
         <div v-if="templatesView" class="template-stack">
           <section v-for="item in publishItems" :key="item.purpose" class="panel editor" :aria-label="item.label">
             <div class="editor-head">
@@ -393,10 +360,10 @@ onMounted(load)
             </details>
           </section>
         </div>
-        <div v-else class="state" role="status">发布提示词暂未加载，请点击上方重试按钮。</div>
       </el-tab-pane>
 
       <el-tab-pane label="应用分享模板" name="share">
+        <div v-if="templatesLoading" class="state" role="status">正在读取应用分享模板…</div>
         <div v-if="templatesView" class="template-stack">
           <section v-for="item in shareItems" :key="item.purpose" class="panel editor" :aria-label="item.label">
             <div class="editor-head">
@@ -446,7 +413,6 @@ onMounted(load)
             </div>
           </section>
         </div>
-        <div v-else class="state" role="status">应用分享模板暂未加载，请点击上方重试按钮。</div>
       </el-tab-pane>
     </el-tabs>
   </main>

@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { createApp } from '../server/app.js';
 import { createAppAccessService } from '../server/domain/app-access.js';
 import { openDatabase } from '../server/domain/database.js';
@@ -2395,7 +2395,7 @@ test('two-instance confirm claims prevent revoked maintainer rollback from clear
   assert.equal(ownerRes.status, 'registered');
 });
 
-test('two-instance concurrent confirm allows peer with active claim to register after retryable failure', async t => {
+async function startConcurrentConfirmations(t: TestContext) {
   const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
   const directGitlab = await startGitLabFixture(1);
   let heldProjectReads = 0;
@@ -2411,28 +2411,18 @@ test('two-instance concurrent confirm allows peer with active claim to register 
   }
   const targetUrl = new URL(directGitlab.url);
   let trapConfirmReads = false;
-  const proxy = createServer((req, res) => {
+  const proxy = createServer(async (req, res) => {
     const pathOnly = (req.url ?? '').split('?')[0];
     if (trapConfirmReads && heldProjectReads < 2 && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
       const idx = heldProjectReads++;
       if (idx === 0) markFirstStarted();
       if (idx === 1) markSecondStarted();
-      void gates[idx].promise.then(() => {
-        if (idx === 0) {
-          res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ message: 'temporary gitlab outage for instance A' }));
-          return;
-        }
-        const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
-          method: req.method,
-          headers: req.headers,
-        }, upstreamRes => {
-          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
-          upstreamRes.pipe(res);
-        });
-        req.pipe(upstreamReq);
-      });
-      return;
+      await gates[idx].promise;
+      if (idx === 0) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'temporary gitlab outage for instance A' }));
+        return;
+      }
     }
     const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
       method: req.method,
@@ -2452,8 +2442,10 @@ test('two-instance concurrent confirm allows peer with active claim to register 
 
   const instanceA = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
   const instanceB = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  const confirmations: Promise<unknown>[] = [];
   t.after(async () => {
     for (const gate of gates) gate.resolve();
+    await Promise.allSettled(confirmations);
     await instanceA.app.close();
     await instanceB.app.close();
     proxy.closeAllConnections();
@@ -2469,10 +2461,18 @@ test('two-instance concurrent confirm allows peer with active claim to register 
   const candView = await instanceA.service.publication(candidate.id, candidate.ticket, owner.user.id);
 
   trapConfirmReads = true;
-  const confirmA = instanceA.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, owner.user.id);
-  await firstStarted;
-  const confirmB = instanceB.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, owner.user.id);
-  await secondStarted;
+  const confirmation = { revision: candView.revision, digest: candView.digest! };
+  const confirmA = instanceA.service.confirm(candidate.id, candidate.ticket, confirmation, owner.user.id);
+  confirmations.push(confirmA);
+  await Promise.race([firstStarted, confirmA.then(() => assert.fail('Instance A finished before reaching the GitLab gate'))]);
+  const confirmB = instanceB.service.confirm(candidate.id, candidate.ticket, confirmation, owner.user.id);
+  confirmations.push(confirmB);
+  await Promise.race([secondStarted, confirmB.then(() => assert.fail('Instance B finished before reaching the GitLab gate'))]);
+  return { h, directGitlab, instanceB, owner, candidate, gates, confirmA, confirmB };
+}
+
+test('two-instance concurrent confirm allows peer with active claim to register after retryable failure', async t => {
+  const { gates, confirmA, confirmB } = await startConcurrentConfirmations(t);
 
   gates[0].resolve();
   const resA = await confirmA;
@@ -2482,4 +2482,37 @@ test('two-instance concurrent confirm allows peer with active claim to register 
   gates[1].resolve();
   const resB = await confirmB;
   assert.equal(resB.status, 'registered');
+});
+
+test('two-instance concurrent confirm requires resubmission when the active peer finds the fixed Release missing', async t => {
+  const { h, directGitlab, instanceB, owner, candidate, gates, confirmA, confirmB } = await startConcurrentConfirmations(t);
+  const countClaims = async () => (await h.db.query<{ count: number }>(
+    'SELECT count(*)::int AS count FROM plaza_publication_confirm_claims WHERE publication_id = $1', [candidate.id],
+  )).rows[0]!.count;
+  assert.equal(await countClaims(), 2);
+
+  gates[0].resolve();
+  const resA = await confirmA;
+  assert.equal(resA.status, 'failed');
+  assert.equal(resA.nextAction, 'retry');
+  assert.equal(resA.error?.code, 'SOURCE_UNAVAILABLE');
+  assert.equal(await countClaims(), 1);
+
+  directGitlab.state.releasePresent = false;
+  gates[1].resolve();
+  const resB = await confirmB;
+  assert.equal(resB.status, 'failed');
+  assert.equal(resB.nextAction, 'submit_again');
+  assert.equal(resB.error?.code, 'VALIDATION_FAILED');
+  assert.match(resB.error?.message ?? '', /GitLab Release/);
+
+  const persisted = (await h.db.query(
+    'SELECT status, next_action, error_code, confirmed_at FROM publications WHERE id = $1', [candidate.id],
+  )).rows[0];
+  assert.deepEqual(persisted, { status: 'failed', next_action: 'submit_again', error_code: 'VALIDATION_FAILED', confirmed_at: null });
+  assert.equal(await countClaims(), 0);
+  await assert.rejects(
+    () => instanceB.service.retry(candidate.id, candidate.ticket, owner.user.id),
+    { statusCode: 409, code: 'VALIDATION_FAILED' },
+  );
 });

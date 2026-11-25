@@ -662,11 +662,20 @@ export function createService(config: ServiceConfig): PlazaService {
     error instanceof DomainError &&
     (error.code === 'APP_NOT_FOUND' || error.code === 'PUBLICATION_NOT_FOUND' || error.code === 'LOGIN_REQUIRED');
 
+  async function hasActiveConfirmClaim(tx: Queryable, publicationId: string, claimId: string): Promise<boolean> {
+    const result = await tx.query(
+      'SELECT claim_id FROM plaza_publication_confirm_claims WHERE claim_id = $1 AND publication_id = $2 AND expires_at > now()',
+      [claimId, publicationId],
+    );
+    return result.rows.length > 0;
+  }
+
   async function markFailed(
     id: string,
     error: unknown,
     retryAllowed = true,
     onlyFromStatuses?: PublicationStatus[],
+    confirmClaimId?: string | null,
   ): Promise<PublicationRecord> {
     const failure = safeFailure(error);
     const mustSubmitAgain = failure.code === "SOURCE_MISMATCH" || failure.code === "VALIDATION_FAILED" ||
@@ -677,29 +686,33 @@ export function createService(config: ServiceConfig): PlazaService {
       ? "submit_again"
       : retryAllowed ? "retry" : "submit_again";
     return config.db.transaction(async tx => {
-    const before = (await tx.query<PublicationRecord>('SELECT * FROM publications WHERE id=$1 FOR UPDATE', [id])).rows[0];
-    if (!before) throw notFound();
-    if (before.next_action === 'submit_again') return before;
-    const statusFilter = onlyFromStatuses?.length ? 'status = ANY($5::text[])' : "status NOT IN ('registered', 'cancelled')";
-    const params: unknown[] = [id, failure.code, failure.message, nextAction];
-    if (onlyFromStatuses?.length) params.push(onlyFromStatuses);
-    await tx.query(
-      `UPDATE publications
-          SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
-              confirmed_at = CASE WHEN $2 IN ('SOURCE_MISMATCH', 'VALIDATION_FAILED', 'AUTH_TOKEN_INVALID', 'REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED', 'APP_NOT_FOUND', 'PUBLICATION_NOT_FOUND', 'LOGIN_REQUIRED') THEN NULL ELSE confirmed_at END,
-              updated_at = now()
-        WHERE id = $1 AND ${statusFilter}`,
-      params,
-    );
-    const result = await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id]);
-    if (!result.rows[0]) throw notFound();
-    if (result.rows[0].next_action === 'submit_again') {
-      await tx.query('DELETE FROM plaza_publication_confirm_claims WHERE publication_id = $1', [id]);
-    }
-    if (before.status !== result.rows[0].status) await appendBusinessFact(tx, 'publications', id, config.analytics, 'publication_state_changed', {
-      publicationId: id, fromState: before.status, toState: result.rows[0].status, safeErrorCode: failure.code,
-    });
-    return result.rows[0];
+      const before = (await tx.query<PublicationRecord>('SELECT * FROM publications WHERE id=$1 FOR UPDATE', [id])).rows[0];
+      if (!before) throw notFound();
+      if (before.status === 'registered' || before.status === 'cancelled' || before.next_action === 'submit_again') return before;
+      if (onlyFromStatuses?.length && !onlyFromStatuses.includes(before.status)) {
+        // A still-active confirmation can report a definitive failure after its peer saved a retryable failure.
+        if (
+          !confirmClaimId || !mustSubmitAgain || before.status !== 'failed' || before.next_action !== 'retry' ||
+          before.confirmed_at === null || !(await hasActiveConfirmClaim(tx, id, confirmClaimId))
+        ) return before;
+      }
+      const result = await tx.query<PublicationRecord>(
+        `UPDATE publications
+            SET status = 'failed', error_code = $2, error_message = $3, next_action = $4,
+                confirmed_at = CASE WHEN $5::boolean THEN NULL ELSE confirmed_at END,
+                updated_at = now()
+          WHERE id = $1 RETURNING *`,
+        [id, failure.code, failure.message, nextAction, mustSubmitAgain],
+      );
+      const failed = result.rows[0];
+      if (!failed) throw notFound();
+      if (failed.next_action === 'submit_again') {
+        await tx.query('DELETE FROM plaza_publication_confirm_claims WHERE publication_id = $1', [id]);
+      }
+      if (before.status !== failed.status) await appendBusinessFact(tx, 'publications', id, config.analytics, 'publication_state_changed', {
+        publicationId: id, fromState: before.status, toState: failed.status, safeErrorCode: failure.code,
+      });
+      return failed;
     });
   }
 
@@ -892,14 +905,8 @@ export function createService(config: ServiceConfig): PlazaService {
       ) {
         throw new DomainError(409, "SOURCE_MISMATCH", "该发布候选的确认状态已失效或发生变化，请刷新后查看最新状态。");
       }
-      if (options.claimId) {
-        const activeClaim = (await tx.query<{ claim_id: string }>(
-          'SELECT claim_id FROM plaza_publication_confirm_claims WHERE claim_id = $1 AND publication_id = $2 AND expires_at > now()',
-          [options.claimId, record.id],
-        )).rows[0];
-        if (!activeClaim) {
-          throw new DomainError(409, "SOURCE_MISMATCH", "该发布候选的确认状态已失效或发生变化，请刷新后查看最新状态。");
-        }
+      if (options.claimId && !(await hasActiveConfirmClaim(tx, record.id, options.claimId))) {
+        throw new DomainError(409, "SOURCE_MISMATCH", "该发布候选的确认状态已失效或发生变化，请刷新后查看最新状态。");
       }
 
       // Serialize catalog writers across service instances before checking the
@@ -1165,7 +1172,7 @@ export function createService(config: ServiceConfig): PlazaService {
           await finishAttempt(record.id, attempt, 'failure', error.code);
           throw error;
         }
-        const failed = await markFailed(record.id, error, true, ['preview_ready']);
+        const failed = await markFailed(record.id, error, true, ['preview_ready'], claimId);
         await authorizePublication(config.db, failed, viewerId);
         await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
         return recordView(failed);

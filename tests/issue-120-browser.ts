@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Page, type Route } from 'playwright';
 import { createApp } from '../server/app.js';
 import { createAppAccessService } from '../server/domain/app-access.js';
 import { openDatabase } from '../server/domain/database.js';
@@ -136,6 +136,13 @@ async function selectOption(page: Page, comboboxName: string, optionName: string
   await page.getByRole('combobox', { name: comboboxName, exact: true }).press('ArrowDown');
   await page.getByRole('option', { name: optionName, exact: true }).click();
   await page.keyboard.press('Escape');
+}
+
+async function holdNextRequest(page: Page, url: string) {
+  let capture!: (route: Route) => void;
+  const intercepted = new Promise<Route>(resolve => { capture = resolve; });
+  await page.route(url, capture, { times: 1 });
+  return { intercepted };
 }
 
 try {
@@ -284,7 +291,18 @@ try {
   await memberPage.getByTestId('editor-summary').fill('作者在确认收录前直接修改的简介。');
   await memberPage.getByRole('tab', { name: '入口与完整说明', exact: true }).click();
   await memberPage.getByTestId('editor-doc-README.md').fill('# 预览页修订后的应用名\n\n已保存的最新说明。');
+  const heldSave = await holdNextRequest(memberPage, `**/api/publications/${memberDraft.id}/editor`);
   await memberPage.getByTestId('editor-save').click();
+  const saveRoute = await heldSave.intercepted;
+  const saveResponse = await saveRoute.fetch();
+  assert.ok(saveResponse.ok());
+  // The replacement exists on the server, but its ticket has not reached the editor yet.
+  await h.db.query("UPDATE publications SET expires_at = now() - interval '1 minute' WHERE id = $1", [memberDraft.id]);
+  await memberPage.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await memberPage.getByText('此预览已过期，不能再确认或保存。', { exact: true }).waitFor();
+  assert.ok(await memberPage.getByTestId('metadata-editor').isVisible());
+  assert.ok(await memberPage.evaluate(id => sessionStorage.getItem(`ai-app-plaza:pending-edit:/plaza:pub:${id}`) !== null, memberDraft.id));
+  await saveRoute.fulfill({ response: saveResponse });
   await memberPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
 
   // Preview immediately reflects edited content & incremented patch version.
@@ -951,14 +969,32 @@ try {
     await clockPage.getByTestId('metadata-editor').waitFor();
     await clockPage.clock.runFor(400);
     await clockPage.getByTestId('editor-name').fill('即将过期自动只读草稿');
+    const unsavedReadme = '# 尚未保存的介绍\n\n保留预览到期前的编辑。';
+    await clockPage.getByRole('tab', { name: '入口与完整说明', exact: true }).click();
+    await clockPage.getByTestId('editor-doc-README.md').fill(unsavedReadme);
+    await clockPage.getByRole('tab', { name: '基本资料', exact: true }).click();
     assert.equal(await clockPage.getByTestId('editor-readonly-notice').count(), 0);
     assert.equal(await clockPage.getByTestId('editor-save').isDisabled(), false);
+    const copyDraft = clockPage.getByTestId('editor-copy-draft');
+    assert.equal(await copyDraft.count(), 0);
 
     await clockPage.clock.fastForward(31_000);
     await clockPage.getByTestId('editor-readonly-notice').waitFor();
     assert.equal(await clockPage.getByTestId('editor-name').inputValue(), '即将过期自动只读草稿');
     assert.equal(await clockPage.getByTestId('editor-name').isDisabled(), true);
+    assert.equal(await clockPage.getByTestId('editor-doc-README.md').isDisabled(), true);
     assert.equal(await clockPage.getByTestId('editor-save').isDisabled(), true);
+    await clockPage.getByTestId('metadata-editor').getByRole('button', { name: '取消', exact: true }).focus();
+    await clockPage.keyboard.press('Tab');
+    assert.equal(await copyDraft.evaluate(button => button === document.activeElement), true);
+    await clockPage.keyboard.press('Enter');
+    await clockPage.getByText('草稿已复制。', { exact: true }).waitFor();
+    const copiedDraft = await clockPage.evaluate(() => JSON.parse((window as any).__copied));
+    assert.deepEqual(Object.keys(copiedDraft).sort(), ['documents', 'manifest']);
+    assert.equal(copiedDraft.manifest.name, '即将过期自动只读草稿');
+    assert.equal(copiedDraft.manifest.appKey, 'expiry-timer-readonly-draft');
+    assert.equal(copiedDraft.documents['README.md'], unsavedReadme);
+    assert.equal(copiedDraft.documents['docs/usage.md'], '# 使用说明\n\n初始使用说明。');
 
     await clockPage.unroute(`**/api/publications/${expiryTimerDraft.id}*`, shortExpiryHandler);
     await h.db.query("UPDATE publications SET expires_at = now() - interval '1 minute' WHERE id = $1", [expiryTimerDraft.id]);
@@ -1007,20 +1043,23 @@ try {
   await adminPage.getByRole('button', { name: '取消', exact: true }).click();
   await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
 
-  // SmartSearchPromptAdmin loads prompt independently when text-templates fails with 503 on initial open.
-  let failTemplatesOnce = true;
-  const templates503Handler = (route: any) => {
-    if (failTemplatesOnce && route.request().method() === 'GET') {
-      failTemplatesOnce = false;
-      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '模板服务暂不可用' } }) });
-    }
-    return route.continue();
-  };
-  await adminPage.route('**/api/access/text-templates', templates503Handler);
+  // Either editor can accept changes while the other endpoint is still loading.
+  const heldPrompt = await holdNextRequest(adminPage, '**/api/access/smart-search-prompt');
   await adminPage.goto(`${h.origin}/plaza/?space=smart-search`);
-  await adminPage.getByTestId('prompt-editor').waitFor();
+  await adminPage.getByText('正在读取智能查找提示词…').waitFor();
+  await adminPage.getByRole('tab', { name: '应用分享模板', exact: true }).click();
+  await adminPage.getByTestId('template-editor-share_agent').fill('独立加载草稿 {{appName}}');
+  assert.ok(await adminPage.getByTestId('template-save-share_agent').isEnabled());
+  await (await heldPrompt.intercepted).continue();
+
+  const heldTemplates = await holdNextRequest(adminPage, '**/api/access/text-templates');
+  await adminPage.goto(`${h.origin}/plaza/?space=smart-search`);
+  await adminPage.getByTestId('prompt-editor').fill('独立加载提示词草稿');
+  assert.ok(await adminPage.getByTestId('prompt-save').isEnabled());
+  await (await heldTemplates.intercepted).fulfill({
+    status: 503, json: { error: { code: 'SERVICE_UNAVAILABLE', message: '模板服务暂不可用' } },
+  });
   await adminPage.getByText('模板服务暂不可用').waitFor();
-  await adminPage.unroute('**/api/access/text-templates', templates503Handler);
   assert.equal(await adminPage.getByTestId('prompt-editor').isDisabled(), false);
 
   // SmartSearchPromptAdmin preserves uncertain smart-search save retry button after saving a template in another tab.
