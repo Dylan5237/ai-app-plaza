@@ -34,7 +34,7 @@ function removeStorageTickets(preserveIds?: Set<string>): void {
         if (!preserveIds?.has(id)) keysToRemove.push(key)
         continue
       }
-      if (!preserveIds && isLegacyTicketKey(key)) {
+      if (isLegacyTicketKey(key)) {
         keysToRemove.push(key)
       }
     }

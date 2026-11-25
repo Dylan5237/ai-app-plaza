@@ -995,10 +995,20 @@ export function createService(config: ServiceConfig): PlazaService {
           WHERE id = $1 RETURNING *`,
         [record.id, appId, JSON.stringify(resultPreview(savedView, source, lockedPublication))],
       );
-      const managedOperation = config.analytics ? (await tx.query<{ operation_kind: string; id: string }>(
-        'SELECT id, operation_kind FROM managed_publish_operations WHERE publication_id = $1 OR id = $2 ORDER BY created_at DESC LIMIT 1',
-        [record.id, lockedPublication.managed_operation_id ?? null],
-      )).rows[0] : undefined;
+      const lookupManagedOperation = async (pubId: string, managedOpId?: string | null) => {
+        if (managedOpId) {
+          const byId = (await tx.query<{ operation_kind: string; id: string }>(
+            'SELECT id, operation_kind FROM managed_publish_operations WHERE id = $1',
+            [managedOpId],
+          )).rows[0];
+          if (byId) return byId;
+        }
+        return (await tx.query<{ operation_kind: string; id: string }>(
+          'SELECT id, operation_kind FROM managed_publish_operations WHERE publication_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [pubId],
+        )).rows[0];
+      };
+      const managedOperation = config.analytics ? await lookupManagedOperation(record.id, lockedPublication.managed_operation_id) : undefined;
       let registrationKind: 'new' | 'metadata_edit' | 'version_update' = currentRevision === 0 ? 'new' : 'version_update';
       if (config.analytics && currentRevision !== 0 && managedOperation?.operation_kind === 'metadata_patch') {
         let hasFullSourceInChain = false;
@@ -1014,10 +1024,7 @@ export function createService(config: ServiceConfig): PlazaService {
             hasFullSourceInChain = true;
             break;
           }
-          const ancestorOp = (await tx.query<{ operation_kind: string }>(
-            'SELECT operation_kind FROM managed_publish_operations WHERE publication_id = $1 OR id = $2 ORDER BY created_at DESC LIMIT 1',
-            [ancestorId, ancestorRow.managed_operation_id ?? null],
-          )).rows[0];
+          const ancestorOp = await lookupManagedOperation(ancestorId, ancestorRow.managed_operation_id);
           if (!ancestorOp || ancestorOp.operation_kind !== 'metadata_patch') {
             hasFullSourceInChain = true;
             break;
@@ -1289,9 +1296,11 @@ export function createService(config: ServiceConfig): PlazaService {
           await finishAttempt(created.record.id, submitAttempt, 'success');
           return submitView(prepared);
         } catch (error) {
-          const failed = await markFailed(created.record.id, error);
-          await finishAttempt(created.record.id, submitAttempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
-          return submitView(failed);
+          const failed = await markFailed(created.record.id, error, true, ['checking']);
+          const effective = await resolveSupersededPublication(failed);
+          const succeeded = effective.status === 'registered' || effective.status === 'preview_ready';
+          await finishAttempt(created.record.id, submitAttempt, succeeded ? 'success' : 'failure', succeeded ? undefined : (effective.error_code || undefined));
+          return supersededSubmitView(failed, effective);
         }
       });
     },

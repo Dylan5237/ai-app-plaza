@@ -1724,3 +1724,120 @@ test('resumeCheckingPublication does not overwrite concurrent preview_ready tran
   const rowAfter = (await h.db.query<{ status: string }>('SELECT status FROM publications WHERE id = $1', [editedPub.id])).rows[0];
   assert.equal(rowAfter.status, 'preview_ready');
 });
+
+test('switching accounts clears legacy unscoped tickets even when current URL provides a new ticket', async t => {
+  const {
+    syncPublicationTicketIdentity,
+    savePublicationTicket,
+    readLegacyPublicationTicket,
+    readPublicationTicket,
+  } = await import(new URL('../src/lib/publication-tickets.ts', import.meta.url).href);
+  const prevWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const prevDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const backing = new Map<string, string>();
+
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      baseURI: 'http://127.0.0.1/plaza/',
+      querySelector: () => ({ getAttribute: () => '/plaza' }),
+    },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { origin: 'http://127.0.0.1' },
+      sessionStorage: {
+        get length() { return backing.size; },
+        key(index: number) { return [...backing.keys()][index] ?? null; },
+        getItem(key: string) { return backing.get(key) ?? null; },
+        setItem(key: string, value: string) { backing.set(key, value); },
+        removeItem(key: string) { backing.delete(key); },
+      },
+    },
+  });
+  t.after(() => {
+    if (prevWindow) Object.defineProperty(globalThis, 'window', prevWindow);
+    else delete (globalThis as any).window;
+    if (prevDocument) Object.defineProperty(globalThis, 'document', prevDocument);
+    else delete (globalThis as any).document;
+  });
+
+  const oldPub = randomUUID();
+  const newPub = randomUUID();
+  syncPublicationTicketIdentity('user-a');
+  backing.set(`ai-app-plaza:publication:${oldPub}`, 'old-legacy-ticket');
+  savePublicationTicket(oldPub, 'old-scoped-ticket', false);
+
+  // Switching to user-b while opening a URL that already sets preserveIds for newPub must still purge oldPub legacy ticket.
+  syncPublicationTicketIdentity(null);
+  savePublicationTicket(newPub, 'new-user-ticket', true);
+  syncPublicationTicketIdentity('user-b');
+
+  assert.equal(readLegacyPublicationTicket(oldPub), '');
+  assert.equal(backing.has(`ai-app-plaza:publication:${oldPub}`), false);
+  assert.equal(backing.has(`ai-app-plaza:publication:/plaza:${oldPub}`), false);
+  assert.equal(readPublicationTicket(newPub), 'new-user-ticket');
+});
+
+test('late submit failure does not overwrite preview_ready achieved by overlapping resumeCheckingPublication', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const directGitlab = await startGitLabFixture(1);
+  let holdFirstSubmitProjectRead = true;
+  let markFirstReadStarted!: () => void;
+  let releaseFirstReadAs503!: () => void;
+  const firstReadStarted = new Promise<void>(resolve => { markFirstReadStarted = resolve; });
+  const firstReadGate = new Promise<void>(resolve => { releaseFirstReadAs503 = resolve; });
+  const targetUrl = new URL(directGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (holdFirstSubmitProjectRead && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
+      holdFirstSubmitProjectRead = false;
+      markFirstReadStarted();
+      void firstReadGate.then(() => {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'late gitlab outage' }));
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await directGitlab.close();
+    await h.close();
+  });
+
+  const submitInput = { projectId: '1', appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const submitPromise = integrated.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  await firstReadStarted;
+
+  const checkingRow = (await h.db.query<{ id: string }>("SELECT id FROM publications WHERE status = 'checking'")).rows[0];
+  assert.ok(checkingRow?.id);
+  const resumed = await integrated.service.resumeCheckingPublication(checkingRow.id, submitInput);
+  assert.equal(resumed.status, 'preview_ready');
+
+  releaseFirstReadAs503();
+  const submitResult = await submitPromise;
+  assert.equal(submitResult.id, checkingRow.id);
+  assert.equal(submitResult.status, 'preview_ready');
+  const rowAfter = (await h.db.query<{ status: string }>('SELECT status FROM publications WHERE id = $1', [checkingRow.id])).rows[0];
+  assert.equal(rowAfter.status, 'preview_ready');
+});

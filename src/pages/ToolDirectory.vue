@@ -163,7 +163,8 @@ async function revalidateRandomBatch(batch) {
   for (const [index, item] of checked.entries()) {
     const previous = batch[index]
     if (item.status === 'fulfilled') {
-      items.push({ ...previous, ...item.value, documents: {} })
+      const { documents: _documents, distributions: _distributions, ...card } = item.value
+      items.push({ ...card, documents: {} })
     } else if ([401, 403].includes(item.reason.status)) {
       throw item.reason
     } else if (item.reason.status !== 404) {
@@ -846,17 +847,25 @@ async function copyShareLink(app, placement) {
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
 }
 
+function toCatalogCard(updatedApp) {
+  const { documents: _documents, distributions: _distributions, ...card } = updatedApp
+  return { ...card, documents: {} }
+}
+
 function syncAppAcrossViews(updatedApp) {
   if (!updatedApp?.id) return
-  const merge = items => items.map(item => (item.id === updatedApp.id ? { ...item, ...updatedApp, documents: {}, visibility: updatedApp.visibility } : item))
+  const nextCard = toCatalogCard(updatedApp)
+  const merge = items => items.map(item => (item.id === updatedApp.id ? nextCard : item))
   if (apps.value.some(item => item.id === updatedApp.id)) apps.value = merge(apps.value)
   if (randomItems.value.some(item => item.id === updatedApp.id)) randomItems.value = merge(randomItems.value)
   if (searchResultItems.value.some(item => item.id === updatedApp.id)) searchResultItems.value = merge(searchResultItems.value)
   smartSearchRef.value?.syncApp?.(updatedApp)
+  window.dispatchEvent(new CustomEvent('plaza-app-updated', { detail: updatedApp }))
 }
 
 function onAccessSaved() {
   refreshOnReturn = true
+  window.dispatchEvent(new CustomEvent('plaza-favorites-changed'))
   if (selectedApp.value?.id) void openApp(selectedApp.value.id, { fromHistory: true, revalidating: true })
 }
 

@@ -789,6 +789,59 @@ try {
   assert.equal(await adminPage.getByTestId('editor-save').isDisabled(), true);
   report.checks.push('req2-req3-round11-browser-regressions');
 
+  // --- Regression R12-1: PersonalSpace favorite card syncs updated visibility after detail access change ---
+  await adminPage.goto(`${h.origin}/plaza/?discover=catalog`);
+  const agentCardForFav = adminPage.locator('.catalog-results [data-testid="app-card"]').filter({ hasText: 'WorkBuddy企微机器人权限主动续期' }).first();
+  await agentCardForFav.waitFor();
+  await agentCardForFav.getByRole('button', { name: '收藏应用', exact: true }).click();
+  await agentCardForFav.getByRole('button', { name: '取消收藏', exact: true }).waitFor();
+
+  await adminPage.getByRole('button', { name: '我的收藏', exact: true }).click();
+  const favCard = adminPage.locator('.personal-space [data-testid="app-card"]').filter({ hasText: 'WorkBuddy企微机器人权限主动续期' }).first();
+  await favCard.waitFor();
+  await favCard.getByTestId('card-title').click();
+  await adminPage.getByTestId('app-detail').waitFor();
+  await adminPage.getByTestId('detail-manage-access').click();
+  await adminPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor();
+  await selectOption(adminPage, '分享范围', '仅自己');
+  await adminPage.getByRole('button', { name: '确认更改分享范围', exact: true }).click();
+  await adminPage.getByText('配置已保存，已回读当前结果。', { exact: true }).waitFor();
+  await adminPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
+  await adminPage.getByRole('dialog', { name: '应用归属与权限', exact: true }).waitFor({ state: 'hidden' });
+  await adminPage.getByTestId('detail-visibility').getByText('仅自己可见').waitFor();
+  await adminPage.getByTestId('return-discovery').click();
+  await favCard.waitFor();
+  await favCard.getByTestId('card-share').click();
+  await adminPage.locator('.el-message').getByText(/当前仅自己可见/).first().waitFor();
+
+  // --- Regression R12-2: Syncing detail response into cards clears stale entryAvailability ---
+  const staleDisabledHandler = async (route: any) => {
+    if (route.request().method() === 'GET') {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.items = body.items.map((item: any) => (
+        item.id === agentReg.appId
+          ? { ...item, entryAvailability: { agent: { status: 'disabled', reason: '旧版分发包待补齐' } } }
+          : item
+      ));
+      return route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(body) });
+    }
+    return route.continue();
+  };
+  await adminPage.route('**/api/apps?*', staleDisabledHandler);
+  await adminPage.goto(`${h.origin}/plaza/?discover=catalog`);
+  const syncedCard = adminPage.locator('.catalog-results [data-testid="app-card"]').filter({ hasText: 'WorkBuddy企微机器人权限主动续期' }).first();
+  await syncedCard.getByTestId('primary-disabled-reason').filter({ hasText: '旧版分发包待补齐' }).waitFor();
+  await adminPage.unroute('**/api/apps?*', staleDisabledHandler);
+  assert.equal(await syncedCard.getByTestId('card-primary-agent').count(), 0);
+
+  await syncedCard.getByTestId('card-title').click();
+  await adminPage.getByTestId('use-agent').waitFor();
+  await adminPage.getByTestId('return-discovery').click();
+  await syncedCard.getByTestId('card-primary-agent').waitFor();
+  assert.equal(await syncedCard.getByTestId('primary-disabled-reason').count(), 0);
+  report.checks.push('req2-req4-round12-browser-regressions');
+
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);
   report.status = 'PASS';

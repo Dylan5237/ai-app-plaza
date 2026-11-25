@@ -217,11 +217,13 @@ async function revalidateResults() {
     const candidate = message.candidates[position]
     if (result.status === 'fulfilled') {
       if (JSON.stringify(candidate.app.visibility ?? null) !== JSON.stringify(result.value.visibility ?? null)
+        || JSON.stringify(candidate.app.entryAvailability ?? null) !== JSON.stringify(result.value.entryAvailability ?? null)
         || candidate.app.revision !== result.value.revision
         || candidate.app.snapshotId !== result.value.snapshotId) {
         updated = true
       }
-      candidates.push({ ...candidate, app: { ...candidate.app, ...result.value, documents: {}, visibility: result.value.visibility } })
+      const { documents: _documents, distributions: _distributions, ...card } = result.value
+      candidates.push({ ...candidate, app: { ...card, documents: {} } })
     } else if ([403, 404].includes(result.reason?.status)) dropped = true
     else candidates.push(candidate)
   }
@@ -234,13 +236,15 @@ async function revalidateResults() {
 
 function syncApp(updatedApp) {
   if (!updatedApp?.id) return
+  const { documents: _documents, distributions: _distributions, ...card } = updatedApp
+  const nextCard = { ...card, documents: {} }
   for (const [index, message] of messages.value.entries()) {
     if (message.kind !== 'results' || !Array.isArray(message.candidates)) continue
     let matched = false
     const candidates = message.candidates.map(candidate => {
       if (candidate.app?.id !== updatedApp.id) return candidate
       matched = true
-      return { ...candidate, app: { ...candidate.app, ...updatedApp, documents: {}, visibility: updatedApp.visibility } }
+      return { ...candidate, app: nextCard }
     })
     if (!matched) continue
     message.candidates = candidates
