@@ -582,6 +582,136 @@ try {
   assert.match(await adminPage.locator('.publication-preview .public-app-version').first().innerText(), /v1\.1\.2/);
   report.checks.push('req3-auth-gated-cache-isolation-and-tag-conflict-unlock');
 
+  // --- Regression 5: POST 403 on editor save clears private editor content & refreshes parent ---
+  const postRevokeDraft = await h.managed.submit(makeBundle({
+    appKey: 'post-save-403-clear',
+    name: '保存失权清资料测试',
+    summary: '验证保存遇到 403 时立即清除编辑器私有资料并重读预览状态。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await adminPage.goto(postRevokeDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('失权保存立即清空名称');
+  await adminPage.getByRole('tab', { name: '入口与完整说明', exact: true }).click();
+  await adminPage.getByTestId('editor-doc-README.md').fill('# 失权立即隐藏正文');
+
+  let markReloadSeen!: () => void;
+  const reloadSeen = new Promise<void>(resolve => { markReloadSeen = resolve; });
+  const countReloadHandler = (route: any) => {
+    if (route.request().method() === 'GET') markReloadSeen();
+    return route.continue();
+  };
+  let save403Once = true;
+  const save403Handler = (route: any) => {
+    if (save403Once && route.request().method() === 'POST') {
+      save403Once = false;
+      return route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'PERMISSION_DENIED', message: '无权继续修改此应用资料。' } }),
+      });
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${postRevokeDraft.id}`, countReloadHandler);
+  await adminPage.route(`**/api/publications/${postRevokeDraft.id}/editor*`, save403Handler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByTestId('metadata-editor').getByText('无权继续修改此应用资料。').waitFor();
+  assert.equal(await adminPage.getByTestId('editor-name').count(), 0, 'POST 403 clears manifest fields immediately');
+  assert.equal((await adminPage.getByTestId('metadata-editor').innerText()).includes('失权立即隐藏正文'), false);
+  await reloadSeen;
+  assert.equal(
+    await adminPage.evaluate(id => window.sessionStorage.getItem(`ai-app-plaza:pending-edit:/plaza:pub:${id}`), postRevokeDraft.id),
+    null,
+    'POST 403 purges pending edit from sessionStorage',
+  );
+  await adminPage.unroute(`**/api/publications/${postRevokeDraft.id}/editor*`, save403Handler);
+  await adminPage.unroute(`**/api/publications/${postRevokeDraft.id}`, countReloadHandler);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  // --- Regression 6: QuotaExceededError on pending-edit shows memory fallback warning ---
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('存储配额不足告警测试');
+  await adminPage.evaluate(() => {
+    const orig = Storage.prototype.setItem;
+    (window as any).__restoreSetItem = () => { Storage.prototype.setItem = orig; };
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (String(key).includes('pending-edit')) {
+        throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      }
+      return orig.call(this, key, value);
+    };
+  });
+  let abortForQuota = true;
+  const quotaAbortHandler = (route: any) => {
+    if (abortForQuota && route.request().method() === 'POST') {
+      abortForQuota = false;
+      return route.abort('failed');
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${postRevokeDraft.id}/editor*`, quotaAbortHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByTestId('editor-storage-fallback').waitFor();
+  await adminPage.evaluate(() => { (window as any).__restoreSetItem?.(); });
+  await adminPage.unroute(`**/api/publications/${postRevokeDraft.id}/editor*`, quotaAbortHandler);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.locator('.el-message-box').getByRole('button', { name: '关闭', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  // --- Regression 7: Unmounting editor during in-flight POST preserves pending edit for ticket recovery ---
+  const unmountDraft = await h.managed.submit(makeBundle({
+    appKey: 'unmount-during-save',
+    name: '保存中途卸载护票据测试',
+    summary: '验证在途保存期间组件卸载不会误删待恢复记录。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await adminPage.goto(unmountDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByTestId('editor-name').fill('卸载中断保留恢复记录');
+
+  let releaseInflightPost!: () => void;
+  let markPostIntercepted!: () => void;
+  const postIntercepted = new Promise<void>(resolve => { markPostIntercepted = resolve; });
+  const inflightGate = new Promise<void>(resolve => { releaseInflightPost = resolve; });
+  const unmountPostHandler = async (route: any) => {
+    if (route.request().method() === 'POST') {
+      markPostIntercepted();
+      await inflightGate;
+      return route.continue();
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${unmountDraft.id}/editor*`, unmountPostHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await postIntercepted;
+
+  // Unmount ApplicationMetadataEditor via hash navigation away while POST is still in-flight.
+  const backgroundPostFinished = adminPage.waitForResponse(
+    res => res.url().includes(`/api/publications/${unmountDraft.id}/editor`) && res.request().method() === 'POST',
+  );
+  await adminPage.evaluate(() => { window.location.hash = ''; });
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'detached' });
+  releaseInflightPost();
+  await backgroundPostFinished;
+  await adminPage.unroute(`**/api/publications/${unmountDraft.id}/editor*`, unmountPostHandler);
+
+  // Returning to original publication shows it was cancelled, and pending recovery restores the new preview & ticket.
+  await adminPage.goto(`${h.origin}/plaza/#publish=${unmountDraft.id}`);
+  await adminPage.getByTestId('recover-publication-edit').waitFor();
+  await adminPage.getByTestId('recover-publication-edit').click();
+  await adminPage.getByTestId('metadata-editor').waitFor();
+  await adminPage.getByRole('button', { name: '重试本次保存', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+  await adminPage.locator('.publication-preview .public-app-title-row h2').filter({ hasText: '卸载中断保留恢复记录' }).waitFor();
+  assert.match(await adminPage.locator('.publication-preview .public-app-version').first().innerText(), /v1\.0\.1/);
+  await adminPage.getByTestId('confirm-publication').waitFor();
+  report.checks.push('req3-round10-browser-regressions');
+
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);
   report.status = 'PASS';

@@ -59,18 +59,19 @@ export function getPendingMetadataEdit(cacheKey: string): PendingMetadataEdit | 
   return stored.operation
 }
 
-export function setPendingMetadataEdit(cacheKey: string, operation: PendingMetadataEdit): void {
-  if (!cacheKey) return
+export function setPendingMetadataEdit(cacheKey: string, operation: PendingMetadataEdit): boolean {
+  if (!cacheKey) return false
   pendingEdits.set(cacheKey, operation)
-  if (typeof window === 'undefined') return
+  if (typeof window === 'undefined') return false
   try {
     const payload: StoredPendingMetadataEdit = {
       ownerId: getCurrentTicketOwnerId(),
       operation: { ...operation, token: '' },
     }
     window.sessionStorage.setItem(`${pendingPrefix()}${cacheKey}`, JSON.stringify(payload))
+    return true
   } catch {
-    // Ignore storage persistence errors in memory-only environments.
+    return false
   }
 }
 

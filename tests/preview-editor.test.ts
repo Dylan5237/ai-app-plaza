@@ -1389,3 +1389,259 @@ test('promoteLegacyPublicationTicket keeps legacy key when sessionStorage setIte
   assert.equal(backing.has(`ai-app-plaza:publication:${id}`), false);
   assert.equal(readPublicationTicket(id), 'legacy-ticket-value');
 });
+
+test('revoked retry caller is rejected after row lock even when original editor retains access', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let sawReleaseCreate = false;
+  let failNextProjectReadOnce = false;
+  let onRetryGitLabRead: (() => Promise<void>) | null = null;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (failNextProjectReadOnce && req.method === 'GET' && /\/api\/v4\/projects\/\d+$/.test(pathOnly)) {
+      failNextProjectReadOnce = false;
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'transient gitlab outage' }));
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      const chunks: Buffer[] = [];
+      upstreamRes.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      upstreamRes.on('end', () => {
+        const finalize = async () => {
+          if (sawReleaseCreate && req.method === 'POST' && /\/api\/v4\/projects\/\d+\/releases$/.test(pathOnly)) {
+            sawReleaseCreate = false;
+            failNextProjectReadOnce = true;
+          } else if (onRetryGitLabRead && req.method === 'GET' && /\/api\/v4\/projects\/\d+$/.test(pathOnly)) {
+            const hook = onRetryGitLabRead;
+            onRetryGitLabRead = null;
+            await hook();
+          }
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          res.end(Buffer.concat(chunks));
+        };
+        void finalize();
+      });
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const access = createAppAccessService(h.db, h.config.audience);
+  const publishKey = randomBytes(32).toString('base64url');
+  const v1 = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: 1, digest: v1.digest! }, owner.user.id);
+  const appId = reg1.appId!;
+  await access.update(owner.user.id, appId, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: v1.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  assert.equal(v11.status, 'preview_ready');
+
+  // Owner submits edit that fails transiently after GitLab commit/release, so replace_actor_user_id = owner.
+  sawReleaseCreate = true;
+  const edited = structuredClone(v11.preview!.manifest);
+  edited.name = '负责人发起待重试修订';
+  edited.projectVersion = '1.1.1';
+  const editRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/editor`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 1, manifest: edited, documents: v11.preview!.documents },
+  });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  const failedCandidate = editRes.json().managementPublication;
+  assert.equal(failedCandidate.status, 'failed');
+
+  // Maintainer retries the owner's failed revision; revoke maintainer during GitLab read before preparePreview row lock.
+  onRetryGitLabRead = async () => {
+    await access.update(owner.user.id, appId, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+  };
+  const revokedRetry = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${failedCandidate.id}/retry`,
+    headers: h.headers({ cookie: maintainer.cookie, 'x-plaza-portal-token': 'fixture-admin' }),
+  });
+  assert.equal(revokedRetry.statusCode, 404);
+
+  const v11After = (await h.db.query<{ status: string; superseded_by_publication_id: string | null }>('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [v11.id])).rows[0];
+  assert.equal(v11After.status, 'preview_ready');
+  assert.equal(v11After.superseded_by_publication_id, null);
+
+  // Original editor (owner) can still retry successfully after the revoked caller's attempt was rejected.
+  const ownerRetry = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${failedCandidate.id}/retry`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member' }),
+  });
+  assert.equal(ownerRetry.statusCode, 200, ownerRetry.body);
+  assert.equal(ownerRetry.json().status, 'preview_ready');
+});
+
+test('confirm rollback clears confirmed_at accurately so owner can subsequently edit unconfirmed preview', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let onGitLabConfirmRead: (() => Promise<void>) | null = null;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      const chunks: Buffer[] = [];
+      upstreamRes.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      upstreamRes.on('end', () => {
+        const finalize = async () => {
+          if (onGitLabConfirmRead && req.method === 'GET' && /\/api\/v4\/projects\/\d+$/.test((req.url ?? '').split('?')[0])) {
+            const hook = onGitLabConfirmRead;
+            onGitLabConfirmRead = null;
+            await hook();
+          }
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          res.end(Buffer.concat(chunks));
+        };
+        void finalize();
+      });
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const access = createAppAccessService(h.db, h.config.audience);
+  const publishKey = randomBytes(32).toString('base64url');
+  const v1 = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: 1, digest: v1.digest! }, owner.user.id);
+  const appId = reg1.appId!;
+  await access.update(owner.user.id, appId, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: v1.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  onGitLabConfirmRead = async () => {
+    await access.update(owner.user.id, appId, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+  };
+  const revokedConfirm = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/confirm`,
+    headers: h.headers({ cookie: maintainer.cookie, 'x-plaza-portal-token': 'fixture-admin' }),
+    payload: { revision: 1, digest: v11.digest },
+  });
+  assert.equal(revokedConfirm.statusCode, 404);
+
+  const edited = structuredClone(v11.preview!.manifest);
+  edited.name = '回滚后负责人继续编辑';
+  edited.projectVersion = '1.1.1';
+  const ownerEditAfterRollback = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/editor`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 1, manifest: edited, documents: v11.preview!.documents },
+  });
+  assert.equal(ownerEditAfterRollback.statusCode, 200, ownerEditAfterRollback.body);
+  assert.equal(ownerEditAfterRollback.json().managementPublication.status, 'preview_ready');
+});
+
+test('editing a full_source update preview before confirm preserves version_update analytics while direct metadata edit records metadata_edit', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin', analytics: true });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: managedGitlab.url,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const publishKey = randomBytes(32).toString('base64url');
+  const v1 = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: 1, digest: v1.digest! }, owner.user.id);
+  const appId = reg1.appId!;
+
+  // Full source update v1.1.0, then polish summary via preview editor -> v1.1.1 -> confirm.
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: v1.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  const editedUpdate = structuredClone(v11.preview!.manifest);
+  editedUpdate.summary = '源码更新预览内微调简介';
+  editedUpdate.projectVersion = '1.1.1';
+  const editUpdateRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/publications/${v11.id}/editor`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', authorization: `Bearer ${v11.ticket}`, 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 1, manifest: editedUpdate, documents: v11.preview!.documents },
+  });
+  assert.equal(editUpdateRes.statusCode, 200, editUpdateRes.body);
+  const editedUpdatePub = editUpdateRes.json().publication;
+  await integrated.service.confirm(editedUpdatePub.id, editUpdateRes.json().ticket, { revision: 1, digest: editedUpdatePub.digest }, owner.user.id);
+
+  // Direct management metadata edit from v1.1.1 -> v1.1.2 -> confirm.
+  const editedDirect = structuredClone(editedUpdatePub.preview.manifest);
+  editedDirect.summary = '已发布后直接资料修改';
+  editedDirect.projectVersion = '1.1.2';
+  const directRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/apps/${appId}/editor`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member', 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 2, manifest: editedDirect, documents: editedUpdatePub.preview.documents },
+  });
+  assert.equal(directRes.statusCode, 200, directRes.body);
+  const directPub = directRes.json().managementPublication;
+  const confirmDirectRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${directPub.id}/confirm`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member' }),
+    payload: { revision: 1, digest: directPub.digest },
+  });
+  assert.equal(confirmDirectRes.statusCode, 200, confirmDirectRes.body);
+
+  const rowFor = async (pubId: string) => {
+    const journal = (await h.db.query<{ analytics_journal: any[] }>('SELECT analytics_journal FROM publications WHERE id = $1', [pubId])).rows[0].analytics_journal;
+    return journal.find((ev: any) => ev.eventName === 'publication_state_changed' && ev.toState === 'registered')?.registrationKind;
+  };
+  assert.equal(await rowFor(v1.id), 'new');
+  assert.equal(await rowFor(editedUpdatePub.id), 'version_update');
+  assert.equal(await rowFor(directPub.id), 'metadata_edit');
+});

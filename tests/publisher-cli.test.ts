@@ -2752,7 +2752,18 @@ test('CLI recover and status preserve superseded and original publication relati
   const stateDir = path.join(temporary, 'private-state');
   const SUPERSEDED_ID = 'b9c4338f-1111-4444-8888-222233334444';
 
+  let failNewUpdate = false;
   const portal = await createPortal((request, response) => {
+    if (failNewUpdate) {
+      if (request.url?.includes(`/api/managed-apps/${MANAGED_ID}/status`)) {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ managedAppId: MANAGED_ID, expectedAppRevision: 1 }));
+        return;
+      }
+      response.writeHead(503, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ message: 'temporary portal failure' }));
+      return;
+    }
     if (request.method === 'POST' && request.url === '/api/managed-publications') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({
@@ -2807,4 +2818,20 @@ test('CLI recover and status preserve superseded and original publication relati
   assert.equal(statusOut.superseded, true);
   assert.equal(statusOut.originalPublicationId, PUBLICATION_ID);
   assert.equal(statusOut.originalStatus, 'cancelled');
+
+  // Starting a new version publish that fails clears stale superseded fields instead of misreporting them.
+  const manifestRaw = JSON.parse(await readFile(path.join(root, 'ai-app.json'), 'utf8'));
+  manifestRaw.projectVersion = '1.0.1';
+  await writeFile(path.join(root, 'ai-app.json'), JSON.stringify(manifestRaw));
+
+  failNewUpdate = true;
+  const failedUpdate = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir]);
+  assert.notEqual(failedUpdate.code, 0);
+
+  const statusAfterNewRequest = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--status']);
+  assert.equal(statusAfterNewRequest.code, 0, statusAfterNewRequest.stderr);
+  const statusAfterOut = JSON.parse(statusAfterNewRequest.stdout) as Record<string, unknown>;
+  assert.equal(Object.hasOwn(statusAfterOut, 'superseded'), false);
+  assert.equal(Object.hasOwn(statusAfterOut, 'originalPublicationId'), false);
+  assert.equal(Object.hasOwn(statusAfterOut, 'originalStatus'), false);
 });

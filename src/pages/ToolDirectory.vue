@@ -1375,6 +1375,7 @@ onUnmounted(() => {
       @pending-change="publicationEditorPending = $event"
       @close="publicationEditorOpen = false; publicationEditorPending = false"
       @saved="onPublicationEditorSaved"
+      @access-lost="loadPublication()"
     />
   </div>
 

@@ -1,9 +1,10 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
 import { uuid } from '../lib/analytics.js'
 import { deletePendingMetadataEdit, getPendingMetadataEdit, setPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
+import { savePublicationTicket } from '../lib/publication-tickets.ts'
 
 const props = defineProps({
   appId: { type: String, default: '' },
@@ -11,7 +12,7 @@ const props = defineProps({
   publicationToken: { type: String, default: '' },
   management: { type: Boolean, default: false },
 })
-const emit = defineEmits(['close', 'saved', 'pending-change'])
+const emit = defineEmits(['close', 'saved', 'pending-change', 'access-lost'])
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -21,6 +22,12 @@ const documents = ref({})
 const expectedRevision = ref(0)
 const activeTab = ref('overview')
 const pending = ref(null)
+const persistenceFallback = ref(false)
+let unmounted = false
+onUnmounted(() => {
+  unmounted = true
+  sequence++
+})
 const isPublicationMode = computed(() => Boolean(props.publicationId))
 const targetKey = computed(() => isPublicationMode.value
   ? `${props.management ? 'mgmt-pub' : 'pub'}:${props.publicationId}`
@@ -65,6 +72,7 @@ async function load() {
   context.value = null
   manifest.value = null
   pending.value = null
+  persistenceFallback.value = false
   activeTab.value = 'overview'
   const applySavedPending = (loadedContext = null) => {
     if (!saved) return false
@@ -89,16 +97,18 @@ async function load() {
     documents.value = clone(result.app.documents)
     if (saved) applySavedPending(result)
   } catch (e) {
-    if (current === sequence) {
+    if (current === sequence && !unmounted) {
       if ([403, 404].includes(e?.status)) deletePendingMetadataEdit(key)
       context.value = null
       manifest.value = null
       documents.value = {}
       pending.value = null
+      persistenceFallback.value = false
       error.value = e?.message || '读取编辑资料失败。'
+      if ([401, 403, 404].includes(e?.status)) emit('access-lost', e.status)
     }
   }
-  finally { if (current === sequence) loading.value = false }
+  finally { if (current === sequence && !unmounted) loading.value = false }
 }
 watch(targetKey, key => {
   sequence++
@@ -113,6 +123,7 @@ watch(targetKey, key => {
   manifest.value = null
   documents.value = {}
   pending.value = null
+  persistenceFallback.value = false
 }, { immediate: true })
 async function close() {
   if (saving.value) return
@@ -147,13 +158,14 @@ async function save() {
   const endpoint = editorEndpoint.value
   const publicationMode = isPublicationMode.value
   const management = props.management
-  const isCurrent = () => currentSequence === sequence && targetKey.value === operationKey
-  setPendingMetadataEdit(operation.cacheKey, {
+  const isCurrent = () => !unmounted && currentSequence === sequence && targetKey.value === operationKey
+  const persisted = setPendingMetadataEdit(operation.cacheKey, {
     ...operation,
     endpoint,
     publicationMode,
     management,
   })
+  persistenceFallback.value = !persisted
   saving.value = true
   error.value = ''
   try {
@@ -168,23 +180,39 @@ async function save() {
       const nextPublication = management ? result.managementPublication : result.publication
       if (!nextPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
       if (!isCurrent()) return
-      deletePendingMetadataEdit(operation.cacheKey)
+      if (!management && result.ticket) savePublicationTicket(nextPublication.id, result.ticket)
       pending.value = null
+      persistenceFallback.value = false
       emit('saved', {
         publicationId: nextPublication.id,
         publication: nextPublication,
         ...(result.ticket ? { ticket: result.ticket } : {}),
       })
+      deletePendingMetadataEdit(operation.cacheKey)
     } else {
       if (!result.managementPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
       if (!isCurrent()) return
-      deletePendingMetadataEdit(operation.cacheKey)
       pending.value = null
+      persistenceFallback.value = false
       emit('saved', result.managementPublication.id)
+      deletePendingMetadataEdit(operation.cacheKey)
     }
   } catch (e) {
-    // Deterministic validation/auth/conflict failures have no usable retry state; uncertain failures retain the exact request.
-    if ([400, 403, 404, 413, 422].includes(e.status) || (e.status === 409 && [
+    if ([401, 403, 404].includes(e?.status)) {
+      if ([403, 404].includes(e.status)) deletePendingMetadataEdit(operation.cacheKey)
+      if (isCurrent()) {
+        context.value = null
+        manifest.value = null
+        documents.value = {}
+        pending.value = null
+        persistenceFallback.value = false
+        error.value = e.message || '当前已无权继续编辑此内容。'
+        emit('access-lost', e.status)
+      }
+      return
+    }
+    // Deterministic validation/conflict failures retain the editable draft while clearing pending retry state.
+    if ([400, 413, 422].includes(e.status) || (e.status === 409 && [
       'REVISION_CONFLICT',
       'VERSION_NOT_NEWER',
       'TAG_CONFLICT',
@@ -197,7 +225,10 @@ async function save() {
       'MANAGED_SOURCE_CONFLICT',
     ].includes(e.code))) {
       deletePendingMetadataEdit(operation.cacheKey)
-      if (isCurrent()) pending.value = null
+      if (isCurrent()) {
+        pending.value = null
+        persistenceFallback.value = false
+      }
     }
     if (isCurrent()) error.value = e.message || '保存未完成。'
   } finally {
@@ -216,6 +247,7 @@ async function save() {
         <p v-else class="editor-context">{{ manifest.name }} · {{ manifest.appKey }}</p>
         <p class="editor-note">{{ isPublicationMode ? '保存会将资料写回托管仓库并生成最新预览。核对无误后点击「确认收录」或「确认更新」，广场才会展示最新内容。' : '保存会将资料写回 GitLab 并生成新版本预览。核对并确认更新后，广场才会使用新详情。' }}</p>
         <p v-if="!changed && !pending" class="editor-note">修改资料后可保存；仅版本号变化不会创建预览。</p>
+        <el-alert v-if="persistenceFallback && (saving || pending)" title="浏览器会话存储空间不足，本次编辑恢复记录仅保存在当前标签页内存中；请勿刷新或关闭标签页，直至保存完成并确认新预览。" type="warning" :closable="false" class="editor-alert" data-testid="editor-storage-fallback" />
         <el-alert v-if="pending && !saving" :title="context && !context.editable ? '该原预览已不可继续新建修改；如果此前保存可能已生成新预览，请点击「重试本次保存」找回结果与新授权。' : '保存结果待确认，资料已锁定。请使用同一请求重试，避免重复创建版本。'" type="warning" :closable="false" class="editor-alert" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基本资料" name="overview">

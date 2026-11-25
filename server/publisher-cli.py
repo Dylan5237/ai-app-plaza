@@ -2142,6 +2142,9 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
             receipt.pop("sourceUploaded", None)
         receipt.pop("previewUrl", None)
         receipt.pop("publicationTicket", None)
+        receipt.pop("superseded", None)
+        receipt.pop("originalPublicationId", None)
+        receipt.pop("originalStatus", None)
         _clear_saved_recovery_capability(receipt)
         try:
             store.save(receipt)
@@ -2270,6 +2273,9 @@ def _run(args: argparse.Namespace) -> int:
             receipt["requestExpectedAppRevision"] = None
             receipt["handoffState"] = "pending"
             receipt["handoffComplete"] = False
+            receipt.pop("superseded", None)
+            receipt.pop("originalPublicationId", None)
+            receipt.pop("originalStatus", None)
         elif retry_original_authorized:
             # Replay the saved body, owner, idempotency key, managed ID, and revision.
             # The current source tree is deliberately ignored until this request resolves.
@@ -2288,6 +2294,9 @@ def _run(args: argparse.Namespace) -> int:
             receipt.pop("handoffRecoveryRequired", None)
             receipt.pop("previewUrl", None)
             receipt.pop("publicationTicket", None)
+            receipt.pop("superseded", None)
+            receipt.pop("originalPublicationId", None)
+            receipt.pop("originalStatus", None)
         elif not receipt.get("idempotencyKey") or not isinstance(receipt.get("files"), list):
             raise CliError("本机 receipt 缺少重试标识或原始资料；不会重新创建发布请求。")
         elif old_digest == digest and receipt.get("files") != files:
@@ -2317,6 +2326,9 @@ def _run(args: argparse.Namespace) -> int:
         receipt.pop("sourceUploaded", None)
         receipt.pop("previewUrl", None)
         receipt.pop("publicationTicket", None)
+        receipt.pop("superseded", None)
+        receipt.pop("originalPublicationId", None)
+        receipt.pop("originalStatus", None)
         _clear_saved_recovery_capability(receipt)
         store.save(receipt)
 

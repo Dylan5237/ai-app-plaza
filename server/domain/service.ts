@@ -176,6 +176,7 @@ interface PublicationRecord {
   replaces_publication_id: string | null;
   superseded_by_publication_id: string | null;
   replace_actor_user_id: string | null;
+  managed_operation_id?: string | null;
 }
 
 interface PublicationAttempt { id: string; startedAt: string; kind: 'submit' | 'confirm' | 'retry'; actorContext?: 'publication_link' | 'management' }
@@ -689,13 +690,13 @@ export function createService(config: ServiceConfig): PlazaService {
       if (locked.status === "cancelled" || locked.superseded_by_publication_id) {
         throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
       }
-      if (options?.verifyCaller) {
-        await authorizePublication(tx, locked, options.retryCallerId);
-      }
       const replaced = locked.replaces_publication_id
         ? lockedRows.find(row => row.id === locked.replaces_publication_id)
         : undefined;
       const existing = await findAppByKey(tx, projectId, input.appKey, true);
+      if (options?.verifyCaller) {
+        await authorizePublication(tx, locked, options.retryCallerId);
+      }
       if (existing?.lifecycle_status === 'deleted') {
         throw new DomainError(409, 'APP_RESTORE_REQUIRED', '应用已删除，请先在本地管理后台恢复后再提交新版本。');
       }
@@ -974,10 +975,40 @@ export function createService(config: ServiceConfig): PlazaService {
           WHERE id = $1 RETURNING *`,
         [record.id, appId, JSON.stringify(resultPreview(savedView, source, lockedPublication))],
       );
-      const managedOperation = config.analytics ? (await tx.query<{ operation_kind: string; id: string }>('SELECT id,operation_kind FROM managed_publish_operations WHERE publication_id=$1 ORDER BY created_at DESC LIMIT 1', [record.id])).rows[0] : undefined;
+      const managedOperation = config.analytics ? (await tx.query<{ operation_kind: string; id: string }>(
+        'SELECT id, operation_kind FROM managed_publish_operations WHERE publication_id = $1 OR id = $2 ORDER BY created_at DESC LIMIT 1',
+        [record.id, lockedPublication.managed_operation_id ?? null],
+      )).rows[0] : undefined;
+      let registrationKind: 'new' | 'metadata_edit' | 'version_update' = currentRevision === 0 ? 'new' : 'version_update';
+      if (config.analytics && currentRevision !== 0 && managedOperation?.operation_kind === 'metadata_patch') {
+        let hasFullSourceInChain = false;
+        let ancestorId = lockedPublication.replaces_publication_id;
+        const visited = new Set<string>([record.id]);
+        while (ancestorId && !visited.has(ancestorId)) {
+          visited.add(ancestorId);
+          const ancestorRow = (await tx.query<{ replaces_publication_id: string | null; managed_operation_id: string | null }>(
+            'SELECT replaces_publication_id, managed_operation_id FROM publications WHERE id = $1',
+            [ancestorId],
+          )).rows[0];
+          if (!ancestorRow) {
+            hasFullSourceInChain = true;
+            break;
+          }
+          const ancestorOp = (await tx.query<{ operation_kind: string }>(
+            'SELECT operation_kind FROM managed_publish_operations WHERE publication_id = $1 OR id = $2 ORDER BY created_at DESC LIMIT 1',
+            [ancestorId, ancestorRow.managed_operation_id ?? null],
+          )).rows[0];
+          if (!ancestorOp || ancestorOp.operation_kind !== 'metadata_patch') {
+            hasFullSourceInChain = true;
+            break;
+          }
+          ancestorId = ancestorRow.replaces_publication_id;
+        }
+        registrationKind = hasFullSourceInChain ? 'version_update' : 'metadata_edit';
+      }
       await appendBusinessFact(tx, 'publications', record.id, config.analytics, 'publication_state_changed', {
         publicationId: record.id, fromState: lockedPublication.status, toState: 'registered', appId, snapshotId,
-        registrationKind: currentRevision === 0 ? 'new' : managedOperation?.operation_kind === 'metadata_patch' ? 'metadata_edit' : 'version_update',
+        registrationKind,
         publishOperationId: managedOperation?.id || record.id, appRevision: nextRevision,
         catalogStatusAfter: savedApp.lifecycle_status || 'published', lifecycleRevision: savedApp.lifecycle_revision || 1,
       });
@@ -991,12 +1022,12 @@ export function createService(config: ServiceConfig): PlazaService {
     digest: string,
     attempt?: PublicationAttempt,
     viewerId?: string,
-  ): Promise<{ record: PublicationRecord; setConfirmedNow: boolean }> {
+  ): Promise<{ record: PublicationRecord; setConfirmedNow: boolean; confirmedAtStamp: Date | null }> {
     return config.db.transaction(async (tx) => {
       const current = (await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1 FOR UPDATE", [id])).rows[0];
       if (!current) throw notFound();
       await authorizePublication(tx, current, viewerId, true);
-      if (current.status === "registered") return { record: current, setConfirmedNow: false };
+      if (current.status === "registered") return { record: current, setConfirmedNow: false, confirmedAtStamp: null };
       if (current.status === "cancelled" || current.superseded_by_publication_id) {
         throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
       }
@@ -1004,14 +1035,15 @@ export function createService(config: ServiceConfig): PlazaService {
         throw new DomainError(409, "SOURCE_MISMATCH", "确认参数与当前预览修订或摘要不一致，请刷新预览。");
       }
       const setConfirmedNow = current.confirmed_at === null;
+      const confirmStamp = setConfirmedNow ? new Date() : null;
       if (attempt) await appendBusinessFact(tx, 'publications', id, config.analytics, 'publication_confirm_requested', {
         publicationId: id, attemptId: attempt.id, attemptStartedAt: attempt.startedAt, actorContext: attempt.actorContext || 'publication_link',
       });
       const updated = await tx.query<PublicationRecord>(
-        `UPDATE publications SET confirmed_at = COALESCE(confirmed_at, now()), updated_at = now() WHERE id = $1 RETURNING *`,
-        [id],
+        `UPDATE publications SET confirmed_at = COALESCE(confirmed_at, $2::timestamptz), updated_at = now() WHERE id = $1 RETURNING *`,
+        [id, confirmStamp ?? new Date()],
       );
-      return { record: updated.rows[0]!, setConfirmedNow };
+      return { record: updated.rows[0]!, setConfirmedNow, confirmedAtStamp: confirmStamp };
     });
   }
 
@@ -1023,7 +1055,7 @@ export function createService(config: ServiceConfig): PlazaService {
     }
     return withConfirmLock(record.id, async () => {
       const attempt: PublicationAttempt | undefined = config.analytics ? { id: randomUUID(), startedAt: new Date().toISOString(), kind: 'confirm', actorContext } : undefined;
-      const { record: confirmed, setConfirmedNow } = await updateConfirmed(record.id, confirmation.revision, confirmation.digest, attempt, viewerId);
+      const { record: confirmed, setConfirmedNow, confirmedAtStamp } = await updateConfirmed(record.id, confirmation.revision, confirmation.digest, attempt, viewerId);
       if (confirmed.status === 'registered') return recordView(confirmed);
       try {
         const source = await assertAuthorAndSource(confirmed);
@@ -1035,10 +1067,10 @@ export function createService(config: ServiceConfig): PlazaService {
         return recordView(registered);
       } catch (error) {
         if (isCallerAccessError(error)) {
-          if (setConfirmedNow && confirmed.confirmed_at) {
+          if (setConfirmedNow && confirmedAtStamp) {
             await config.db.query(
-              "UPDATE publications SET confirmed_at = NULL, updated_at = now() WHERE id = $1 AND status = 'preview_ready' AND confirmed_at = $2",
-              [record.id, confirmed.confirmed_at],
+              "UPDATE publications SET confirmed_at = NULL, updated_at = now() WHERE id = $1 AND status = 'preview_ready' AND confirmed_at = $2::timestamptz",
+              [record.id, confirmedAtStamp],
             );
           }
           await finishAttempt(record.id, attempt, 'failure', error.code);
