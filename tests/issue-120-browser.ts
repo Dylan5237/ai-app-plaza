@@ -925,34 +925,54 @@ try {
   assert.equal(await memberPage.getByTestId('app-detail').count(), 0, 'stale cached management detail is never shown after access loss');
   await memberPage.keyboard.press('Escape');
 
-  // Active expiry timer transitions open editor draft to read-only automatically without losing edits.
+  // Active expiry timer + 410 focus revalidation preserve open unsaved draft in read-only mode deterministically.
   const expiryTimerDraft = await h.managed.submit(makeBundle({
     appKey: 'expiry-timer-readonly-draft',
     name: '到期自动切只读测试应用',
-    summary: '验证预览在打开编辑期间到期时自动切只读。',
+    summary: '验证预览在打开编辑期间到期时自动切只读并保留草稿。',
     entry: 'agent',
   }), randomBytes(32).toString('base64url'), randomUUID());
-  const shortExpiryHandler = async (route: any) => {
-    if (route.request().method() === 'GET' && !route.request().url().includes('/editor')) {
-      const response = await route.fetch();
-      const body = await response.json();
-      body.expiresAt = new Date(Date.now() + 900).toISOString();
-      return route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(body) });
-    }
-    return route.continue();
-  };
-  await adminPage.route(`**/api/publications/${expiryTimerDraft.id}*`, shortExpiryHandler);
-  await adminPage.goto(expiryTimerDraft.previewUrl);
-  await adminPage.getByTestId('edit-publication').click();
-  await adminPage.getByTestId('metadata-editor').waitFor();
-  await adminPage.getByTestId('editor-name').fill('即将过期自动只读草稿');
-  await adminPage.getByTestId('editor-readonly-notice').waitFor();
-  await adminPage.unroute(`**/api/publications/${expiryTimerDraft.id}*`, shortExpiryHandler);
-  assert.equal(await adminPage.getByTestId('editor-name').inputValue(), '即将过期自动只读草稿');
-  assert.equal(await adminPage.getByTestId('editor-name').isDisabled(), true);
-  assert.equal(await adminPage.getByTestId('editor-save').isDisabled(), true);
-  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
-  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+  const clockPage = await adminCtx.newPage();
+  const baseNow = Date.now();
+  await clockPage.clock.install({ time: baseNow });
+  try {
+    const shortExpiryHandler = async (route: any) => {
+      if (route.request().method() === 'GET' && !route.request().url().includes('/editor')) {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.expiresAt = new Date(baseNow + 30_000).toISOString();
+        return route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(body) });
+      }
+      return route.continue();
+    };
+    await clockPage.route(`**/api/publications/${expiryTimerDraft.id}*`, shortExpiryHandler);
+    await clockPage.goto(expiryTimerDraft.previewUrl);
+    await clockPage.getByTestId('edit-publication').click();
+    await clockPage.getByTestId('metadata-editor').waitFor();
+    await clockPage.clock.runFor(400);
+    await clockPage.getByTestId('editor-name').fill('即将过期自动只读草稿');
+    assert.equal(await clockPage.getByTestId('editor-readonly-notice').count(), 0);
+    assert.equal(await clockPage.getByTestId('editor-save').isDisabled(), false);
+
+    await clockPage.clock.fastForward(31_000);
+    await clockPage.getByTestId('editor-readonly-notice').waitFor();
+    assert.equal(await clockPage.getByTestId('editor-name').inputValue(), '即将过期自动只读草稿');
+    assert.equal(await clockPage.getByTestId('editor-name').isDisabled(), true);
+    assert.equal(await clockPage.getByTestId('editor-save').isDisabled(), true);
+
+    await clockPage.unroute(`**/api/publications/${expiryTimerDraft.id}*`, shortExpiryHandler);
+    await h.db.query("UPDATE publications SET expires_at = now() - interval '1 minute' WHERE id = $1", [expiryTimerDraft.id]);
+    const expired410Promise = clockPage.waitForResponse(
+      res => res.url().includes(`/api/publications/${expiryTimerDraft.id}`) && !res.url().includes('/editor') && res.status() === 410,
+    );
+    await clockPage.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expired410Promise;
+    assert.equal(await clockPage.getByTestId('metadata-editor').isVisible(), true);
+    assert.equal(await clockPage.getByTestId('editor-name').inputValue(), '即将过期自动只读草稿');
+    assert.equal(await clockPage.getByTestId('editor-readonly-notice').isVisible(), true);
+  } finally {
+    await clockPage.close();
+  }
 
   // REVISION_CONFLICT in publication mode transitions open editor immediately to read-only.
   const revConflictDraft = await h.managed.submit(makeBundle({
@@ -987,9 +1007,25 @@ try {
   await adminPage.getByRole('button', { name: '取消', exact: true }).click();
   await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
 
-  // SmartSearchPromptAdmin preserves uncertain smart-search save retry button after saving a template in another tab.
+  // SmartSearchPromptAdmin loads prompt independently when text-templates fails with 503 on initial open.
+  let failTemplatesOnce = true;
+  const templates503Handler = (route: any) => {
+    if (failTemplatesOnce && route.request().method() === 'GET') {
+      failTemplatesOnce = false;
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '模板服务暂不可用' } }) });
+    }
+    return route.continue();
+  };
+  await adminPage.route('**/api/access/text-templates', templates503Handler);
   await adminPage.goto(`${h.origin}/plaza/?space=smart-search`);
   await adminPage.getByTestId('prompt-editor').waitFor();
+  await adminPage.getByText('模板服务暂不可用').waitFor();
+  await adminPage.unroute('**/api/access/text-templates', templates503Handler);
+  assert.equal(await adminPage.getByTestId('prompt-editor').isDisabled(), false);
+
+  // SmartSearchPromptAdmin preserves uncertain smart-search save retry button after saving a template in another tab.
+  await adminPage.getByRole('button', { name: '重试', exact: true }).click();
+  await adminPage.getByText('模板服务暂不可用').waitFor({ state: 'hidden' });
   const originalPromptVal = await adminPage.getByTestId('prompt-editor').inputValue();
   let failPromptOnce = true;
   const prompt503Handler = (route: any) => {

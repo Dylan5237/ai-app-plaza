@@ -330,7 +330,11 @@ export function createService(config: ServiceConfig): PlazaService {
     }
   }
 
-  async function loadPublication(id: string, ticket: string): Promise<PublicationRecord> {
+  async function loadPublication(
+    id: string,
+    ticket: string,
+    options?: { expiredCheckViewerId?: string },
+  ): Promise<PublicationRecord> {
     if (!/^[0-9a-f-]{36}$/i.test(id) || typeof ticket !== "string" || ticket.length > 256) throw notFound();
     const result = await config.db.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1", [id]);
     const record = result.rows[0];
@@ -342,6 +346,14 @@ export function createService(config: ServiceConfig): PlazaService {
           WHERE id = $1`,
         [id],
       );
+      if (options && 'expiredCheckViewerId' in options) {
+        try {
+          await authorizePublication(config.db, record, options.expiredCheckViewerId);
+        } catch {
+          throw notFound();
+        }
+        throw new DomainError(410, 'PUBLICATION_EXPIRED', '此预览已过期，不能再确认或保存。');
+      }
       throw notFound();
     }
     return record;
@@ -849,7 +861,7 @@ export function createService(config: ServiceConfig): PlazaService {
     record: PublicationRecord,
     source: LoadedSource,
     viewerId: string | undefined,
-    options: { allowedStatuses: PublicationStatus[]; expectedConfirmedAt: Date | string | null },
+    options: { allowedStatuses: PublicationStatus[]; expectedConfirmedAt: Date | string | null; claimId?: string | null },
   ): Promise<PublicationRecord> {
     if (!record.digest || record.digest !== source.digest) {
       throw new DomainError(409, "SOURCE_MISMATCH", "固定来源内容已变化，请重新提交并确认新的预览。");
@@ -879,6 +891,15 @@ export function createService(config: ServiceConfig): PlazaService {
         (options.expectedConfirmedAt !== null && new Date(lockedPublication.confirmed_at).getTime() !== new Date(options.expectedConfirmedAt).getTime())
       ) {
         throw new DomainError(409, "SOURCE_MISMATCH", "该发布候选的确认状态已失效或发生变化，请刷新后查看最新状态。");
+      }
+      if (options.claimId) {
+        const activeClaim = (await tx.query<{ claim_id: string }>(
+          'SELECT claim_id FROM plaza_publication_confirm_claims WHERE claim_id = $1 AND publication_id = $2 AND expires_at > now()',
+          [options.claimId, record.id],
+        )).rows[0];
+        if (!activeClaim) {
+          throw new DomainError(409, "SOURCE_MISMATCH", "该发布候选的确认状态已失效或发生变化，请刷新后查看最新状态。");
+        }
       }
 
       // Serialize catalog writers across service instances before checking the
@@ -1116,8 +1137,9 @@ export function createService(config: ServiceConfig): PlazaService {
           throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
         }
         const registered = await register(confirmed, source, viewerId, {
-          allowedStatuses: ['preview_ready'],
+          allowedStatuses: ['preview_ready', 'failed'],
           expectedConfirmedAt: confirmed.confirmed_at,
+          claimId,
         });
         await finishAttempt(record.id, attempt, 'success');
         return recordView(registered);
@@ -1422,7 +1444,7 @@ export function createService(config: ServiceConfig): PlazaService {
 
     async publication(id, ticket, viewerId) {
       await cleanupExpiredTokens();
-      return publicationView(await loadPublication(id, ticket), viewerId);
+      return publicationView(await loadPublication(id, ticket, { expiredCheckViewerId: viewerId }), viewerId);
     },
 
     // Used only after the source channel has recovered its original receipt.

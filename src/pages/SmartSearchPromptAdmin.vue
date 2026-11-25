@@ -16,7 +16,6 @@ const error = ref('')
 const templatesError = ref('')
 const notice = ref('')
 const uncertain = ref(false)
-const hasPendingPromptWrite = ref(false)
 let pending = null
 let requestVersion = 0
 
@@ -109,25 +108,32 @@ async function load() {
   error.value = ''
   templatesError.value = ''
   try {
-    const [promptResult, templatesResult] = await Promise.all([
+    const [promptSettled, templatesSettled] = await Promise.allSettled([
       apiRequest('/api/access/smart-search-prompt'),
       apiRequest('/api/access/text-templates'),
     ])
     if (version !== requestVersion) return
-    retryAction.value = 'load'
-    failedTemplatePurpose = ''
-    failedTemplateDraft = undefined
-    failedPromptDraft = undefined
-    applyPromptResult(promptResult)
-    applyTemplatesResult(templatesResult)
-  } catch (err) {
-    if (version === requestVersion) {
-      if (err.status === 401 || err.status === 403) {
-        view.value = null
-        templatesView.value = null
-      }
+    if (promptSettled.status === 'fulfilled') {
       retryAction.value = 'load'
-      error.value = err.message || '提示词配置加载失败，请稍后重试。'
+      failedPromptDraft = undefined
+      applyPromptResult(promptSettled.value)
+    } else {
+      const err = promptSettled.reason
+      if (err?.status === 401 || err?.status === 403) view.value = null
+      retryAction.value = 'reload-prompt'
+      failedPromptDraft = undefined
+      error.value = err?.message || '提示词配置加载失败，请稍后重试。'
+    }
+    if (templatesSettled.status === 'fulfilled') {
+      failedTemplatePurpose = ''
+      failedTemplateDraft = undefined
+      applyTemplatesResult(templatesSettled.value)
+    } else {
+      const err = templatesSettled.reason
+      if (err?.status === 401 || err?.status === 403) templatesView.value = null
+      failedTemplatePurpose = ''
+      failedTemplateDraft = undefined
+      templatesError.value = err?.message || '模板配置加载失败，请稍后重试。'
     }
   } finally {
     if (version === requestVersion) loading.value = false
@@ -193,7 +199,6 @@ async function write(template) {
       return
     }
     pending = { requestId, confirmed: true, template }
-    hasPendingPromptWrite.value = true
   }
   const request = pending
   busy.value = true
@@ -203,7 +208,6 @@ async function write(template) {
     const draftAtSave = draft.value
     await apiRequest('/api/access/smart-search-prompt', { method: 'PUT', body: request })
     pending = null
-    hasPendingPromptWrite.value = false
     uncertain.value = false
     notice.value = request.template === null ? '已恢复默认提示词，后续检索立即使用默认模板。' : '提示词已保存，后续检索立即生效。'
     await reloadSmartSearchPrompt(draftAtSave)
@@ -212,7 +216,6 @@ async function write(template) {
     if (uncertain.value) error.value = '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。'
     else {
       pending = null
-      hasPendingPromptWrite.value = false
       error.value = err.message
     }
   } finally {
@@ -302,14 +305,14 @@ onMounted(load)
       </div>
     </header>
 
-    <div v-if="error || hasPendingPromptWrite" class="state error" role="alert"><span>{{ error || '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。' }}</span><button type="button" @click="retryTopError">{{ hasPendingPromptWrite ? '重试同一请求' : '重试' }}</button></div>
+    <div v-if="error || (uncertain && !busy)" class="state error" role="alert"><span>{{ error || '保存结果尚未确认。可重试同一请求，或刷新后核对当前提示词。' }}</span><button type="button" :disabled="busy" @click="retryTopError">{{ uncertain ? '重试同一请求' : '重试' }}</button></div>
     <div v-if="templatesError" class="state error" role="alert"><span>{{ templatesError }}</span><button type="button" @click="reloadTemplates(failedTemplatePurpose, failedTemplateDraft)">重试</button></div>
-    <div v-if="loading && !view" class="state" role="status">正在读取提示词与模板配置…</div>
+    <div v-if="loading && !view && !templatesView" class="state" role="status">正在读取提示词与模板配置…</div>
 
-    <el-tabs v-if="view" v-model="activeTab" class="template-tabs">
+    <el-tabs v-if="view || templatesView" v-model="activeTab" class="template-tabs">
       <el-tab-pane label="智能查找提示词" name="smart-search">
         <div v-if="notice" class="state ok" role="status">{{ notice }}</div>
-        <section class="panel editor" aria-label="提示词编辑">
+        <section v-if="view" class="panel editor" aria-label="提示词编辑">
           <div class="editor-head">
             <div>
               <h2>系统提示词</h2>
@@ -337,10 +340,11 @@ onMounted(load)
           />
           <p class="hint">服务端输出校验始终生效：推荐只允许候选内应用、最多 3 项、失败自动降级为关键词检索；提示词只影响推荐质量，不影响权限与数据范围。</p>
         </section>
+        <div v-else class="state" role="status">智能查找提示词暂未加载，请点击上方重试按钮。</div>
       </el-tab-pane>
 
       <el-tab-pane label="发布提示词" name="publish">
-        <div class="template-stack">
+        <div v-if="templatesView" class="template-stack">
           <section v-for="item in publishItems" :key="item.purpose" class="panel editor" :aria-label="item.label">
             <div class="editor-head">
               <div>
@@ -389,10 +393,11 @@ onMounted(load)
             </details>
           </section>
         </div>
+        <div v-else class="state" role="status">发布提示词暂未加载，请点击上方重试按钮。</div>
       </el-tab-pane>
 
       <el-tab-pane label="应用分享模板" name="share">
-        <div class="template-stack">
+        <div v-if="templatesView" class="template-stack">
           <section v-for="item in shareItems" :key="item.purpose" class="panel editor" :aria-label="item.label">
             <div class="editor-head">
               <div>
@@ -441,6 +446,7 @@ onMounted(load)
             </div>
           </section>
         </div>
+        <div v-else class="state" role="status">应用分享模板暂未加载，请点击上方重试按钮。</div>
       </el-tab-pane>
     </el-tabs>
   </main>

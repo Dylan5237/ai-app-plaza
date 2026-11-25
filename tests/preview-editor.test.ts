@@ -2298,8 +2298,10 @@ test('two-instance confirm claims prevent revoked maintainer rollback from clear
   const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
   const directGitlab = await startGitLabFixture(1);
   let heldProjectReads = 0;
-  let markBothStarted!: () => void;
-  const bothStarted = new Promise<void>(resolve => { markBothStarted = resolve; });
+  let markFirstStarted!: () => void;
+  let markSecondStarted!: () => void;
+  const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+  const secondStarted = new Promise<void>(resolve => { markSecondStarted = resolve; });
   const gates: Array<{ resolve: () => void; promise: Promise<void> }> = [];
   for (let i = 0; i < 2; i++) {
     let resolve!: () => void;
@@ -2312,7 +2314,8 @@ test('two-instance confirm claims prevent revoked maintainer rollback from clear
     const pathOnly = (req.url ?? '').split('?')[0];
     if (trapConfirmReads && heldProjectReads < 2 && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
       const idx = heldProjectReads++;
-      if (heldProjectReads === 2) markBothStarted();
+      if (idx === 0) markFirstStarted();
+      if (idx === 1) markSecondStarted();
       void gates[idx].promise.then(() => {
         const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
           method: req.method,
@@ -2345,6 +2348,7 @@ test('two-instance confirm claims prevent revoked maintainer rollback from clear
   const instanceB = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
   const access = createAppAccessService(h.db, h.config.audience);
   t.after(async () => {
+    for (const gate of gates) gate.resolve();
     await instanceA.app.close();
     await instanceB.app.close();
     proxy.closeAllConnections();
@@ -2369,8 +2373,9 @@ test('two-instance confirm claims prevent revoked maintainer rollback from clear
 
   trapConfirmReads = true;
   const maintainerConfirm = instanceA.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, maintainer.user.id);
+  await firstStarted;
   const ownerConfirm = instanceB.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, owner.user.id);
-  await bothStarted;
+  await secondStarted;
 
   // Owner revokes maintainer while both confirm requests hold active confirm claims.
   await access.update(owner.user.id, reg1.appId!, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
@@ -2388,4 +2393,93 @@ test('two-instance confirm claims prevent revoked maintainer rollback from clear
   gates[1].resolve();
   const ownerRes = await ownerConfirm;
   assert.equal(ownerRes.status, 'registered');
+});
+
+test('two-instance concurrent confirm allows peer with active claim to register after retryable failure', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const directGitlab = await startGitLabFixture(1);
+  let heldProjectReads = 0;
+  let markFirstStarted!: () => void;
+  let markSecondStarted!: () => void;
+  const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+  const secondStarted = new Promise<void>(resolve => { markSecondStarted = resolve; });
+  const gates: Array<{ resolve: () => void; promise: Promise<void> }> = [];
+  for (let i = 0; i < 2; i++) {
+    let resolve!: () => void;
+    const promise = new Promise<void>(r => { resolve = r; });
+    gates.push({ resolve, promise });
+  }
+  const targetUrl = new URL(directGitlab.url);
+  let trapConfirmReads = false;
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (trapConfirmReads && heldProjectReads < 2 && req.method === 'GET' && /\/api\/v4\/projects\/1$/.test(pathOnly)) {
+      const idx = heldProjectReads++;
+      if (idx === 0) markFirstStarted();
+      if (idx === 1) markSecondStarted();
+      void gates[idx].promise.then(() => {
+        if (idx === 0) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'temporary gitlab outage for instance A' }));
+          return;
+        }
+        const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+          method: req.method,
+          headers: req.headers,
+        }, upstreamRes => {
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+        });
+        req.pipe(upstreamReq);
+      });
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const instanceA = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  const instanceB = await createApp({ ...h.config, gitlabUrl: proxyUrl }, h.db);
+  t.after(async () => {
+    for (const gate of gates) gate.resolve();
+    await instanceA.app.close();
+    await instanceB.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await directGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const submitInput = { projectId: '1', appKey: 'sample-1', manifestPath: 'ai-app.json', commitSha: SHA, tag: DEFAULT_TAG };
+  const candidate = await instanceA.service.submit(submitInput, TOKEN, randomUUID(), { mode: 'managed', operationId: randomUUID() });
+  assert.equal(candidate.status, 'preview_ready');
+  const candView = await instanceA.service.publication(candidate.id, candidate.ticket, owner.user.id);
+
+  trapConfirmReads = true;
+  const confirmA = instanceA.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, owner.user.id);
+  await firstStarted;
+  const confirmB = instanceB.service.confirm(candidate.id, candidate.ticket, { revision: candView.revision, digest: candView.digest! }, owner.user.id);
+  await secondStarted;
+
+  gates[0].resolve();
+  const resA = await confirmA;
+  assert.equal(resA.status, 'failed');
+  assert.equal(resA.nextAction, 'retry');
+
+  gates[1].resolve();
+  const resB = await confirmB;
+  assert.equal(resB.status, 'registered');
 });

@@ -424,7 +424,8 @@ watch(() => publication.value?.expiresAt, expiresAt => {
   schedulePublicationExpiryTimer(expiresAt)
 }, { immediate: true })
 
-const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= nowTick.value)
+const publicationExpiredOnServer = ref(false)
+const publicationExpired = computed(() => publicationExpiredOnServer.value || (Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= nowTick.value))
 const publicationEditorReadOnly = computed(() => Boolean(
   publication.value && !publication.value.requiresIdentity && (publication.value.status !== 'preview_ready' || publicationExpired.value),
 ))
@@ -1070,6 +1071,7 @@ function preparePublicationRoute() {
   if (!id) return false
 
   publicationId.value = id
+  publicationExpiredOnServer.value = false
   publicationBusy.value = false
   publicationEditorOpen.value = false
   publicationEditorToken.value = ''
@@ -1145,12 +1147,16 @@ async function loadPublication(id = publicationId.value, { revalidating = public
   const storageFallback = !props.management && hasTicketStorageFallback(id)
   publicationLoading.value = true
   publicationError.value = storageFallback ? STORAGE_FALLBACK_NOTICE : ''
-  if (!revalidating) publication.value = null
+  if (!revalidating) {
+    publication.value = null
+    publicationExpiredOnServer.value = false
+  }
   const directToken = props.management ? '' : publicationToken(id)
   const legacyToken = !props.management && !directToken ? readLegacyPublicationTicket(id) : ''
   const token = directToken || legacyToken
   if (!props.management && !token) {
     publication.value = null
+    publicationExpiredOnServer.value = false
     publicationEditorOpen.value = false
     publicationEditorToken.value = ''
     publicationEditorPending.value = false
@@ -1164,6 +1170,7 @@ async function loadPublication(id = publicationId.value, { revalidating = public
       promoteLegacyPublicationTicket(id, legacyToken)
     }
     if (current()) {
+      publicationExpiredOnServer.value = false
       publication.value = result
       if (result.status === 'registered') publicationError.value = ''
       if (result.requiresIdentity) {
@@ -1176,15 +1183,19 @@ async function loadPublication(id = publicationId.value, { revalidating = public
       await recordPublicationPreviewViewed(id, result)
     }
   } catch (error) {
-    if (legacyToken && [403, 404, 410].includes(error.status)) {
+    const keepExpiredReadOnlyDraft = error.status === 410 && publicationEditorOpen.value && !publicationEditorPending.value
+    if (legacyToken && ([403, 404].includes(error.status) || (error.status === 410 && !keepExpiredReadOnlyDraft))) {
       removeLegacyPublicationTicket(id)
     }
     if ([403, 404, 410].includes(error.status)) {
       deletePendingMetadataEdit(publicationEditCacheKey(id))
     }
     if (current()) {
-      if ([401, 403, 404, 410].includes(error.status)) {
+      if (keepExpiredReadOnlyDraft) {
+        publicationExpiredOnServer.value = true
+      } else if ([401, 403, 404, 410].includes(error.status)) {
         publication.value = null
+        publicationExpiredOnServer.value = false
         publicationEditorOpen.value = false
         publicationEditorToken.value = ''
         publicationEditorPending.value = false
@@ -1243,6 +1254,7 @@ function openPublicationEditor() {
 
 function onPublicationEditorSaved(result) {
   publicationEditorOpen.value = false
+  publicationExpiredOnServer.value = false
   publicationEditorToken.value = ''
   publicationEditorPending.value = false
   if (!result?.publicationId) return
