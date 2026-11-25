@@ -6,6 +6,8 @@ import PlazaIcon from '../components/PlazaIcon.vue'
 import '../styles/design-tokens.css'
 import AppDetailOverview from '../components/AppDetailOverview.vue'
 import AppPublicContent from '../components/AppPublicContent.vue'
+import ApplicationAccessDialog from '../components/ApplicationAccessDialog.vue'
+import ApplicationMetadataEditor from '../components/ApplicationMetadataEditor.vue'
 import { identity } from '../lib/identity.js'
 import AppExamples from '../components/AppExamples.vue'
 import ListPagination from '../components/ListPagination.vue'
@@ -16,8 +18,11 @@ import FavoriteButton from '../components/FavoriteButton.vue'
 import { apiRequest } from '../lib/api.js'
 import { publicPath } from '../lib/public-path.js'
 import { renderMarkdown, repositoryDocumentBase } from '../lib/markdown.js'
-import { catalogPageCapacity, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
+import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '../lib/catalog.ts'
 import { discoverTabFromParam } from '../lib/discovery.ts'
+import { currentShareTemplates, hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
+import { hasTicketStorageFallback, promoteLegacyPublicationTicket, readLegacyPublicationTicket, readPublicationTicket, savePublicationTicket as storePublicationTicket, removeLegacyPublicationTicket } from '../lib/publication-tickets.ts'
+import { deletePendingMetadataEdit, hasPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
@@ -36,6 +41,7 @@ let randomLoaded = false
 let randomRequestSequence = 0
 const scrollPositions = { catalog: 0, random: 0, search: 0 }
 const searchResultItems = ref([])
+const smartSearchRef = ref(null)
 let smartSearchResultSetId = null
 let measurementEnabled = false
 let portalViewed = false
@@ -104,7 +110,10 @@ async function observeCards() {
   }, { threshold: [.5] })
   cards.forEach(card => exposureObserver.observe(card))
 }
-function onVisibilityChange() { void observeCards() }
+function onVisibilityChange() {
+  void observeCards()
+  if (!document.hidden) void loadShareTemplates(true)
+}
 watch(randomIndex, () => { if (discoveryTab.value === 'random') void observeCards() }, { flush: 'post' })
 watch(() => props.discover, tab => {
   if (tab && tab !== discoveryTab.value) void selectDiscovery(tab)
@@ -154,7 +163,8 @@ async function revalidateRandomBatch(batch) {
   for (const [index, item] of checked.entries()) {
     const previous = batch[index]
     if (item.status === 'fulfilled') {
-      items.push({ ...previous, ...item.value, documents: {} })
+      const { documents: _documents, distributions: _distributions, ...card } = item.value
+      items.push({ ...card, documents: {} })
     } else if ([401, 403].includes(item.reason.status)) {
       throw item.reason
     } else if (item.reason.status !== 404) {
@@ -165,7 +175,17 @@ async function revalidateRandomBatch(batch) {
   return { items, allShown: randomAllShown.value, error }
 }
 
+let lastShareTemplateSyncAt = 0
+function refreshShareTemplatesThrottled() {
+  if (Date.now() - lastShareTemplateSyncAt <= 15_000) return
+  lastShareTemplateSyncAt = Date.now()
+  void loadShareTemplates(true).then((result) => {
+    if (result.ok) lastShareTemplateSyncAt = Date.now()
+  })
+}
+
 async function loadRandom({ revalidating = false } = {}) {
+  refreshShareTemplatesThrottled()
   if (revalidating && !randomItems.value.length) return
   const sequence = ++randomRequestSequence
   randomLoading.value = true
@@ -329,6 +349,12 @@ const detailVisible = ref(false)
 let detailRequestSequence = 0
 const detailLoading = ref(false)
 const detailError = ref('')
+const detailErrorStatus = ref(0)
+const accessDialogAppId = ref('')
+const managementDetailSuspendedId = ref('')
+let accessSavedWhileSuspended = false
+let restoreAccessFocusPending = false
+let managementDetailOpened = false
 const selectedApp = ref(null)
 const detailDocumentsVisible = ref(false)
 const detailSourceVisible = ref(false)
@@ -364,6 +390,10 @@ const publication = ref(null)
 const publicationLoading = ref(false)
 const publicationBusy = ref(false)
 const publicationError = ref('')
+const publicationEditorOpen = ref(false)
+const publicationEditorToken = ref('')
+const publicationEditorPending = ref(false)
+const STORAGE_FALLBACK_NOTICE = '浏览器未能将临时授权写入会话存储，当前标签页仍可核对确认；请勿刷新或关闭标签页。'
 
 const catalogGroups = computed(() => [{ value: selectedUsage.value, label: '应用目录', apps: apps.value }])
 const selectedAppEntries = computed(() => {
@@ -372,7 +402,46 @@ const selectedAppEntries = computed(() => {
   const primaryId = manifest.primaryEntry
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
-const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= Date.now())
+const nowTick = ref(Date.now())
+let publicationExpiryTimer = 0
+function schedulePublicationExpiryTimer(expiresAt) {
+  if (publicationExpiryTimer) {
+    clearTimeout(publicationExpiryTimer)
+    publicationExpiryTimer = 0
+  }
+  const now = Date.now()
+  nowTick.value = now
+  if (!expiresAt) return
+  const target = new Date(expiresAt).getTime()
+  if (!Number.isFinite(target) || target <= now) return
+  const delay = Math.min(target - now + 50, 2_147_483_647)
+  publicationExpiryTimer = window.setTimeout(() => {
+    publicationExpiryTimer = 0
+    schedulePublicationExpiryTimer(publication.value?.expiresAt)
+  }, delay)
+}
+watch(() => publication.value?.expiresAt, expiresAt => {
+  schedulePublicationExpiryTimer(expiresAt)
+}, { immediate: true })
+
+const publicationExpiredOnServer = ref(false)
+const publicationExpired = computed(() => publicationExpiredOnServer.value || (Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= nowTick.value))
+const publicationEditorReadOnly = computed(() => Boolean(
+  publication.value && !publication.value.requiresIdentity && (publication.value.status !== 'preview_ready' || publicationExpired.value),
+))
+const publicationEditorReadOnlyReason = computed(() => (
+  publicationEditorReadOnly.value
+    ? '该预览状态已变更（已确认收录、已取消或已过期），无法再保存；当前草稿已切换为只读，方便复制后前往最新预览继续编辑。'
+    : ''
+))
+function publicationEditCacheKey(id = publicationId.value) {
+  return id ? `${props.management ? 'mgmt-pub' : 'pub'}:${id}` : ''
+}
+const hasPendingPublicationEdit = computed(() => {
+  void identity.epoch
+  const key = publicationEditCacheKey()
+  return Boolean(key && hasPendingMetadataEdit(key))
+})
 const isUpdate = computed(() => publication.value?.change?.kind === 'update')
 const isUnchanged = computed(() => publication.value?.change?.kind === 'unchanged')
 const publicationStatusText = computed(() => ({
@@ -399,6 +468,7 @@ function fireCatalogView(trigger, queryLength = [...query.value.trim()].length) 
 }
 
 async function loadCatalog({ preserveNotice = false, trigger = 'manual_refresh' } = {}) {
+  refreshShareTemplatesThrottled()
   const requestSequence = ++catalogRequestSequence
   catalogLoading.value = true
   catalogError.value = ''
@@ -568,6 +638,7 @@ function appPath(id) { return `${props.management && props.managementEnabled ? '
 
 async function openApp(id, { fromHistory = false, entryContext = null, revalidating = false } = {}) {
   if (!id) return
+  refreshShareTemplatesThrottled()
   if (!revalidating) primaryRequestSequence += 1
   if (!props.management) {
     if (!detailVisible.value) {
@@ -582,10 +653,15 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
     }
   }
   const requestSequence = ++detailRequestSequence
-  if (!revalidating) detailVisible.value = true
+  if (!revalidating) {
+    managementDetailSuspendedId.value = ''
+    accessSavedWhileSuspended = false
+    detailVisible.value = true
+  }
   clearExposureObserver()
   detailLoading.value = true
   detailError.value = ''
+  detailErrorStatus.value = 0
   if (!revalidating) {
     instructionRequestSequence += 1
     detailDocumentsVisible.value = false
@@ -604,6 +680,7 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
     if (requestSequence !== detailRequestSequence) return
     const snapshotChanged = selectedApp.value?.snapshotId !== result.snapshotId
     selectedApp.value = result
+    syncAppAcrossViews(result)
     if (revalidating && snapshotChanged && instructionDialogVisible.value && instructionEntry.value) {
       const entry = result.manifest.entries.find(item => item.id === instructionEntry.value.id && item.kind === 'agent')
       if (entry) void loadAgentInstructions(entry, { revalidating: true })
@@ -621,6 +698,7 @@ async function openApp(id, { fromHistory = false, entryContext = null, revalidat
         closeAgentInstructions(); copyFallbackVisible.value = false; copyFallbackText.value = ''
         if (shareAppId.value === id) { shareVisible.value = false; closeShareDialog() }
       }
+      detailErrorStatus.value = Number(error?.status) || 0
       detailError.value = errorText(error)
       if (!props.management) recordFailure('detail', error)
     }
@@ -685,14 +763,23 @@ async function handlePopState() {
 }
 
 function handleDetailKey(event) {
-  if (event.key !== 'Escape' || props.management || !detailVisible.value || instructionDialogVisible.value || detailDocumentsVisible.value || detailSourceVisible.value || shareVisible.value || copyFallbackVisible.value) return
+  if (event.key !== 'Escape' || props.management || !detailVisible.value || instructionDialogVisible.value || detailDocumentsVisible.value || detailSourceVisible.value || shareVisible.value || copyFallbackVisible.value || accessDialogAppId.value) return
   returnFromDetail()
 }
 
 function closeDetail() {
+  managementDetailOpened = false
+  if (managementDetailSuspendedId.value) {
+    detailVisible.value = false
+    return
+  }
+  restoreAccessFocusPending = false
   detailRequestSequence += 1
   instructionRequestSequence += 1
   detailVisible.value = false
+  detailError.value = ''
+  detailErrorStatus.value = 0
+  accessDialogAppId.value = ''
   detailDocumentsVisible.value = false
   detailSourceVisible.value = false
   instructionDialogVisible.value = false
@@ -712,6 +799,7 @@ function closeAgentInstructions() {
 }
 
 function refreshVisibleAccess() {
+  void loadShareTemplates(true)
   if (!identity.user || !identity.enabled) return
   if (shareVisible.value && shareAppId.value) void openShareDialog(shareAppId.value, { revalidating: true })
   if (publicationId.value) { if (!publicationBusy.value) void loadPublication(publicationId.value, { revalidating: true }); return }
@@ -763,15 +851,112 @@ async function copyAgentInstructions() {
   }
 }
 
-// Share blurb (name + summary + deep link) ready to paste into chat.
+// Share blurb rendered from configurable agent/platform templates.
 async function copyShareLink(app, placement) {
+  const fromCache = hasLoadedShareTemplates()
+  let templates = fromCache ? currentShareTemplates() : null
+  if (!templates) {
+    const loaded = await loadShareTemplates(true)
+    if (disposed) return
+    if (!loaded.ok && !hasLoadedShareTemplates()) {
+      ElMessage.error('暂时无法获取分享模板，请稍后重试。')
+      return
+    }
+    templates = loaded.templates
+  }
+  const usage = catalogUsage(app)
+  const template = usage === 'platform' ? templates.platform : templates.agent
   const name = app.manifest?.name || '未命名应用'
   const summary = app.manifest?.summary || ''
   const link = `${location.origin}${publicPath(`/?app=${encodeURIComponent(app.id)}`)}`
-  const copied = await copyText([name, summary, link].filter(Boolean).join('\n'), '分享内容已复制，发给同事即可打开')
+  const text = renderShareTemplate(template, { name, summary, url: link })
+  const scopeNote = app.visibility?.scope === 'self'
+    ? '（当前仅自己可见，他人打开需先设为公开或授权）'
+    : app.visibility && app.visibility.scope !== 'all'
+      ? '（当前为受限分享范围，仅获授权同事可打开）'
+      : ''
+  const copied = await copyText(text, `分享内容已复制${scopeNote}`)
+  if (fromCache) {
+    lastShareTemplateSyncAt = Date.now()
+    void loadShareTemplates(true).then((refreshed) => {
+      if (disposed || !refreshed.ok) return
+      lastShareTemplateSyncAt = Date.now()
+      const latestTemplate = usage === 'platform' ? refreshed.templates.platform : refreshed.templates.agent
+      if (latestTemplate !== template) {
+        ElMessage.info('分享模板刚刚已更新，请再点一次「分享」获取最新文案。')
+      }
+    })
+  }
   const context = appEvent(app), interactionId = uuid()
   // Only a completed copy counts as a share: the manual-copy fallback may still be dismissed.
   if (copied && !props.management && context && interactionId) track('app_share_link_copied', eventAttributes({ placement }), { ...context, interactionId, ...resultContext() })
+}
+
+function toCatalogCard(updatedApp) {
+  const { documents: _documents, distributions: _distributions, ...card } = updatedApp
+  return { ...card, documents: {} }
+}
+
+function syncAppAcrossViews(updatedApp) {
+  if (!updatedApp?.id) return
+  const nextCard = toCatalogCard(updatedApp)
+  const merge = items => items.map(item => (item.id === updatedApp.id ? nextCard : item))
+  if (apps.value.some(item => item.id === updatedApp.id)) apps.value = merge(apps.value)
+  if (randomItems.value.some(item => item.id === updatedApp.id)) randomItems.value = merge(randomItems.value)
+  if (searchResultItems.value.some(item => item.id === updatedApp.id)) searchResultItems.value = merge(searchResultItems.value)
+  smartSearchRef.value?.syncApp?.(updatedApp)
+  window.dispatchEvent(new CustomEvent('plaza-app-updated', { detail: updatedApp }))
+}
+
+async function maybeRestoreManageAccessFocus() {
+  if (!props.management || !restoreAccessFocusPending || !managementDetailOpened || !detailVisible.value) return
+  await nextTick()
+  if (!restoreAccessFocusPending || !managementDetailOpened || !detailVisible.value) return
+  const trigger = document.querySelector('[data-testid="detail-manage-access"]')
+  if (!trigger) return
+  restoreAccessFocusPending = false
+  trigger.focus?.({ preventScroll: true })
+}
+
+function onDetailDialogOpened() {
+  managementDetailOpened = true
+  void maybeRestoreManageAccessFocus()
+}
+
+function openAccessDialog(appId) {
+  if (!appId) return
+  restoreAccessFocusPending = false
+  if (props.management && detailVisible.value) {
+    managementDetailOpened = false
+    managementDetailSuspendedId.value = selectedApp.value?.id || appId
+    accessSavedWhileSuspended = false
+    detailVisible.value = false
+  }
+  accessDialogAppId.value = appId
+}
+
+async function closeAccessDialog() {
+  accessDialogAppId.value = ''
+  const restoreId = managementDetailSuspendedId.value
+  if (!restoreId) return
+  managementDetailSuspendedId.value = ''
+  accessSavedWhileSuspended = false
+  restoreAccessFocusPending = true
+  await openApp(restoreId, { fromHistory: true, revalidating: true })
+  if (disposed || managementDetailSuspendedId.value || accessDialogAppId.value) return
+  if (selectedApp.value?.id !== restoreId && !detailError.value) return
+  detailVisible.value = true
+  await maybeRestoreManageAccessFocus()
+}
+
+function onAccessSaved() {
+  refreshOnReturn = true
+  window.dispatchEvent(new CustomEvent('plaza-favorites-changed'))
+  if (managementDetailSuspendedId.value) {
+    accessSavedWhileSuspended = true
+    return
+  }
+  if (selectedApp.value?.id) void openApp(selectedApp.value.id, { fromHistory: true, revalidating: true })
 }
 
 async function copyText(text, successMessage) {  if (!text || disposed) return false
@@ -873,11 +1058,11 @@ async function copyExample(text) {
 }
 
 function publicationToken(id) {
-  try {
-    return window.sessionStorage.getItem(`ai-app-plaza:publication:${id}`) || ''
-  } catch {
-    return ''
-  }
+  return readPublicationTicket(id)
+}
+
+function savePublicationTicket(id, ticket, fromUrl = false) {
+  return storePublicationTicket(id, ticket, fromUrl)
 }
 
 function preparePublicationRoute() {
@@ -886,15 +1071,17 @@ function preparePublicationRoute() {
   if (!id) return false
 
   publicationId.value = id
+  publicationExpiredOnServer.value = false
   publicationBusy.value = false
+  publicationEditorOpen.value = false
+  publicationEditorToken.value = ''
+  publicationEditorPending.value = false
   detailVisible.value = false
   shareVisible.value = false
   const ticket = props.management ? '' : fragment.get('key')
   if (ticket) {
-    try {
-      window.sessionStorage.setItem(`ai-app-plaza:publication:${id}`, ticket)
-    } catch {
-      publicationError.value = '浏览器未能保存此私有预览链接的临时授权，请允许当前标签页使用会话存储后重新打开链接。'
+    if (!savePublicationTicket(id, ticket, true)) {
+      publicationError.value = STORAGE_FALLBACK_NOTICE
     }
   }
   const visibleFragment = new URLSearchParams()
@@ -917,6 +1104,7 @@ async function handleHashChange() {
   publication.value = null
   publicationError.value = ''
   publicationLoading.value = false
+  publicationEditorOpen.value = false
   if (props.management) return
   await nextTick()
   catalogReady = true
@@ -934,36 +1122,84 @@ function openPublication(id) {
   window.history.replaceState({ ...window.history.state, plazaManagementPreview: true }, '', window.location.href)
 }
 
+async function recordPublicationPreviewViewed(id, result) {
+  if (result?.analyticsEnabled === true) {
+    measurementEnabled = true
+    enableAnalytics(true)
+  }
+  if (!measurementEnabled) return
+  const viewerContext = props.management ? 'management' : 'publication_link'
+  const pageContext = props.management ? 'management' : 'publication'
+  if (!portalViewed) {
+    track('portal_viewed', eventAttributes({ pageContext, entryMode: viewerContext }))
+    portalViewed = true
+  }
+  await nextTick()
+  if (!disposed && publicationId.value === id && result?.preview && Number.isInteger(result.revision) && result.revision > 0) {
+    track('publication_preview_viewed', eventAttributes({ pageContext, entryMode: viewerContext, viewerContext, previewRevision: result.revision }), { publicationId: id })
+  }
+}
+
 async function loadPublication(id = publicationId.value, { revalidating = publication.value?.id === id } = {}) {
   if (!id) return
   const sequence = ++publicationRequestSequence
   const current = () => sequence === publicationRequestSequence && publicationId.value === id
+  const storageFallback = !props.management && hasTicketStorageFallback(id)
   publicationLoading.value = true
-  publicationError.value = ''
-  if (!revalidating) publication.value = null
-  const token = props.management ? '' : publicationToken(id)
+  publicationError.value = storageFallback ? STORAGE_FALLBACK_NOTICE : ''
+  if (!revalidating) {
+    publication.value = null
+    publicationExpiredOnServer.value = false
+  }
+  const directToken = props.management ? '' : publicationToken(id)
+  const legacyToken = !props.management && !directToken ? readLegacyPublicationTicket(id) : ''
+  const token = directToken || legacyToken
   if (!props.management && !token) {
     publication.value = null
+    publicationExpiredOnServer.value = false
+    publicationEditorOpen.value = false
+    publicationEditorToken.value = ''
+    publicationEditorPending.value = false
     publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
     publicationLoading.value = false
     return
   }
   try {
     const result = await apiRequest(publicationPath(id), token ? { token } : {})
+    if (legacyToken && !result.requiresIdentity) {
+      promoteLegacyPublicationTicket(id, legacyToken)
+    }
     if (current()) {
+      publicationExpiredOnServer.value = false
       publication.value = result
-      if (result.analyticsEnabled === true) {
-        measurementEnabled = true; enableAnalytics(true)
-        const viewerContext = props.management ? 'management' : 'publication_link'
-        const pageContext = props.management ? 'management' : 'publication'
-        if (!portalViewed) { track('portal_viewed', eventAttributes({ pageContext, entryMode: viewerContext })); portalViewed = true }
-        await nextTick()
-        if (current() && result.preview && Number.isInteger(result.revision) && result.revision > 0) track('publication_preview_viewed', eventAttributes({ pageContext, entryMode: viewerContext, viewerContext, previewRevision: result.revision }), { publicationId: id })
+      if (result.status === 'registered') publicationError.value = ''
+      if (result.requiresIdentity) {
+        publicationEditorOpen.value = false
+        publicationEditorToken.value = ''
+        publicationEditorPending.value = false
+      } else if (result.status !== 'preview_ready' && !publicationEditorOpen.value) {
+        publicationEditorToken.value = ''
       }
+      await recordPublicationPreviewViewed(id, result)
     }
   } catch (error) {
+    const keepExpiredDraft = error.status === 410 && id === publicationId.value && publicationEditorOpen.value
+    if (legacyToken && ([403, 404].includes(error.status) || (error.status === 410 && !keepExpiredDraft))) {
+      removeLegacyPublicationTicket(id)
+    }
+    if ([403, 404, 410].includes(error.status) && !(keepExpiredDraft && publicationEditorPending.value)) {
+      deletePendingMetadataEdit(publicationEditCacheKey(id))
+    }
     if (current()) {
-      if ([401, 403, 404, 410].includes(error.status)) publication.value = null
+      if (keepExpiredDraft) {
+        publicationExpiredOnServer.value = true
+      } else if ([401, 403, 404, 410].includes(error.status)) {
+        publication.value = null
+        publicationExpiredOnServer.value = false
+        publicationEditorOpen.value = false
+        publicationEditorToken.value = ''
+        publicationEditorPending.value = false
+      }
       publicationError.value = errorText(error)
     }
   } finally {
@@ -1004,6 +1240,48 @@ async function mutatePublication(action) {
   }
 }
 
+function openPublicationEditor() {
+  if (!publicationId.value) return
+  const canRecoverPending = Boolean(hasPendingPublicationEdit.value && publication.value && !publication.value.requiresIdentity)
+  if (!canRecoverPending && (publication.value?.status !== 'preview_ready' || publicationExpired.value)) return
+  publicationEditorToken.value = props.management ? '' : publicationToken(publicationId.value)
+  if (!props.management && !publicationEditorToken.value) {
+    publicationError.value = '未找到此私有预览链接的临时授权，请重新打开作者提供的完整链接。'
+    return
+  }
+  publicationEditorOpen.value = true
+}
+
+function onPublicationEditorSaved(result) {
+  publicationEditorOpen.value = false
+  publicationExpiredOnServer.value = false
+  publicationEditorToken.value = ''
+  publicationEditorPending.value = false
+  if (!result?.publicationId) return
+  const nextId = result.publicationId
+  let nextError = ''
+  if (!props.management) {
+    if (result.ticket) {
+      if (!savePublicationTicket(nextId, result.ticket)) {
+        nextError = STORAGE_FALLBACK_NOTICE
+      }
+    } else {
+      nextError = '未能获取新预览的临时授权，请使用原发布记录恢复链接或从管理后台继续确认。'
+    }
+  }
+  publicationRequestSequence += 1
+  publicationLoading.value = false
+  publicationBusy.value = false
+  publicationId.value = nextId
+  if (result.publication) publication.value = result.publication
+  publicationError.value = nextError
+  const visibleFragment = new URLSearchParams()
+  visibleFragment.set('publish', nextId)
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${visibleFragment.toString()}`)
+  if (props.management) void loadPublication(nextId, { revalidating: false })
+  else if (result.publication) void recordPublicationPreviewViewed(nextId, result.publication)
+}
+
 function applicationUrl(appId) {
   const url = new URL(props.management ? publicPath('/') : window.location.pathname, window.location.origin)
   url.searchParams.set('app', appId)
@@ -1033,6 +1311,7 @@ async function returnToCatalog() {
 }
 
 onMounted(async () => {
+  void loadShareTemplates()
   window.addEventListener('hashchange', handleHashChange)
   window.addEventListener('popstate', handlePopState)
   window.addEventListener('keydown', handleDetailKey, true)
@@ -1078,6 +1357,10 @@ onUnmounted(() => {
   tagObserver?.disconnect()
   cancelAnimationFrame(layoutFrame)
   cancelAnimationFrame(tagFrame)
+  if (publicationExpiryTimer) {
+    clearTimeout(publicationExpiryTimer)
+    publicationExpiryTimer = 0
+  }
 })
 </script>
 
@@ -1140,6 +1423,26 @@ onUnmounted(() => {
             {{ publicationBusy ? '正在确认…' : isUpdate ? '确认更新' : '确认收录' }}
           </button>
           <button
+            v-if="publication?.status === 'preview_ready' && !publicationExpired && !publication.requiresIdentity"
+            type="button"
+            class="secondary-button"
+            data-testid="edit-publication"
+            :disabled="publicationBusy || publicationLoading"
+            @click="openPublicationEditor"
+          >
+            编辑应用信息
+          </button>
+          <button
+            v-else-if="hasPendingPublicationEdit && publication && !publication.requiresIdentity"
+            type="button"
+            class="secondary-button"
+            data-testid="recover-publication-edit"
+            :disabled="publicationBusy || publicationLoading"
+            @click="openPublicationEditor"
+          >
+            恢复上次编辑结果
+          </button>
+          <button
             v-if="publication?.status === 'failed' && publication.nextAction !== 'submit_again'"
             class="primary-button"
             data-testid="retry-publication"
@@ -1190,6 +1493,18 @@ onUnmounted(() => {
         <AppPublicContent :app="publication.preview" @access-lost="loadPublication()" />
       </section>
     </main>
+    <ApplicationMetadataEditor
+      :publication-id="publicationEditorOpen ? publicationId : ''"
+      :publication-token="publicationEditorToken"
+      :management="props.management"
+      :read-only="publicationEditorReadOnly"
+      :read-only-reason="publicationEditorReadOnlyReason"
+      :expires-at="publication?.expiresAt || ''"
+      @pending-change="publicationEditorPending = $event"
+      @close="publicationEditorOpen = false; publicationEditorPending = false"
+      @saved="onPublicationEditorSaved"
+      @access-lost="loadPublication()"
+    />
   </div>
 
   <div v-else class="directory-shell" :class="{ 'plaza-public': !props.management }">
@@ -1202,7 +1517,7 @@ onUnmounted(() => {
         </div>
         <button class="share-button" data-testid="share-button" @click="openShareDialog()"><PlazaIcon name="plus"/>分享我的 AI 应用</button>
       </header>
-      <SmartSearch v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" @share="app => copyShareLink(app, 'card')" />
+      <SmartSearch ref="smartSearchRef" v-show="discoveryTab === 'search'" :key="identity.epoch" :active="visible && discoveryTab === 'search' && !detailVisible" @results="onSearchResults" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @return="selectDiscovery('catalog')" @share="app => copyShareLink(app, 'card')" />
       <CatalogWheel v-if="discoveryTab === 'random'" :items="randomItems" v-model:index="randomIndex" :loading="randomLoading" :revalidating="randomRevalidating" :error="randomError" :all-shown="randomAllShown" @refresh="loadRandom" @return="selectDiscovery('catalog')" @detail="openApp" @primary="usePrimary" @tag="filterFromWheel" @share="app => copyShareLink(app, 'card')" />
       <section v-show="discoveryTab === 'catalog'" class="search-section" aria-label="搜索 AI 应用">
         <div class="catalog-toolbar">
@@ -1268,6 +1583,7 @@ onUnmounted(() => {
       v-bind="props.management ? { modelValue: detailVisible, width: 'min(1180px, 94vw)', alignCenter: true, destroyOnClose: true } : {}"
       :class="props.management ? 'app-detail-dialog' : 'public-detail'"
       @close="closeDetail"
+      @opened="onDetailDialogOpened"
     >
       <header v-if="!props.management" class="public-detail-heading">
         <button class="secondary-button detail-return" data-testid="return-discovery" @click="returnFromDetail">← {{ props.personalReturn ? '返回我的收藏' : detailError ? '返回并刷新' : discoveryTab === 'random' ? '返回随便看看' : discoveryTab === 'search' ? '返回智能查找' : '返回应用目录' }}</button>
@@ -1281,7 +1597,12 @@ onUnmounted(() => {
         </div>
       </template>
       <div v-if="detailLoading" class="dialog-state" role="status">{{ selectedApp ? '正在更新应用详情…' : '正在读取应用详情…' }}</div>
-      <div v-if="detailError" class="dialog-state is-error" role="alert">
+      <div v-if="detailError && !props.management && detailErrorStatus === 404 && !selectedApp" class="dialog-state is-restricted" data-testid="detail-restricted" role="alert">
+        <strong>当前无法访问此应用</strong>
+        <p v-if="identity.enabled && !identity.user">请先登录天宫账号核验访问权限。如果这是作者分享给你的链接，请联系作者将应用设为公开或向你授权；若应用已更新或下架，请返回刷新列表。</p>
+        <p v-else>如果这是作者分享给你的链接，请联系作者将应用设为公开或向你授权；若应用已更新或下架，请返回刷新列表。</p>
+      </div>
+      <div v-else-if="detailError" class="dialog-state is-error" role="alert">
         <strong>{{ selectedApp ? '应用详情更新未完成' : '应用详情暂时无法加载' }}</strong>
         <p>{{ detailError }} 请返回刷新，查看当前可用的应用。</p>
         <button v-if="selectedApp" class="secondary-button" @click="openApp(selectedApp.id, { fromHistory: true, revalidating: true })">重试</button>
@@ -1292,6 +1613,7 @@ onUnmounted(() => {
             :app="selectedApp"
             @read-documents="detailDocumentsVisible = true"
             @read-source="detailSourceVisible = true"
+            @manage-access="openAccessDialog(selectedApp.id)"
           />
         </div>
         <aside class="detail-actions" aria-label="应用使用入口" data-testid="detail-actions">
@@ -1456,6 +1778,11 @@ onUnmounted(() => {
         @focus="selectManualCopyText"
       />
     </el-dialog>
+    <ApplicationAccessDialog
+      :app-id="accessDialogAppId"
+      @close="closeAccessDialog"
+      @saved="onAccessSaved"
+    />
   </div>
 </template>
 
@@ -1510,6 +1837,8 @@ onUnmounted(() => {
 .dialog-state p { max-width: 560px; margin: 0; line-height: 1.6; }
 .dialog-state.is-error { color: var(--plaza-danger); }
 .dialog-state.is-error strong { color: var(--plaza-danger); }
+.dialog-state.is-restricted { margin: 8px 0; padding: 32px 24px; border: 1px solid var(--plaza-line); border-radius: 14px; background: var(--plaza-surface); }
+.dialog-state.is-restricted strong { color: var(--plaza-ink); }
 .share-flow { color: var(--plaza-text); }
 .share-intro { margin: 0 0 15px; font-size: 14px; line-height:22px; }
 .share-steps { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; counter-reset: share-step; }

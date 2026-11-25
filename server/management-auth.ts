@@ -23,16 +23,23 @@ export async function requirePublicationMaintenance(db: Queryable, publicationId
 
 export function installManagementIdentity(app: FastifyInstance, db: Database, identity: () => IdentityHttp | undefined, enabled: boolean, sourceInstance: string) {
   app.addHook('preHandler', async (request: FastifyRequest) => {
-    if (!enabled || !request.url.split('?')[0].startsWith('/api/management/')) return;
+    const rawPath = request.url.split('?')[0] ?? '';
+    if (!enabled || !rawPath.startsWith('/api/management/')) return;
+    let decodedPath: string;
+    try {
+      decodedPath = decodeURIComponent(rawPath);
+    } catch {
+      throw new DomainError(400, 'VALIDATION_FAILED', '请求路径无效。');
+    }
     const auth = identity();
     if (!auth) throw new DomainError(503, 'IDENTITY_UNAVAILABLE', '身份服务尚未就绪。');
     if (!['GET', 'HEAD'].includes(request.method)) auth.sameOrigin(request);
     const actor = await auth.authenticate(request);
     request.plazaUserId = actor.id;
-    const appIdValue = /^\/api\/management\/apps\/([a-f0-9-]{36})(?:\/|$)/i.exec(request.url)?.[1];
+    const appIdValue = /^\/api\/management\/apps\/([a-f0-9-]{36})(?:\/|$)/i.exec(decodedPath)?.[1];
     const appId = appIdValue === undefined ? undefined : z.string().uuid().parse(appIdValue);
     if (appId) await requireAppAction(db, appId, actor.id);
-    const publicationIdValue = /^\/api\/management\/publications\/([a-f0-9-]{36})(?:\/|$)/i.exec(request.url)?.[1];
+    const publicationIdValue = /^\/api\/management\/publications\/([a-f0-9-]{36})(?:\/|$)/i.exec(decodedPath)?.[1];
     const publicationId = publicationIdValue === undefined ? undefined : z.string().uuid().parse(publicationIdValue);
     if (publicationId) await requirePublicationMaintenance(db, publicationId, sourceInstance, actor.id);
   });

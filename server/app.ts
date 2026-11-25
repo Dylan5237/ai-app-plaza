@@ -19,6 +19,7 @@ import type { Database } from './domain/database.js';
 import { assertManagementConfig, managementEnabled, managementMode, type Config } from './config.js';
 import { publishContract } from './publish-contract.js';
 import { publisherScript } from './managed-publish-contract.js';
+import { effectiveShareTemplates, effectiveTextTemplate } from './domain/text-templates.js';
 import { createManagedPublisher } from './domain/managed-publisher.js';
 import { registerPreviewAdmin } from './preview-admin.js';
 import { registerManagement } from './management.js';
@@ -103,7 +104,10 @@ export async function createApp(config: Config, db: Database) {
     return { ...visible, ticket: result.ticket, previewUrl: result.previewUrl,
       ...(result.managedAppId ? { managedAppId: result.managedAppId } : {}),
       ...(result.operationId ? { operationId: result.operationId } : {}),
-      ...(result.sourceUploaded !== undefined ? { sourceUploaded: result.sourceUploaded } : {}) };
+      ...(result.sourceUploaded !== undefined ? { sourceUploaded: result.sourceUploaded } : {}),
+      ...(result.superseded ? { superseded: true } : {}),
+      ...(result.originalPublicationId ? { originalPublicationId: result.originalPublicationId } : {}),
+      ...(result.originalStatus ? { originalStatus: result.originalStatus } : {}) };
   };
   let managedActive = 0;
   let downloadActive = 0;
@@ -172,8 +176,9 @@ export async function createApp(config: Config, db: Database) {
     }
     const managedPostPath = request.url.split('?')[0];
     const isManagedPublicationPost = ['/api/managed-publications', '/api/managed-publications/validate'].includes(managedPostPath);
-    const isManagementEditorPost = /^\/api\/management\/apps\/[^/]+\/editor$/.test(managedPostPath);
-    if (managed && request.method === 'POST' && (isManagedPublicationPost || isManagementEditorPost)) {
+    const isManagementEditorPost = /^\/api\/management\/(?:apps|publications)\/[^/]+\/editor$/.test(managedPostPath);
+    const isPublicationEditorPost = /^\/api\/publications\/[^/]+\/editor$/.test(managedPostPath);
+    if (managed && request.method === 'POST' && (isManagedPublicationPost || isManagementEditorPost || isPublicationEditorPost)) {
       if (managedActive >= 2) return reply.code(429).send({ error: { code: 'UPLOAD_BUSY', message: '正在处理其他上传，请保留本次记录后稍后重试' } });
       managedActive += 1;
       (request as any).managedSlot = true;
@@ -204,8 +209,10 @@ export async function createApp(config: Config, db: Database) {
     managementEnabled: managementEnabled(config), managementMode: managementMode(config) }));
   app.get('/api/publish-contract', async (request) => {
     const query = z.object({ mode: z.enum(['managed', 'gitlab']).optional() }).parse(request.query);
-    return publishContract(config, undefined, undefined, query.mode === 'gitlab', await service.tags());
+    const customTemplate = query.mode === 'gitlab' ? undefined : await effectiveTextTemplate(db, 'publish_managed_new');
+    return publishContract(config, undefined, undefined, query.mode === 'gitlab', await service.tags(), customTemplate);
   });
+  app.get('/api/share-templates', async () => effectiveShareTemplates(db));
   app.get('/api/publisher-cli.py', async (_request, reply) => {
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务尚未启用统一托管发布');
     const script = await publisherScript();
@@ -247,7 +254,8 @@ export async function createApp(config: Config, db: Database) {
     const actorId = await viewerId(request);
     if (config.tiangong) await requireAppAction(db, id, actorId);
     const current = await service.app(id, { viewerId: actorId, management: !!config.tiangong });
-    return publishContract(config, current, await managed?.findByAppId(id), false, await service.tags());
+    const customTemplate = await effectiveTextTemplate(db, 'publish_managed_update');
+    return publishContract(config, current, await managed?.findByAppId(id), false, await service.tags(), customTemplate);
   });
   app.get('/api/managed-apps/:id/status', (request) => {
     if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '统一托管发布尚未配置，请联系广场维护者');
@@ -300,6 +308,47 @@ export async function createApp(config: Config, db: Database) {
   app.get('/api/publications/:id', async request => {
     const result = await service.publication(publicationId(request.params), ticket(request.headers.authorization), await viewerId(request));
     return config.analytics ? { ...result, analyticsEnabled: true } : result;
+  });
+  const publicationEditBody = z.object({
+    expectedAppRevision: z.number().int().nonnegative(),
+    manifest: z.unknown(),
+    documents: z.record(z.string(), z.string()),
+  }).strict();
+  app.get('/api/publications/:id/editor', async request => {
+    const id = publicationId(request.params);
+    const token = ticket(request.headers.authorization);
+    const viewer = await viewerId(request);
+    if (!config.tiangong && !managementEnabled(config)) {
+      const view = await service.publication(id, token, viewer);
+      if (view.requiresIdentity) throw new DomainError(401, 'LOGIN_REQUIRED', '请在天宫同源入口登录后编辑本次预览。');
+      return { ...(view.preview ? { app: view.preview } : {}), editable: false, reason: '当前实例未启用身份核验或管理写入，私有预览暂不支持直接写回仓库。' };
+    }
+    if (!managed) {
+      const view = await service.publication(id, token, viewer);
+      if (view.requiresIdentity) throw new DomainError(401, 'LOGIN_REQUIRED', '请在天宫同源入口登录后编辑本次预览。');
+      return { ...(view.preview ? { app: view.preview } : {}), editable: false, reason: '当前服务未启用统一托管发布，请修改来源仓库后重新生成预览。' };
+    }
+    return managed.publicationEditorContext(id, { management: false, ticket: token, viewerId: viewer });
+  });
+  app.post('/api/publications/:id/editor', { bodyLimit: 1024 * 1024 }, async request => {
+    const id = publicationId(request.params);
+    const token = ticket(request.headers.authorization);
+    if (!config.tiangong && !managementEnabled(config)) {
+      throw new DomainError(403, 'EDITOR_AUTH_REQUIRED', '当前实例未启用身份核验或管理写入，私有预览暂不支持直接写回仓库。');
+    }
+    if (!managed) throw new DomainError(503, 'MANAGED_PUBLISH_DISABLED', '当前服务未启用统一托管发布，请修改来源仓库后重新生成预览。');
+    (request as any).managedRunning = true;
+    try {
+      const viewer = await publicationActor(request);
+      const idempotencyKey = z.string().uuid().parse(request.headers['idempotency-key']);
+      const input = publicationEditBody.parse(request.body);
+      const result = await managed.editPublicationMetadata(id, input, idempotencyKey, { management: false, ticket: token, viewerId: viewer });
+      if (result.mode !== 'private') throw new Error('Unexpected publication edit result mode');
+      const publication = config.analytics ? { ...result.publication, analyticsEnabled: true } : result.publication;
+      return { publication, ticket: result.ticket, operationId: result.operationId };
+    } finally {
+      releaseManagedSlot(request);
+    }
   });
   app.post('/api/publications/:id/confirm', async request => service.confirm(publicationId(request.params), ticket(request.headers.authorization), confirmation.parse(request.body), await publicationActor(request)));
   app.post('/api/publications/:id/retry', async request => service.retry(publicationId(request.params), ticket(request.headers.authorization), await publicationActor(request)));

@@ -5,6 +5,7 @@ import type { Database } from './domain/database.js';
 import { DomainError } from './domain/errors.js';
 import type { ManagedPublisher } from './domain/managed-publisher.js';
 import type { PlazaService } from './domain/service.js';
+import { effectiveTextTemplate } from './domain/text-templates.js';
 import { publishContract } from './publish-contract.js';
 
 const appIdSchema = z.object({ id: z.string().uuid() }).strict();
@@ -17,7 +18,7 @@ const lifecycleSchema = z.object({
 export function registerManagementLifecycle(
   app: FastifyInstance,
   config: Config,
-  _db: Database,
+  db: Database,
   service: PlazaService,
   managed?: Pick<ManagedPublisher, 'findByAppId'>,
 ): void {
@@ -60,7 +61,8 @@ export function registerManagementLifecycle(
     const id = appIdSchema.parse(request.params).id;
     const current = await service.app(id, { includeHidden: true, viewerId: request.plazaUserId, management: !!config.tiangong });
     const managedTarget = await managed?.findByAppId(id);
-    const contract = await publishContract(config, current, managedTarget, false, await service.tags());
+    const customTemplate = await effectiveTextTemplate(db, 'publish_managed_update');
+    const contract = await publishContract(config, current, managedTarget, false, await service.tags(), customTemplate);
     if ('prompt' in contract && typeof contract.prompt === 'string') {
       const publicReadback = `GET ${config.publicOrigin}/api/apps/${id}`;
       const managementReadback = `GET ${config.publicOrigin}/api/management/apps/${id}`;

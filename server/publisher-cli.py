@@ -1557,6 +1557,19 @@ def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[st
     expires_at = response.get("expiresAt")
     if not isinstance(expires_at, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z", expires_at):
         expires_at = None
+    superseded = response.get("superseded") is True
+    original_publication_id: str | None = None
+    if superseded and response.get("originalPublicationId") is not None:
+        try:
+            original_publication_id = _valid_uuid(response.get("originalPublicationId"), "originalPublicationId")
+        except CliError:
+            original_publication_id = None
+    raw_original_status = response.get("originalStatus")
+    original_status = (
+        raw_original_status
+        if superseded and isinstance(raw_original_status, str) and raw_original_status in SAFE_PUBLICATION_STATUSES
+        else None
+    )
 
     details: dict[str, Any] = {
         "status": status_value or "unknown",
@@ -1573,6 +1586,12 @@ def _publication_handoff(response: dict[str, Any], origin: str) -> tuple[dict[st
         details["revision"] = revision
     if expires_at:
         details["expiresAt"] = expires_at
+    if superseded:
+        details["superseded"] = True
+    if original_publication_id:
+        details["originalPublicationId"] = original_publication_id
+    if original_status:
+        details["originalStatus"] = original_status
 
     preview_url = response.get("previewUrl")
     url_details = _author_preview_details(preview_url, origin) if isinstance(preview_url, str) else None
@@ -1636,7 +1655,7 @@ def _store_publication_result(store: ReceiptStore, receipt: dict[str, Any], deta
     else:
         receipt.pop("sourceUploaded", None)
     receipt["managedAppId"] = details.get("managedAppId", receipt.get("managedAppId"))
-    for key in ("nextAction", "revision", "expiresAt"):
+    for key in ("nextAction", "revision", "expiresAt", "superseded", "originalPublicationId", "originalStatus"):
         if key in details:
             receipt[{"revision": "publicationRevision"}.get(key, key)] = details[key]
         else:
@@ -1821,6 +1840,16 @@ def _receipt_status_output(receipt: dict[str, Any], origin: str) -> dict[str, An
     next_action = receipt.get("nextAction")
     if isinstance(next_action, str) and next_action in SAFE_NEXT_ACTIONS:
         result["nextAction"] = next_action
+    if receipt.get("superseded") is True:
+        result["superseded"] = True
+        try:
+            if receipt.get("originalPublicationId") is not None:
+                result["originalPublicationId"] = _valid_uuid(receipt.get("originalPublicationId"), "originalPublicationId")
+        except CliError:
+            pass
+        original_status = receipt.get("originalStatus")
+        if isinstance(original_status, str) and original_status in SAFE_PUBLICATION_STATUSES:
+            result["originalStatus"] = original_status
     return result
 
 
@@ -1905,22 +1934,23 @@ def _recovery_required_output(*, managed_id: str | None = None, operation_status
 
 
 def _publish_output(details: dict[str, Any], complete: bool) -> dict[str, Any]:
+    extra = ("superseded", "originalPublicationId", "originalStatus")
     if complete:
         return {key: details[key] for key in (
             "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "previewUrl",
-            "nextAction", "revision", "expiresAt",
+            "nextAction", "revision", "expiresAt", *extra,
         ) if key in details}
     if details.get("handoffState") == "registered":
         return {key: details[key] for key in (
-            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction", "revision",
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction", "revision", *extra,
         ) if key in details}
     if details.get("handoffState") == "pending":
         return {key: details[key] for key in (
-            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction",
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction", *extra,
         ) if key in details}
     if details.get("status") in {"failed", "cancelled"}:
         return {key: details[key] for key in (
-            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction", "recoveryUrl",
+            "status", "handoffState", "publicationId", "managedAppId", "sourceUploaded", "nextAction", "recoveryUrl", *extra,
         ) if key in details}
     return _recovery_required_output(managed_id=details.get("managedAppId"))
 
@@ -2112,6 +2142,9 @@ def _run_receipt_mode(args: argparse.Namespace, project_root: Path, origin: str,
             receipt.pop("sourceUploaded", None)
         receipt.pop("previewUrl", None)
         receipt.pop("publicationTicket", None)
+        receipt.pop("superseded", None)
+        receipt.pop("originalPublicationId", None)
+        receipt.pop("originalStatus", None)
         _clear_saved_recovery_capability(receipt)
         try:
             store.save(receipt)
@@ -2240,6 +2273,9 @@ def _run(args: argparse.Namespace) -> int:
             receipt["requestExpectedAppRevision"] = None
             receipt["handoffState"] = "pending"
             receipt["handoffComplete"] = False
+            receipt.pop("superseded", None)
+            receipt.pop("originalPublicationId", None)
+            receipt.pop("originalStatus", None)
         elif retry_original_authorized:
             # Replay the saved body, owner, idempotency key, managed ID, and revision.
             # The current source tree is deliberately ignored until this request resolves.
@@ -2258,6 +2294,9 @@ def _run(args: argparse.Namespace) -> int:
             receipt.pop("handoffRecoveryRequired", None)
             receipt.pop("previewUrl", None)
             receipt.pop("publicationTicket", None)
+            receipt.pop("superseded", None)
+            receipt.pop("originalPublicationId", None)
+            receipt.pop("originalStatus", None)
         elif not receipt.get("idempotencyKey") or not isinstance(receipt.get("files"), list):
             raise CliError("本机 receipt 缺少重试标识或原始资料；不会重新创建发布请求。")
         elif old_digest == digest and receipt.get("files") != files:
@@ -2287,6 +2326,9 @@ def _run(args: argparse.Namespace) -> int:
         receipt.pop("sourceUploaded", None)
         receipt.pop("previewUrl", None)
         receipt.pop("publicationTicket", None)
+        receipt.pop("superseded", None)
+        receipt.pop("originalPublicationId", None)
+        receipt.pop("originalStatus", None)
         _clear_saved_recovery_capability(receipt)
         store.save(receipt)
 

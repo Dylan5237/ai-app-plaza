@@ -88,7 +88,7 @@ const adminSectionOpen = ref(['dashboard', 'governance', 'groups', 'smart-search
             <PlazaIcon name="groups" /><span>成员与小组</span>
           </button>
           <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'smart-search' }" :aria-current="active === 'smart-search' ? 'page' : undefined" :href="publicPath('/?space=smart-search')">
-            <PlazaIcon name="agent" /><span>智能查找</span>
+            <PlazaIcon name="agent" /><span>提示词与模板</span>
           </a>
           <a v-if="identity?.user?.superAdministrator" class="rail-item" :class="{ active: active === 'admins' }" :aria-current="active === 'admins' ? 'page' : undefined" :href="publicPath('/?space=administrators')">
             <PlazaIcon name="admins" /><span>管理员配置</span>

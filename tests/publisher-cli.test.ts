@@ -2744,3 +2744,94 @@ test('receipt state directory cannot be inside the project tree', async (t) => {
   assert.equal(requestCount, 0);
   await assert.rejects(readFile(stateDir));
 });
+
+test('CLI recover and status preserve superseded and original publication relationship fields', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'plaza-publisher-superseded-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = await makeProject(temporary);
+  const stateDir = path.join(temporary, 'private-state');
+  const SUPERSEDED_ID = 'b9c4338f-1111-4444-8888-222233334444';
+
+  let failNewUpdate = false;
+  const portal = await createPortal((request, response) => {
+    if (failNewUpdate) {
+      if (request.url?.includes(`/api/managed-apps/${MANAGED_ID}/status`)) {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ managedAppId: MANAGED_ID, expectedAppRevision: 1 }));
+        return;
+      }
+      response.writeHead(503, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ message: 'temporary portal failure' }));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/api/managed-publications') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        id: PUBLICATION_ID,
+        status: 'preview_ready',
+        sourceUploaded: true,
+        managedAppId: MANAGED_ID,
+        previewUrl: `${portal.origin}/#publish=${PUBLICATION_ID}&key=${PREVIEW_TICKET}`,
+        ticket: PREVIEW_TICKET,
+        nextAction: 'confirm',
+        revision: 1,
+        expiresAt: '2026-11-26T00:00:00.000Z',
+      }));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/api/managed-publications/receipt') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        id: SUPERSEDED_ID,
+        status: 'registered',
+        sourceUploaded: true,
+        managedAppId: MANAGED_ID,
+        superseded: true,
+        originalPublicationId: PUBLICATION_ID,
+        originalStatus: 'cancelled',
+        revision: 1,
+        nextAction: 'complete',
+      }));
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  t.after(portal.close);
+
+  const initial = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir]);
+  assert.equal(initial.code, 0, initial.stderr);
+
+  const recovered = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--recover']);
+  assert.equal(recovered.code, 0, recovered.stderr);
+  const recoverOut = JSON.parse(recovered.stdout) as Record<string, unknown>;
+  assert.equal(recoverOut.publicationId, SUPERSEDED_ID);
+  assert.equal(recoverOut.status, 'registered');
+  assert.equal(recoverOut.superseded, true);
+  assert.equal(recoverOut.originalPublicationId, PUBLICATION_ID);
+  assert.equal(recoverOut.originalStatus, 'cancelled');
+
+  const statusRes = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--status']);
+  assert.equal(statusRes.code, 0, statusRes.stderr);
+  const statusOut = JSON.parse(statusRes.stdout) as Record<string, unknown>;
+  assert.equal(statusOut.publicationId, SUPERSEDED_ID);
+  assert.equal(statusOut.publicationStatus, 'registered');
+  assert.equal(statusOut.superseded, true);
+  assert.equal(statusOut.originalPublicationId, PUBLICATION_ID);
+  assert.equal(statusOut.originalStatus, 'cancelled');
+
+  // Starting a new version publish that fails clears stale superseded fields instead of misreporting them.
+  const manifestRaw = JSON.parse(await readFile(path.join(root, 'ai-app.json'), 'utf8'));
+  manifestRaw.projectVersion = '1.0.1';
+  await writeFile(path.join(root, 'ai-app.json'), JSON.stringify(manifestRaw));
+
+  failNewUpdate = true;
+  const failedUpdate = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir]);
+  assert.notEqual(failedUpdate.code, 0);
+
+  const statusAfterNewRequest = await runCli(['--origin', portal.origin, '--project', root, '--state-dir', stateDir, '--status']);
+  assert.equal(statusAfterNewRequest.code, 0, statusAfterNewRequest.stderr);
+  const statusAfterOut = JSON.parse(statusAfterNewRequest.stdout) as Record<string, unknown>;
+  assert.equal(Object.hasOwn(statusAfterOut, 'superseded'), false);
+  assert.equal(Object.hasOwn(statusAfterOut, 'originalPublicationId'), false);
+  assert.equal(Object.hasOwn(statusAfterOut, 'originalStatus'), false);
+});

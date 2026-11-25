@@ -150,7 +150,13 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS published_snapshots_audience_idx ON published_snapshots (audience, app_id)`,
   `CREATE INDEX IF NOT EXISTS publications_expiry_idx ON publications (expires_at)`,
   `CREATE INDEX IF NOT EXISTS managed_publish_operations_binding_idx ON managed_publish_operations (binding_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS managed_publish_operations_publication_idx ON managed_publish_operations (publication_id, created_at DESC) WHERE publication_id IS NOT NULL`,
   `ALTER TABLE publications ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS replaces_publication_id uuid REFERENCES publications(id)`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS superseded_by_publication_id uuid REFERENCES publications(id)`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS replace_actor_user_id uuid`,
+  `ALTER TABLE publications ADD COLUMN IF NOT EXISTS managed_operation_id uuid`,
+  `CREATE INDEX IF NOT EXISTS publications_replaces_idx ON publications (replaces_publication_id) WHERE replaces_publication_id IS NOT NULL`,
   `ALTER TABLE managed_publish_operations ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE catalog_app_lifecycle ADD COLUMN IF NOT EXISTS analytics_journal jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `CREATE TABLE IF NOT EXISTS analytics_events (
@@ -239,6 +245,19 @@ const MIGRATIONS = [
     updated_at timestamptz NOT NULL DEFAULT now(),
     updated_by uuid
   )`,
+  `CREATE TABLE IF NOT EXISTS plaza_text_templates (
+    purpose text PRIMARY KEY,
+    template text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    updated_by uuid
+  )`,
+  `CREATE TABLE IF NOT EXISTS plaza_publication_confirm_claims (
+    claim_id uuid PRIMARY KEY,
+    publication_id uuid NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    expires_at timestamptz NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS plaza_publication_confirm_claims_pub_idx
+    ON plaza_publication_confirm_claims(publication_id, expires_at)`,
   `CREATE TABLE IF NOT EXISTS plaza_smart_search_requests (
     id uuid PRIMARY KEY,
     description text NOT NULL,

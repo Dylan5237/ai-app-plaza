@@ -26,9 +26,16 @@ async function load() {
 async function remove(id) {
   try { await saveFavorite(id, false) } catch (e) { error.value = e.message }
 }
+function syncUpdatedApp(event) {
+  const updated = event?.detail
+  if (!updated?.id || !items.value.some(item => item.app?.id === updated.id)) return
+  const { documents: _documents, distributions: _distributions, ...card } = updated
+  const nextCard = { ...card, documents: {} }
+  items.value = items.value.map(item => (item.app?.id === updated.id ? { ...item, app: nextCard } : item))
+}
 function changePage(value) { page.value = value; void load() }
-onMounted(() => { void load(); window.addEventListener('plaza-favorites-changed', load); window.addEventListener('focus', load) })
-onUnmounted(() => { sequence++; window.removeEventListener('plaza-favorites-changed', load); window.removeEventListener('focus', load) })
+onMounted(() => { void load(); window.addEventListener('plaza-favorites-changed', load); window.addEventListener('plaza-app-updated', syncUpdatedApp); window.addEventListener('focus', load) })
+onUnmounted(() => { sequence++; window.removeEventListener('plaza-favorites-changed', load); window.removeEventListener('plaza-app-updated', syncUpdatedApp); window.removeEventListener('focus', load) })
 </script>
 <template>
   <main class="personal-space plaza-public">

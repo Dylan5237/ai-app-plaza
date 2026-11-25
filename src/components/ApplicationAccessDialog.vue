@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiRequest } from '../lib/api.js'
+import { uuid } from '../lib/analytics.js'
 
 const props = defineProps({ appId: { type: String, default: '' } })
 const emit = defineEmits(['close', 'saved'])
@@ -63,8 +64,15 @@ onUnmounted(() => { generation++; window.removeEventListener('focus', revalidate
 async function save() {
   if (busy.value || loading.value || conflict.value || !current.value || !valid.value || !changed.value && !uncertain.value) return
   const version = generation, id = props.appId
-  if (!pending) pending = { path: section.value === 'transfer' ? 'transfers' : section.value,
-    method: section.value === 'transfer' ? 'POST' : 'PUT', body: { ...payload.value, revision: current.value.revision, requestId: crypto.randomUUID(), confirmed: true } }
+  if (!pending) {
+    const requestId = uuid()
+    if (!requestId) {
+      error.value = '当前浏览器无法生成安全请求标识，请更换现代浏览器或通过 HTTPS 访问后再保存。'
+      return
+    }
+    pending = { path: section.value === 'transfer' ? 'transfers' : section.value,
+      method: section.value === 'transfer' ? 'POST' : 'PUT', body: { ...payload.value, revision: current.value.revision, requestId, confirmed: true } }
+  }
   busy.value = true; error.value = ''; notice.value = ''
   try {
     await apiRequest(`/api/access/apps/${id}/${pending.path}`, { method: pending.method, body: pending.body })
@@ -91,7 +99,7 @@ async function save() {
 </script>
 
 <template>
-  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" :close-on-click-modal="false" :show-close="!busy && !uncertain" :close-on-press-escape="!busy && !uncertain" :before-close="beforeClose" @close="requestClose">
+  <el-dialog :model-value="Boolean(appId)" title="应用归属与权限" width="min(680px, 92vw)" class="application-access-dialog" append-to-body :close-on-click-modal="false" :show-close="!busy && !uncertain" :close-on-press-escape="!busy && !uncertain" :before-close="beforeClose" @close="requestClose">
     <div v-loading="loading" class="access-form">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
       <p v-if="notice" role="status">{{ notice }}</p>

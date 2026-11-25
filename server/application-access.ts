@@ -4,6 +4,7 @@ import type { Database } from './domain/database.js';
 import { createAppAccessService } from './domain/app-access.js';
 import { administratorUsers, setAdministrator } from './domain/platform-access.js';
 import { smartSearchPromptView, setSmartSearchPrompt } from './domain/smart-search-prompt.js';
+import { TEXT_TEMPLATE_PURPOSES, setTextTemplate, textTemplatesAdminView } from './domain/text-templates.js';
 import { listSmartSearchRequests, setSmartSearchRequestStatus } from './domain/smart-search-requests.js';
 import { authorAppStats } from './domain/author-stats.js';
 import type { IdentityHttp } from './identity.js';
@@ -60,10 +61,19 @@ export function registerApplicationAccess(app: FastifyInstance, db: Database, au
     return setAdministrator(db, actorId, input);
   });
   app.get('/api/access/smart-search-prompt', async request => smartSearchPromptView(db, await user(request)));
-  app.put('/api/access/smart-search-prompt', async request => {
+  app.put('/api/access/smart-search-prompt', { bodyLimit: 64 * 1024 }, async request => {
     const actorId = await user(request, true);
     const { confirmed: _, ...input } = mutation.extend({ template: z.string().min(1).max(6000).nullable() }).strict().parse(request.body);
     return setSmartSearchPrompt(db, actorId, input);
+  });
+  app.get('/api/access/text-templates', async request => textTemplatesAdminView(db, await user(request)));
+  app.put('/api/access/text-templates', { bodyLimit: 128 * 1024 }, async request => {
+    const actorId = await user(request, true);
+    const { confirmed: _, ...input } = mutation.extend({
+      purpose: z.enum(TEXT_TEMPLATE_PURPOSES),
+      template: z.string().max(12000).nullable(),
+    }).strict().parse(request.body);
+    return setTextTemplate(db, actorId, input);
   });
   app.get('/api/access/smart-search-requests', async request => ({ items: await listSmartSearchRequests(db, await user(request)) }));
   app.put('/api/access/smart-search-requests/:id', async request => {

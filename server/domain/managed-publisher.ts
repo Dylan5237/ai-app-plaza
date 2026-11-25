@@ -4,7 +4,7 @@ import { DomainError } from "./errors.js";
 import { gitlabConcurrency } from "./gitlab-concurrency.js";
 import type { DomainDiagnostic } from "./errors.js";
 import type { Database } from "./database.js";
-import type { AppView, PlazaService, SubmitInput, SubmitResult } from "./service.js";
+import type { AppView, PlazaService, PublicationView, SubmitInput, SubmitResult } from "./service.js";
 import { compareProjectVersions, decodeUtf8, manifestJson, normalizeProjectVersion, validateRepoPath, type StoredAppManifest } from "./manifest.js";
 import { validateTagReuse } from './tags.js';
 import { parseTree, type ParseError } from "jsonc-parser";
@@ -146,6 +146,18 @@ export interface ManagedMetadataEditInput {
   documents: Record<string, string>;
 }
 
+export interface ManagedPublicationEditorContext {
+  app?: AppView;
+  editable: boolean;
+  reason?: string;
+  expectedAppRevision?: number;
+  suggestedVersion?: string;
+}
+
+export type ManagedPublicationEditResult =
+  | { mode: 'private'; publication: PublicationView; ticket: string; operationId: string; managedAppId: string }
+  | { mode: 'management'; managementPublication: PublicationView; operationId: string; managedAppId: string };
+
 export interface ManagedPublisher {
   validate(input: ManagedSubmitInput): Promise<{ fileCount: number; totalBytes: number }>;
   submit(
@@ -173,6 +185,16 @@ export interface ManagedPublisher {
     idempotencyKey: string,
     viewerId?: string,
   ): Promise<SubmitResult & { operationId: string; managedAppId: string; sourceUploaded: true }>;
+  publicationEditorContext(
+    publicationId: string,
+    options: { management: boolean; ticket?: string; viewerId?: string },
+  ): Promise<ManagedPublicationEditorContext>;
+  editPublicationMetadata(
+    publicationId: string,
+    input: ManagedMetadataEditInput,
+    idempotencyKey: string,
+    options: { management: boolean; ticket?: string; viewerId?: string },
+  ): Promise<ManagedPublicationEditResult>;
 }
 
 class GitLabApiError extends Error {
@@ -453,7 +475,14 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       [id, binding.id, idemDigest, bundle.requestDigest, bundle.manifestPath, input.expectedAppRevision ?? null, baseCommitSha, branch, tag, operationKind, now],
     );
     if (inserted.rows[0]) {
-      const registered = config.analytics && binding.public_app_id ? (await tx.query<{ id: string }>('SELECT id FROM catalog_apps WHERE id=$1', [binding.public_app_id])).rows[0] : undefined;
+      const registered = config.analytics && (binding.project_id || binding.public_app_id)
+        ? (binding.project_id
+          ? (await tx.query<{ id: string }>(
+              'SELECT id FROM catalog_apps WHERE instance_id = $1 AND project_id = $2 AND app_key = $3',
+              [instanceId, binding.project_id, binding.app_key],
+            )).rows[0]
+          : (await tx.query<{ id: string }>('SELECT id FROM catalog_apps WHERE id=$1', [binding.public_app_id])).rows[0])
+        : undefined;
       await appendBusinessFact(tx, 'managed_publish_operations', id, config.analytics, 'publish_operation_received', {
         publishOperationId: id, attemptId: id, attemptStartedAt: now.toISOString(), publishMode: 'managed',
         publishKind: operationKind === 'metadata_patch' ? 'metadata_edit' : registered ? 'update' : 'new',
@@ -480,10 +509,13 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     idempotencyKey: string,
     operationKind: OperationRecord["operation_kind"],
     isNewBinding = false,
+    overrideBaseCommitSha?: string,
+    replacement?: { replacesPublicationId: string; replaceActorUserId?: string },
   ): Promise<{ result: SubmitResult & { managedAppId: string; sourceUploaded: true }; operationId: string }> {
     const idemDigest = idempotencyDigest(binding.id, idempotencyKey);
     let operation = await findOperation(binding.id, idemDigest);
-    if (operation && (operation.request_digest !== bundle.requestDigest || operation.operation_kind !== operationKind)) throw idempotencyConflict();
+    if (operation && (operation.request_digest !== bundle.requestDigest || operation.operation_kind !== operationKind ||
+        (overrideBaseCommitSha !== undefined && operation.base_commit_sha !== overrideBaseCommitSha))) throw idempotencyConflict();
     if (operation && operation.expected_app_revision !== null && input.managedAppId !== binding.id) throw ownerError();
 
     if (!input.managedAppId && !isNewBinding && !operation && (binding.project_id || binding.public_app_id)) {
@@ -493,15 +525,16 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     let isNewOperation = false;
     if (!operation) {
       if (!isNewBinding) assertTagReuse(bundle.manifest.tags, await config.service.tags(), bundle.manifestPath);
-      const baseCommitSha = await ensureUpdateOwnership(binding, input, bundle);
+      const ownershipBaseSha = await ensureUpdateOwnership(binding, input, bundle);
       if (isNewBinding && (input.managedAppId !== undefined || input.expectedAppRevision !== undefined)) throw ownerError();
       await ensureVersionIsNewForBinding(binding, bundle);
+      const baseCommitSha = overrideBaseCommitSha ?? ownershipBaseSha;
       const created = await createOperation(binding, input, bundle, idemDigest, baseCommitSha, operationKind);
       operation = created.operation;
       isNewOperation = created.isNew;
     }
     if (!config.analytics || operation.status === 'submitted') {
-      const result = await processOperation(binding, operation, bundle);
+      const result = await processOperation(binding, operation, bundle, replacement);
       return { result, operationId: operation.id };
     }
     const attemptId = isNewOperation ? operation.id : randomUUID();
@@ -518,7 +551,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
       })); } catch { console.error('统计结果暂未记录，原业务结果不受影响'); }
     };
     try {
-      const result = await processOperation(binding, operation, bundle);
+      const result = await processOperation(binding, operation, bundle, replacement);
       await finish(result.status === 'failed' ? 'failure' : 'success');
       return { result, operationId: operation.id };
     } catch (error) {
@@ -586,14 +619,30 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     bindingInput: BindingRecord,
     operationInput: OperationRecord,
     bundle: ValidatedBundle,
+    replacement?: { replacesPublicationId: string; replaceActorUserId?: string },
   ): Promise<SubmitResult & { managedAppId: string; sourceUploaded: true }> {
     let binding = bindingInput;
     let operation = operationInput;
     const inputFor = (sha: string) => ({ projectId: operation.project_id!, appKey: bundle.appKey,
       manifestPath: bundle.manifestPath, commitSha: sha, tag: operation.tag,
       ...(operation.expected_app_revision === null ? {} : { expectedAppRevision: operation.expected_app_revision }) });
-    if (operation.status === "submitted" && operation.publication_id && operation.commit_sha && operation.project_id) {
-      const result = await config.service.managedReceipt(operation.publication_id, inputFor(operation.commit_sha));
+    const existingPublicationId = operation.publication_id ?? (operation.commit_sha && operation.project_id
+      ? (await config.db.query<{ id: string }>(
+          'SELECT id FROM publications WHERE managed_operation_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [operation.id],
+        )).rows[0]?.id
+      : undefined);
+    if (existingPublicationId && operation.commit_sha && operation.project_id) {
+      let result = await config.service.managedReceipt(existingPublicationId, inputFor(operation.commit_sha));
+      if (result.status === 'checking') {
+        result = await config.service.resumeCheckingPublication(existingPublicationId, inputFor(operation.commit_sha));
+      }
+      const appId = result.preview?.id ?? result.appId;
+      binding = await updateBindingApp(binding, appId);
+      const targetPubId = result.originalPublicationId ?? result.id;
+      if (result.status !== 'checking' && (operation.status !== 'submitted' || operation.publication_id !== targetPubId)) {
+        operation = await updateOperation(operation, { status: 'submitted', publication_id: targetPubId });
+      }
       return { ...result, managedAppId: binding.id, sourceUploaded: true };
     }
     let project: GitLabProject;
@@ -636,14 +685,18 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         commitSha,
         tag: operation.tag,
         ...(operation.expected_app_revision === null ? {} : { expectedAppRevision: operation.expected_app_revision }),
-      }, config.gitlabToken, `managed:${operation.id}`, { mode: 'managed', operationId: operation.id });
+      }, config.gitlabToken, `managed:${operation.id}`, {
+        mode: 'managed',
+        operationId: operation.id,
+        ...(replacement ?? {}),
+      });
     } catch (error) {
       if (error instanceof DomainError) throw error;
       throw new DomainError(503, "PUBLICATION_FAILED", "源码已上传至 GitLab，但广场预览暂时不可用。请使用相同幂等键重试。");
     }
     const appId = result.preview?.id ?? result.appId;
     binding = await updateBindingApp(binding, appId);
-    operation = await updateOperation(operation, { status: "submitted", publication_id: result.id });
+    operation = await updateOperation(operation, { status: "submitted", publication_id: result.originalPublicationId ?? result.id });
     return { ...result, managedAppId: binding.id, sourceUploaded: true };
   }
 
@@ -838,6 +891,171 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
     throw new DomainError(503, "SOURCE_UNAVAILABLE", "GitLab 暂未确认版本 Release。请使用相同幂等键重试。");
   }
 
+  function buildMetadataBundle(
+    current: AppView,
+    binding: BindingRecord,
+    expectedAppRevision: number,
+    input: ManagedMetadataEditInput,
+  ) {
+    const files: InputFile[] = [
+      { path: current.source.manifestPath, content: Buffer.from(JSON.stringify(input.manifest), "utf8").toString("base64") },
+      ...Object.entries(input.documents).sort(([left], [right]) => compareStrings(left, right))
+        .map(([path, text]) => ({ path, content: Buffer.from(text, "utf8").toString("base64") })),
+    ];
+    const submitInput: ManagedSubmitInput = {
+      appKey: binding.app_key,
+      manifestPath: current.source.manifestPath,
+      managedAppId: binding.id,
+      expectedAppRevision,
+      files,
+    };
+    const bundle = validateBundle(submitInput, config.gitlabToken, "metadata_patch", config.gitlabUrl);
+    assertMetadataIdentity(current.manifest, bundle.manifest, input.documents);
+    return { submitInput, bundle };
+  }
+
+  async function loadPublicationSourceRow(publicationId: string) {
+    return (await config.db.query<OperationRecord & {
+      publish_key_digest: string | null;
+      binding_app_key: string;
+      binding_project_id: string | null;
+      pub_status: string;
+      pub_confirmed_at: Date | string | null;
+      pub_superseded_by: string | null;
+    }>(
+      `SELECT op.*, b.publish_key_digest, b.app_key AS binding_app_key, b.project_id AS binding_project_id,
+              p.status AS pub_status, p.confirmed_at AS pub_confirmed_at, p.superseded_by_publication_id AS pub_superseded_by
+         FROM publications AS p
+         JOIN managed_publish_operations AS op
+           ON (op.publication_id = p.id OR op.id = p.managed_operation_id)
+         JOIN managed_app_bindings AS b ON b.id = op.binding_id
+        WHERE p.id = $1
+        ORDER BY op.created_at DESC
+        LIMIT 1`,
+      [publicationId],
+    )).rows[0];
+  }
+
+  async function loadPublicationEditorContext(
+    publicationId: string,
+    options: { management: boolean; ticket?: string; viewerId?: string },
+  ): Promise<{
+    context: ManagedPublicationEditorContext;
+    binding?: BindingRecord;
+    sourceOperation?: Awaited<ReturnType<typeof loadPublicationSourceRow>>;
+    pubView?: PublicationView;
+    catalogAppId?: string;
+  }> {
+    if (!isUuid(publicationId)) throw new DomainError(400, "VALIDATION_FAILED", "发布 ID 格式无效。");
+    const pubView = options.management
+      ? await config.service.managementPublication(publicationId, options.viewerId)
+      : await config.service.publication(publicationId, options.ticket ?? '', options.viewerId);
+    if (pubView.requiresIdentity) {
+      throw new DomainError(401, 'LOGIN_REQUIRED', '请在天宫同源入口登录后编辑本次预览。');
+    }
+    const sourceRow = await loadPublicationSourceRow(publicationId);
+    if (!sourceRow) {
+      return {
+        context: {
+          ...(pubView.preview ? { app: pubView.preview } : {}),
+          editable: false,
+          reason: '当前预览不是统一托管发布，请修改来源仓库后重新生成预览。',
+        },
+        pubView,
+      };
+    }
+    const binding: BindingRecord = {
+      id: sourceRow.binding_id,
+      app_key: sourceRow.binding_app_key,
+      publish_key_digest: sourceRow.publish_key_digest,
+      project_id: sourceRow.binding_project_id,
+      public_app_id: null,
+    };
+    if (!binding.publish_key_digest) {
+      return {
+        context: { ...(pubView.preview ? { app: pubView.preview } : {}), editable: false, reason: EDITOR_CONTEXT_REASONS.managedKeyMissing },
+        binding, sourceOperation: sourceRow, pubView,
+      };
+    }
+    if (!binding.project_id || binding.project_id !== sourceRow.project_id || !sourceRow.commit_sha) {
+      return {
+        context: { ...(pubView.preview ? { app: pubView.preview } : {}), editable: false, reason: EDITOR_CONTEXT_REASONS.bindingMismatch },
+        binding, sourceOperation: sourceRow, pubView,
+      };
+    }
+    if (pubView.status !== 'preview_ready') {
+      return {
+        context: { ...(pubView.preview ? { app: pubView.preview } : {}), editable: false, reason: '当前预览状态不支持直接编辑，仅等待确认的预览可直接修订。' },
+        binding, sourceOperation: sourceRow, pubView,
+      };
+    }
+    if (new Date(pubView.expiresAt).getTime() <= Date.now()) {
+      return {
+        context: { ...(pubView.preview ? { app: pubView.preview } : {}), editable: false, reason: '此预览已过期，不能再编辑；请重新提交新预览。' },
+        binding, sourceOperation: sourceRow, pubView,
+      };
+    }
+    if (sourceRow.pub_confirmed_at || sourceRow.pub_superseded_by) {
+      return {
+        context: { ...(pubView.preview ? { app: pubView.preview } : {}), editable: false, reason: '该预览已开始确认收录或已被新修订替代，不能再编辑。' },
+        binding, sourceOperation: sourceRow, pubView,
+      };
+    }
+    if (!pubView.preview) {
+      return { context: { editable: false, reason: '预览资料尚未就绪，暂不能编辑。' }, binding, sourceOperation: sourceRow, pubView };
+    }
+    if (pubView.preview.manifest.schemaVersion !== "2") {
+      return { context: { app: pubView.preview, editable: false, reason: EDITOR_CONTEXT_REASONS.unsupportedManifest }, binding, sourceOperation: sourceRow, pubView };
+    }
+    const catalogAppId = await findCatalogAppId(binding);
+    let currentCatalogRevision = 0;
+    if (catalogAppId) {
+      const appRow = (await config.db.query<{ revision: number; lifecycle_status: string }>(
+        `SELECT a.revision, COALESCE(l.status, 'published') AS lifecycle_status
+           FROM catalog_apps a
+           LEFT JOIN catalog_app_lifecycle l ON l.app_id = a.id
+          WHERE a.id = $1`,
+        [catalogAppId],
+      )).rows[0];
+      if (!appRow) return { context: { app: pubView.preview, editable: false, reason: EDITOR_CONTEXT_REASONS.bindingMismatch }, binding, sourceOperation: sourceRow, pubView, catalogAppId };
+      if (appRow.lifecycle_status === 'deleted') {
+        return { context: { app: pubView.preview, editable: false, reason: EDITOR_CONTEXT_REASONS.deleted }, binding, sourceOperation: sourceRow, pubView, catalogAppId };
+      }
+      currentCatalogRevision = Number(appRow.revision);
+    }
+    const previewExpectedRevision = sourceRow.expected_app_revision ?? 0;
+    if (previewExpectedRevision !== currentCatalogRevision) {
+      return {
+        context: {
+          app: pubView.preview,
+          editable: false,
+          expectedAppRevision: currentCatalogRevision,
+          reason: '应用已发生新版本变动，当前预览已过期，请基于最新应用状态重新提交。',
+        },
+        binding, sourceOperation: sourceRow, pubView, catalogAppId,
+      };
+    }
+    const operations = await config.db.query<{ tag: string }>(
+      "SELECT tag FROM managed_publish_operations WHERE binding_id = $1",
+      [binding.id],
+    );
+    return {
+      binding,
+      sourceOperation: sourceRow,
+      pubView,
+      catalogAppId,
+      context: {
+        app: pubView.preview,
+        editable: true,
+        expectedAppRevision: currentCatalogRevision,
+        suggestedVersion: suggestNextPatchVersion([
+          pubView.preview.version,
+          ...operations.rows.map(({ tag }) => tag),
+        ]),
+      },
+    };
+  }
+
   return {
     async validate(input) {
       const bundle = await validateInput(input);
@@ -878,20 +1096,7 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         const binding = current.binding;
         if (!binding || !current.context.editable || !binding.publish_key_digest) throw editorUnavailable(current.context.reason);
         const app = current.context.app;
-        const files: InputFile[] = [
-          { path: app.source.manifestPath, content: Buffer.from(JSON.stringify(input.manifest), "utf8").toString("base64") },
-          ...Object.entries(input.documents).sort(([left], [right]) => compareStrings(left, right))
-            .map(([path, text]) => ({ path, content: Buffer.from(text, "utf8").toString("base64") })),
-        ];
-        const submitInput: ManagedSubmitInput = {
-          appKey: binding.app_key,
-          manifestPath: app.source.manifestPath,
-          managedAppId: binding.id,
-          expectedAppRevision: input.expectedAppRevision,
-          files,
-        };
-        const bundle = validateBundle(submitInput, config.gitlabToken, "metadata_patch", config.gitlabUrl);
-        assertMetadataIdentity(app.manifest, bundle.manifest, input.documents);
+        const { submitInput, bundle } = buildMetadataBundle(app, binding, input.expectedAppRevision, input);
         if (input.expectedAppRevision === app.revision && !await findOperation(binding.id, idempotencyDigest(binding.id, idempotencyKey)) &&
             isDeepStrictEqual({ ...app.manifest, projectVersion: undefined }, { ...bundle.manifest, projectVersion: undefined }) &&
             isDeepStrictEqual(app.documents, input.documents)) {
@@ -899,6 +1104,121 @@ export function createManagedPublisher(config: ManagedPublisherConfig): ManagedP
         }
         const submitted = await submitWithBinding(submitInput, bundle, binding, idempotencyKey, "metadata_patch");
         return { ...submitted.result, operationId: submitted.operationId };
+      });
+    },
+
+    async publicationEditorContext(publicationId, options) {
+      return (await loadPublicationEditorContext(publicationId, options)).context;
+    },
+
+    async editPublicationMetadata(publicationId, input, idempotencyKey, options) {
+      validateIdempotencyKey(idempotencyKey);
+      if (!input || typeof input !== "object" || !Number.isInteger(input.expectedAppRevision) || input.expectedAppRevision < 0 ||
+          !input.documents || typeof input.documents !== "object" || Array.isArray(input.documents) ||
+          Object.values(input.documents).some(value => typeof value !== "string")) {
+        throw new DomainError(400, "VALIDATION_FAILED", "资料修订需要有效的 expectedAppRevision、Manifest 和共享文档。");
+      }
+      if (!isUuid(publicationId)) throw new DomainError(400, "VALIDATION_FAILED", "发布 ID 格式无效。");
+      const initialView = options.management
+        ? await config.service.managementPublication(publicationId, options.viewerId)
+        : await config.service.publication(publicationId, options.ticket ?? '', options.viewerId);
+      if (initialView.requiresIdentity) {
+        throw new DomainError(401, 'LOGIN_REQUIRED', '请在天宫同源入口登录后编辑本次预览。');
+      }
+      const sourceRow = await loadPublicationSourceRow(publicationId);
+      if (!sourceRow) throw editorUnavailable(EDITOR_CONTEXT_REASONS.notManaged);
+      if (!sourceRow.publish_key_digest) throw editorUnavailable(EDITOR_CONTEXT_REASONS.managedKeyMissing);
+      if (!sourceRow.binding_project_id || sourceRow.binding_project_id !== sourceRow.project_id || !sourceRow.commit_sha) {
+        throw editorUnavailable(EDITOR_CONTEXT_REASONS.bindingMismatch);
+      }
+      const binding: BindingRecord = {
+        id: sourceRow.binding_id,
+        app_key: sourceRow.binding_app_key,
+        publish_key_digest: sourceRow.publish_key_digest,
+        project_id: sourceRow.binding_project_id,
+        public_app_id: null,
+      };
+      return withKeyLock(sourceRow.publish_key_digest, async () => {
+        const ensurePreWriteContext = async (expectedBaseSha?: string) => {
+          const loaded = await loadPublicationEditorContext(publicationId, options);
+          if (loaded.pubView?.status !== 'preview_ready' ||
+              loaded.sourceOperation?.pub_confirmed_at ||
+              loaded.sourceOperation?.pub_superseded_by ||
+              new Date(loaded.pubView.expiresAt).getTime() <= Date.now()) {
+            throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '当前预览已失效或已被新预览替代，请刷新后编辑最新预览。');
+          }
+          if (loaded.context.expectedAppRevision !== undefined &&
+              ((loaded.sourceOperation?.expected_app_revision ?? 0) !== loaded.context.expectedAppRevision ||
+               input.expectedAppRevision !== loaded.context.expectedAppRevision)) {
+            throw new DomainError(409, 'REVISION_CONFLICT', '应用状态或版本已变化，请刷新预览后重新编辑。');
+          }
+          if (!loaded.binding || !loaded.sourceOperation?.commit_sha || !loaded.context.editable ||
+              !loaded.context.app || loaded.context.expectedAppRevision === undefined) {
+            throw editorUnavailable(loaded.context.reason);
+          }
+          if (expectedBaseSha && loaded.sourceOperation.commit_sha !== expectedBaseSha) {
+            throw idempotencyConflict();
+          }
+          return loaded;
+        };
+
+        const deliverEditResult = async (
+          submitted: { result: SubmitResult & { managedAppId: string; sourceUploaded: true }; operationId: string },
+          managedAppId: string,
+        ) => {
+          if (submitted.result.status === 'failed' && submitted.result.error) {
+            const { code, message } = submitted.result.error;
+            if (code === 'PUBLICATION_STATE_CONFLICT' || code === 'REVISION_CONFLICT') throw new DomainError(409, code, message);
+            if (code === 'APP_NOT_FOUND' || code === 'PUBLICATION_NOT_FOUND') throw new DomainError(404, code, message);
+            // GitLab source read errors set nextAction='retry' so the caller receives the retryable candidate + ticket.
+            if (code === 'PERMISSION_DENIED' && submitted.result.nextAction !== 'retry') throw new DomainError(403, code, message);
+            if (code === 'LOGIN_REQUIRED') throw new DomainError(401, code, message);
+          }
+          if (options.management) {
+            const managementPublication = await config.service.managementPublication(submitted.result.id, options.viewerId);
+            return { mode: 'management' as const, managementPublication, operationId: submitted.operationId, managedAppId };
+          }
+          const publication = await config.service.publication(submitted.result.id, submitted.result.ticket, options.viewerId);
+          return { mode: 'private' as const, publication, ticket: submitted.result.ticket, operationId: submitted.operationId, managedAppId };
+        };
+
+        const replayOp = await findOperation(binding.id, idempotencyDigest(binding.id, idempotencyKey));
+        if (replayOp) {
+          if (!initialView.preview) throw stateConflict();
+          const { submitInput, bundle } = buildMetadataBundle(initialView.preview, binding, input.expectedAppRevision, input);
+          if (replayOp.request_digest !== bundle.requestDigest || replayOp.operation_kind !== "metadata_patch" ||
+              replayOp.base_commit_sha !== sourceRow.commit_sha) {
+            throw idempotencyConflict();
+          }
+          const existingOpPub = replayOp.publication_id
+            ? { id: replayOp.publication_id }
+            : (await config.db.query<{ id: string }>(
+                'SELECT id FROM publications WHERE managed_operation_id = $1 ORDER BY created_at DESC LIMIT 1',
+                [replayOp.id],
+              )).rows[0];
+          // Unfinished operations without any created candidate must still verify old preview mutability before GitLab writes.
+          if (replayOp.status !== "submitted" && !existingOpPub) {
+            await ensurePreWriteContext(replayOp.base_commit_sha ?? undefined);
+          }
+          const submitted = await submitWithBinding(
+            submitInput, bundle, binding, idempotencyKey, "metadata_patch", false, sourceRow.commit_sha!,
+            { replacesPublicationId: publicationId, replaceActorUserId: options.viewerId },
+          );
+          return deliverEditResult(submitted, binding.id);
+        }
+
+        const loaded = await ensurePreWriteContext();
+        const previewApp = loaded.context.app!;
+        const { submitInput, bundle } = buildMetadataBundle(previewApp, loaded.binding!, input.expectedAppRevision, input);
+        if (isDeepStrictEqual({ ...previewApp.manifest, projectVersion: undefined }, { ...bundle.manifest, projectVersion: undefined }) &&
+            isDeepStrictEqual(previewApp.documents, input.documents)) {
+          throw new DomainError(400, 'NO_METADATA_CHANGES', '应用资料没有变化，请修改内容后再保存；仅版本号变化不会创建预览。');
+        }
+        const submitted = await submitWithBinding(
+          submitInput, bundle, loaded.binding!, idempotencyKey, "metadata_patch", false, loaded.sourceOperation!.commit_sha!,
+          { replacesPublicationId: publicationId, replaceActorUserId: options.viewerId },
+        );
+        return deliverEditResult(submitted, loaded.binding!.id);
       });
     },
 
@@ -1387,7 +1707,11 @@ function assertMetadataIdentity(
     current.entries.every(previous => {
       const next = candidateEntries.find(entry => entry.id === previous.id);
       return next?.kind === previous.kind &&
-        (previous.kind !== "agent" || (next?.kind === "agent" && next.instructionsPath === previous.instructionsPath));
+        (previous.kind !== "agent" || (
+          next?.kind === "agent" &&
+          next.instructionsPath === previous.instructionsPath &&
+          isDeepStrictEqual(next.distribution ?? null, previous.distribution ?? null)
+        ));
     });
   const submittedPaths = Object.keys(documents).sort(compareStrings);
   const candidatePaths = candidateDocs && Array.isArray(candidateEntries)
@@ -1395,7 +1719,7 @@ function assertMetadataIdentity(
     : [];
   if (candidate.schemaVersion !== current.schemaVersion || candidate.appKey !== current.appKey || !docsMatch || !entriesMatch ||
       !sameStrings(currentPaths, submittedPaths) || !sameStrings(currentPaths, candidatePaths)) {
-    throw new DomainError(400, "EDITOR_IDENTITY_IMMUTABLE", "资料修订不能更改 appKey、Manifest/共享文档路径或入口 ID 与类型。");
+    throw new DomainError(400, "EDITOR_IDENTITY_IMMUTABLE", "资料修订不能更改 appKey、Manifest/共享文档路径、入口 ID 与类型或 Agent 分发文件清单。");
   }
 }
 
@@ -1415,12 +1739,13 @@ function suggestNextPatchVersion(values: string[]): string {
   return `${match[1]}.${match[2]}.${BigInt(match[3]!) + 1n}`;
 }
 
-function editorUnavailable(reason?: ManagedEditorContext["reason"]): DomainError {
+function editorUnavailable(reason?: string): DomainError {
   if (reason === EDITOR_CONTEXT_REASONS.deleted) return new DomainError(409, "APP_DELETED", reason);
   if (reason === EDITOR_CONTEXT_REASONS.notManaged) return new DomainError(409, "MANAGED_EDITOR_UNAVAILABLE", reason);
   if (reason === EDITOR_CONTEXT_REASONS.managedKeyMissing) return new DomainError(409, "MANAGED_KEY_MISSING", reason);
   if (reason === EDITOR_CONTEXT_REASONS.unsupportedManifest) return new DomainError(409, "EDITOR_MANIFEST_UNSUPPORTED", reason);
-  return new DomainError(409, "MANAGED_BINDING_MISMATCH", reason ?? EDITOR_CONTEXT_REASONS.bindingMismatch);
+  if (reason === EDITOR_CONTEXT_REASONS.bindingMismatch) return new DomainError(409, "MANAGED_BINDING_MISMATCH", reason);
+  return new DomainError(409, "MANAGED_EDITOR_UNAVAILABLE", reason ?? EDITOR_CONTEXT_REASONS.bindingMismatch);
 }
 
 function applyActions(previous: Map<string, TreeValue>, actions: GitAction[]): Map<string, TreeValue> {

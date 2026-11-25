@@ -139,7 +139,7 @@ try {
   await h.db.query('DELETE FROM plaza_group_members WHERE group_id=$1', [groupId]);
   await receiver.evaluate(() => dispatchEvent(new Event('focus')));
   await receiver.getByTestId('app-detail').waitFor({ state: 'hidden' });
-  await receiver.getByText('应用不存在。', { exact: false }).waitFor();
+  await receiver.getByTestId('detail-restricted').filter({ hasText: '当前无法访问此应用' }).waitFor();
   assert.equal((await receiver.locator('body').innerText()).includes(target.source.name), false, 'revoked group access clears displayed private material');
   await receiver.getByRole('link', { name: '我的应用', exact: true }).click();
   await receiver.getByRole('row').filter({ hasText: target.source.name }).getByRole('button', { name: '归属与权限', exact: true }).click();
@@ -175,7 +175,7 @@ try {
   assert.equal(access.owner_id, member.user.id); assert.equal(access.scope, 'groups');
   assert.equal((await h.db.query('SELECT revision FROM catalog_apps WHERE id=$1', [target.appId])).rows[0].revision, 1);
   await page.goto(`${h.origin}/plaza/?app=${target.appId}`);
-  await page.getByText('应用不存在。', { exact: false }).waitFor();
+  await page.getByTestId('detail-restricted').filter({ hasText: '当前无法访问此应用' }).waitFor();
   assert.equal(await page.getByTestId('app-detail').count(), 0, 'super administrator is not a private-content bypass after handoff');
 
   await openAdminEntries();
