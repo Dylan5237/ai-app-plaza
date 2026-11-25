@@ -277,6 +277,21 @@ export function createService(config: ServiceConfig): PlazaService {
   const encryptionKey = createHash("sha256").update("ai-app-plaza/token-encryption/v1\0").update(secret).digest();
   const instanceId = reader.baseUrl.toString().replace(/\/$/, "");
   let activeDistributionReads = 0;
+  const confirmLocks = new Map<string, Promise<unknown>>();
+  async function withConfirmLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const previous = confirmLocks.get(id) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => current);
+    confirmLocks.set(id, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (confirmLocks.get(id) === tail) confirmLocks.delete(id);
+    }
+  }
 
   async function finishAttempt(id: string, attempt: PublicationAttempt | undefined, result: 'success' | 'failure' | 'unknown', safeErrorCode?: string) {
     if (!config.analytics || !attempt) return;
@@ -651,7 +666,11 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
-  async function preparePreview(record: PublicationRecord, source: LoadedSource): Promise<PublicationRecord> {
+  async function preparePreview(
+    record: PublicationRecord,
+    source: LoadedSource,
+    options?: { verifyCaller?: boolean; retryCallerId?: string },
+  ): Promise<PublicationRecord> {
     validateTagReuse(source.manifest.tags, await catalogTags(config.db, config.audience, ALL_APP_LIFECYCLE_STATUSES));
     for (const pack of source.distributions) await storeDistribution(distributionDir, pack, config.staticDir);
     const input = getInput(record);
@@ -669,6 +688,9 @@ export function createService(config: ServiceConfig): PlazaService {
       if (locked.status === "registered") return locked;
       if (locked.status === "cancelled" || locked.superseded_by_publication_id) {
         throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
+      }
+      if (options?.verifyCaller) {
+        await authorizePublication(tx, locked, options.retryCallerId);
       }
       const replaced = locked.replaces_publication_id
         ? lockedRows.find(row => row.id === locked.replaces_publication_id)
@@ -694,7 +716,14 @@ export function createService(config: ServiceConfig): PlazaService {
           throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览已过期，无法继续替代或延长有效期，请重新提交。');
         }
         if (existing && (config.applicationIdentity || Boolean(await accessRecord(tx, existing.id)))) {
-          await requireAppAction(tx, existing.id, locked.replace_actor_user_id ?? undefined);
+          try {
+            await requireAppAction(tx, existing.id, locked.replace_actor_user_id ?? undefined);
+          } catch (error) {
+            if (isCallerAccessError(error) && options?.verifyCaller && locked.replace_actor_user_id && locked.replace_actor_user_id !== options.retryCallerId) {
+              throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原编辑者的应用维护权限已变更，当前修订不能再替代原预览，请重新提交。');
+            }
+            throw error;
+          }
         }
         if (locked.replace_actor_user_id && !existing) {
           const existingActor = (await tx.query<{ user_id: string }>(
@@ -702,6 +731,9 @@ export function createService(config: ServiceConfig): PlazaService {
             [replaced.id],
           )).rows[0];
           if (existingActor && existingActor.user_id !== locked.replace_actor_user_id) {
+            if (options?.verifyCaller && locked.replace_actor_user_id !== options.retryCallerId) {
+              throw new DomainError(409, 'PUBLICATION_STATE_CONFLICT', '原预览归属与当前修订提交者不一致，不能再替代原预览，请重新提交。');
+            }
             throw new DomainError(404, 'PUBLICATION_NOT_FOUND', '未找到本次发布。');
           }
           if (!existingActor) {
@@ -782,7 +814,12 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
-  async function register(record: PublicationRecord, source: LoadedSource, viewerId?: string): Promise<PublicationRecord> {
+  async function register(
+    record: PublicationRecord,
+    source: LoadedSource,
+    viewerId?: string,
+    options?: { fromConfirm?: boolean },
+  ): Promise<PublicationRecord> {
     if (!record.digest || record.digest !== source.digest) {
       throw new DomainError(409, "SOURCE_MISMATCH", "固定来源内容已变化，请重新提交并确认新的预览。");
     }
@@ -799,7 +836,7 @@ export function createService(config: ServiceConfig): PlazaService {
       if (lockedPublication.revision !== record.revision || lockedPublication.digest !== record.digest) {
         throw new DomainError(409, "SOURCE_MISMATCH", "候选修订或摘要已变化，请重新提交预览。");
       }
-      if (!lockedPublication.confirmed_at) {
+      if (!options?.fromConfirm && !lockedPublication.confirmed_at) {
         throw new DomainError(409, "CONFIRMATION_REQUIRED", "请先确认与当前摘要一致的预览。");
       }
 
@@ -820,6 +857,7 @@ export function createService(config: ServiceConfig): PlazaService {
         const updated = await tx.query<PublicationRecord>(
           `UPDATE publications
               SET status = 'registered', app_id = $2, preview_jsonb = $3::jsonb,
+                  confirmed_at = COALESCE(confirmed_at, now()),
                   error_code = NULL, error_message = NULL, next_action = 'complete',
                   token_ciphertext = NULL, token_iv = NULL, token_auth_tag = NULL, updated_at = now()
             WHERE id = $1 RETURNING *`,
@@ -857,6 +895,7 @@ export function createService(config: ServiceConfig): PlazaService {
             const updated = await tx.query<PublicationRecord>(
               `UPDATE publications
                   SET status = 'registered', app_id = $2, preview_jsonb = $3::jsonb,
+                      confirmed_at = COALESCE(confirmed_at, now()),
                       error_code = NULL, error_message = NULL, next_action = 'complete',
                       token_ciphertext = NULL, token_iv = NULL, token_auth_tag = NULL, updated_at = now()
                 WHERE id = $1 RETURNING *`,
@@ -929,6 +968,7 @@ export function createService(config: ServiceConfig): PlazaService {
       const updated = await tx.query<PublicationRecord>(
         `UPDATE publications
             SET status = 'registered', app_id = $2, preview_jsonb = $3::jsonb,
+                confirmed_at = COALESCE(confirmed_at, now()),
                 error_code = NULL, error_message = NULL, next_action = 'complete',
                 token_ciphertext = NULL, token_iv = NULL, token_auth_tag = NULL, updated_at = now()
           WHERE id = $1 RETURNING *`,
@@ -945,18 +985,25 @@ export function createService(config: ServiceConfig): PlazaService {
     });
   }
 
-  async function updateConfirmed(id: string, revision: number, digest: string, attempt?: PublicationAttempt, viewerId?: string): Promise<PublicationRecord> {
+  async function updateConfirmed(
+    id: string,
+    revision: number,
+    digest: string,
+    attempt?: PublicationAttempt,
+    viewerId?: string,
+  ): Promise<{ record: PublicationRecord; setConfirmedNow: boolean }> {
     return config.db.transaction(async (tx) => {
       const current = (await tx.query<PublicationRecord>("SELECT * FROM publications WHERE id = $1 FOR UPDATE", [id])).rows[0];
       if (!current) throw notFound();
       await authorizePublication(tx, current, viewerId, true);
-      if (current.status === "registered") return current;
+      if (current.status === "registered") return { record: current, setConfirmedNow: false };
       if (current.status === "cancelled" || current.superseded_by_publication_id) {
         throw new DomainError(409, "PUBLICATION_CANCELLED", "该发布候选已取消。");
       }
       if (current.status !== "preview_ready" || current.revision !== revision || current.digest !== digest) {
         throw new DomainError(409, "SOURCE_MISMATCH", "确认参数与当前预览修订或摘要不一致，请刷新预览。");
       }
+      const setConfirmedNow = current.confirmed_at === null;
       if (attempt) await appendBusinessFact(tx, 'publications', id, config.analytics, 'publication_confirm_requested', {
         publicationId: id, attemptId: attempt.id, attemptStartedAt: attempt.startedAt, actorContext: attempt.actorContext || 'publication_link',
       });
@@ -964,7 +1011,7 @@ export function createService(config: ServiceConfig): PlazaService {
         `UPDATE publications SET confirmed_at = COALESCE(confirmed_at, now()), updated_at = now() WHERE id = $1 RETURNING *`,
         [id],
       );
-      return updated.rows[0]!;
+      return { record: updated.rows[0]!, setConfirmedNow };
     });
   }
 
@@ -974,30 +1021,34 @@ export function createService(config: ServiceConfig): PlazaService {
     if (!Number.isInteger(confirmation?.revision) || confirmation.revision < 1 || !/^[a-f0-9]{64}$/.test(confirmation?.digest ?? '')) {
       throw new DomainError(400, 'VALIDATION_FAILED', '确认必须包含预览修订号和摘要。');
     }
-    const attempt: PublicationAttempt | undefined = config.analytics ? { id: randomUUID(), startedAt: new Date().toISOString(), kind: 'confirm', actorContext } : undefined;
-    const confirmed = await updateConfirmed(record.id, confirmation.revision, confirmation.digest, attempt, viewerId);
-    if (confirmed.status === 'registered') return recordView(confirmed);
-    try {
-      const source = await assertAuthorAndSource(confirmed);
-      if (source.digest !== confirmation.digest) {
-        throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
+    return withConfirmLock(record.id, async () => {
+      const attempt: PublicationAttempt | undefined = config.analytics ? { id: randomUUID(), startedAt: new Date().toISOString(), kind: 'confirm', actorContext } : undefined;
+      const { record: confirmed, setConfirmedNow } = await updateConfirmed(record.id, confirmation.revision, confirmation.digest, attempt, viewerId);
+      if (confirmed.status === 'registered') return recordView(confirmed);
+      try {
+        const source = await assertAuthorAndSource(confirmed);
+        if (source.digest !== confirmation.digest) {
+          throw new DomainError(409, 'SOURCE_MISMATCH', '固定来源内容已变化，请重新提交并确认新的预览。');
+        }
+        const registered = await register(confirmed, source, viewerId, { fromConfirm: true });
+        await finishAttempt(record.id, attempt, 'success');
+        return recordView(registered);
+      } catch (error) {
+        if (isCallerAccessError(error)) {
+          if (setConfirmedNow && confirmed.confirmed_at) {
+            await config.db.query(
+              "UPDATE publications SET confirmed_at = NULL, updated_at = now() WHERE id = $1 AND status = 'preview_ready' AND confirmed_at = $2",
+              [record.id, confirmed.confirmed_at],
+            );
+          }
+          await finishAttempt(record.id, attempt, 'failure', error.code);
+          throw error;
+        }
+        const failed = await markFailed(record.id, error);
+        await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
+        return recordView(failed);
       }
-      const registered = await register(confirmed, source, viewerId);
-      await finishAttempt(record.id, attempt, 'success');
-      return recordView(registered);
-    } catch (error) {
-      if (isCallerAccessError(error)) {
-        await config.db.query(
-          "UPDATE publications SET confirmed_at = NULL, updated_at = now() WHERE id = $1 AND status = 'preview_ready'",
-          [record.id],
-        );
-        await finishAttempt(record.id, attempt, 'failure', error.code);
-        throw error;
-      }
-      const failed = await markFailed(record.id, error);
-      await finishAttempt(record.id, attempt, failed.status === 'registered' ? 'success' : 'failure', failed.error_code || undefined);
-      return recordView(failed);
-    }
+    });
   }
 
   async function retryPublication(record: PublicationRecord, actorContext: 'publication_link' | 'management', viewerId?: string): Promise<PublicationView> {
@@ -1035,7 +1086,7 @@ export function createService(config: ServiceConfig): PlazaService {
         await finishAttempt(record.id, attempt, 'success');
         return recordView(registered);
       }
-      const prepared = await preparePreview(record, source);
+      const prepared = await preparePreview(record, source, { verifyCaller: true, retryCallerId: viewerId });
       await finishAttempt(record.id, attempt, 'success');
       return recordView(prepared);
     } catch (error) {

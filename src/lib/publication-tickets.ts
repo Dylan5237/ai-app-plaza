@@ -108,10 +108,11 @@ export function removeLegacyPublicationTicket(id: string): void {
   }
 }
 
-export function promoteLegacyPublicationTicket(id: string, ticket: string): void {
-  if (!id || !ticket) return
-  savePublicationTicket(id, ticket, false)
-  removeLegacyPublicationTicket(id)
+export function promoteLegacyPublicationTicket(id: string, ticket: string): boolean {
+  if (!id || !ticket) return false
+  const persisted = savePublicationTicket(id, ticket, false)
+  if (persisted) removeLegacyPublicationTicket(id)
+  return persisted
 }
 
 export function hasTicketStorageFallback(id: string): boolean {

@@ -22,7 +22,7 @@ import { catalogPageCapacity, catalogUsage, primaryAction, safeHttpUrl } from '.
 import { discoverTabFromParam } from '../lib/discovery.ts'
 import { currentShareTemplates, hasLoadedShareTemplates, loadShareTemplates, renderShareTemplate } from '../lib/share-template.ts'
 import { hasTicketStorageFallback, promoteLegacyPublicationTicket, readLegacyPublicationTicket, readPublicationTicket, savePublicationTicket as storePublicationTicket, removeLegacyPublicationTicket } from '../lib/publication-tickets.ts'
-import { hasPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
+import { deletePendingMetadataEdit, hasPendingMetadataEdit } from '../lib/pending-metadata-edits.ts'
 import { enableAnalytics, track, uuid } from '../lib/analytics.js'
 
 const props = defineProps({ management: { type: Boolean, default: false }, managementEnabled: { type: Boolean, default: false }, personalReturn: { type: Boolean, default: false }, visible: { type: Boolean, default: true }, discover: { type: String, default: '' } })
@@ -397,9 +397,13 @@ const selectedAppEntries = computed(() => {
   return entries.sort((left, right) => Number(right.id === primaryId) - Number(left.id === primaryId))
 })
 const publicationExpired = computed(() => Boolean(publication.value?.expiresAt) && new Date(publication.value.expiresAt).getTime() <= Date.now())
+function publicationEditCacheKey(id = publicationId.value) {
+  return id ? `${props.management ? 'mgmt-pub' : 'pub'}:${id}` : ''
+}
 const hasPendingPublicationEdit = computed(() => {
   void identity.epoch
-  return Boolean(publicationId.value && hasPendingMetadataEdit(`pub:${publicationId.value}`))
+  const key = publicationEditCacheKey()
+  return Boolean(key && hasPendingMetadataEdit(key))
 })
 const isUpdate = computed(() => publication.value?.change?.kind === 'update')
 const isUnchanged = computed(() => publication.value?.change?.kind === 'unchanged')
@@ -1066,6 +1070,9 @@ async function loadPublication(id = publicationId.value, { revalidating = public
     if (legacyToken && [403, 404, 410].includes(error.status)) {
       removeLegacyPublicationTicket(id)
     }
+    if ([403, 404, 410].includes(error.status)) {
+      deletePendingMetadataEdit(publicationEditCacheKey(id))
+    }
     if (current()) {
       if ([401, 403, 404, 410].includes(error.status)) {
         publication.value = null
@@ -1115,7 +1122,7 @@ async function mutatePublication(action) {
 
 function openPublicationEditor() {
   if (!publicationId.value) return
-  const canRecoverPending = Boolean(hasPendingPublicationEdit.value && !publication.value?.requiresIdentity)
+  const canRecoverPending = Boolean(hasPendingPublicationEdit.value && publication.value && !publication.value.requiresIdentity)
   if (!canRecoverPending && (publication.value?.status !== 'preview_ready' || publicationExpired.value)) return
   publicationEditorToken.value = props.management ? '' : publicationToken(publicationId.value)
   if (!props.management && !publicationEditorToken.value) {
@@ -1301,7 +1308,7 @@ onUnmounted(() => {
             编辑应用信息
           </button>
           <button
-            v-else-if="hasPendingPublicationEdit && !publication?.requiresIdentity"
+            v-else-if="hasPendingPublicationEdit && publication && !publication.requiresIdentity"
             type="button"
             class="secondary-button"
             data-testid="recover-publication-edit"

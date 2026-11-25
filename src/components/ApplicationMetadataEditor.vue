@@ -22,7 +22,9 @@ const expectedRevision = ref(0)
 const activeTab = ref('overview')
 const pending = ref(null)
 const isPublicationMode = computed(() => Boolean(props.publicationId))
-const targetKey = computed(() => isPublicationMode.value ? `pub:${props.publicationId}` : props.appId ? `app:${props.appId}` : '')
+const targetKey = computed(() => isPublicationMode.value
+  ? `${props.management ? 'mgmt-pub' : 'pub'}:${props.publicationId}`
+  : props.appId ? `app:${props.appId}` : '')
 const editorEndpoint = computed(() => {
   if (isPublicationMode.value) {
     return props.management
@@ -88,14 +90,12 @@ async function load() {
     if (saved) applySavedPending(result)
   } catch (e) {
     if (current === sequence) {
-      const authRejected = [401, 403, 404].includes(e?.status)
-      if (!authRejected && applySavedPending(null)) {
-        error.value = ''
-      } else {
-        manifest.value = null
-        pending.value = null
-        error.value = e.message
-      }
+      if ([403, 404].includes(e?.status)) deletePendingMetadataEdit(key)
+      context.value = null
+      manifest.value = null
+      documents.value = {}
+      pending.value = null
+      error.value = e?.message || '读取编辑资料失败。'
     }
   }
   finally { if (current === sequence) loading.value = false }
@@ -144,20 +144,28 @@ async function save() {
   const operation = pending.value
   const currentSequence = sequence
   const operationKey = operation.cacheKey
+  const endpoint = editorEndpoint.value
+  const publicationMode = isPublicationMode.value
+  const management = props.management
   const isCurrent = () => currentSequence === sequence && targetKey.value === operationKey
-  setPendingMetadataEdit(operation.cacheKey, operation)
+  setPendingMetadataEdit(operation.cacheKey, {
+    ...operation,
+    endpoint,
+    publicationMode,
+    management,
+  })
   saving.value = true
   error.value = ''
   try {
-    const token = operation.token || (operation.publicationMode && !operation.management ? requestToken.value : '')
-    const result = await apiRequest(operation.endpoint, {
+    const token = publicationMode && !management ? requestToken.value : ''
+    const result = await apiRequest(endpoint, {
       method: 'POST',
       body: operation.body,
       idempotencyKey: operation.key,
       ...(token ? { token } : {}),
     })
-    if (operation.publicationMode) {
-      const nextPublication = operation.management ? result.managementPublication : result.publication
+    if (publicationMode) {
+      const nextPublication = management ? result.managementPublication : result.publication
       if (!nextPublication?.id) throw new Error('未能确认保存结果，请保留本次请求重试。')
       if (!isCurrent()) return
       deletePendingMetadataEdit(operation.cacheKey)
@@ -175,8 +183,19 @@ async function save() {
       emit('saved', result.managementPublication.id)
     }
   } catch (e) {
-    // Deterministic validation/auth failures have no usable retry state; uncertain failures retain the exact request.
-    if ([400, 403, 404, 413, 422].includes(e.status) || (e.status === 409 && ['REVISION_CONFLICT', 'VERSION_NOT_NEWER', 'PUBLICATION_STATE_CONFLICT', 'PUBLICATION_CANCELLED'].includes(e.code))) {
+    // Deterministic validation/auth/conflict failures have no usable retry state; uncertain failures retain the exact request.
+    if ([400, 403, 404, 413, 422].includes(e.status) || (e.status === 409 && [
+      'REVISION_CONFLICT',
+      'VERSION_NOT_NEWER',
+      'TAG_CONFLICT',
+      'RELEASE_CONFLICT',
+      'PUBLICATION_STATE_CONFLICT',
+      'PUBLICATION_CANCELLED',
+      'APP_DELETED',
+      'APP_RESTORE_REQUIRED',
+      'IDEMPOTENCY_CONFLICT',
+      'MANAGED_SOURCE_CONFLICT',
+    ].includes(e.code))) {
       deletePendingMetadataEdit(operation.cacheKey)
       if (isCurrent()) pending.value = null
     }

@@ -400,6 +400,188 @@ try {
   });
   report.checks.push('publication-ticket-sessionstorage-isolation');
 
+  // --- Req 3 regression guards: auth-gated cache recovery, entry key isolation, TAG_CONFLICT unlock ---
+  await memberPage.getByRole('button', { name: '使用天宫身份登录', exact: true }).click();
+  await memberPage.getByRole('button', { name: '退出广场', exact: true }).waitFor();
+  const recoverGuardDraft = await h.managed.submit(makeBundle({
+    appKey: 'recover-auth-guard',
+    name: '待恢复权限校验测试应用',
+    summary: '验证失权与读上下文失败时不泄露本地缓存正文。',
+    entry: 'agent',
+  }), randomBytes(32).toString('base64url'), randomUUID());
+  await memberPage.goto(recoverGuardDraft.previewUrl);
+  await memberPage.getByTestId('edit-publication').click();
+  await memberPage.getByTestId('metadata-editor').waitFor();
+  await memberPage.getByTestId('editor-name').fill('涉密待恢复名称');
+  await memberPage.getByRole('tab', { name: '入口与完整说明', exact: true }).click();
+  await memberPage.getByTestId('editor-doc-README.md').fill('# 私有待恢复正文');
+
+  let abortNextSave = true;
+  const saveAbortHandler = (route: any) => {
+    if (abortNextSave && route.request().method() === 'POST') {
+      abortNextSave = false;
+      return route.abort('failed');
+    }
+    return route.continue();
+  };
+  await memberPage.route(`**/api/publications/${recoverGuardDraft.id}/editor*`, saveAbortHandler);
+  await memberPage.getByTestId('editor-save').click();
+  await memberPage.getByRole('button', { name: '重试本次保存', exact: true }).waitFor();
+  await memberPage.unroute(`**/api/publications/${recoverGuardDraft.id}/editor*`, saveAbortHandler);
+
+  await memberPage.getByRole('button', { name: '取消', exact: true }).click();
+  await memberPage.locator('.el-message-box').getByRole('button', { name: '关闭', exact: true }).click();
+  await memberPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  // Cancelled preview with saved pending edit exposes "恢复上次编辑结果".
+  const pubCancelledHandler = async (route: any) => {
+    if (route.request().method() === 'GET') {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (!body.requiresIdentity) {
+        body.status = 'cancelled';
+        body.nextAction = 'complete';
+      }
+      return route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(body) });
+    }
+    return route.continue();
+  };
+  await memberPage.route(`**/api/publications/${recoverGuardDraft.id}`, pubCancelledHandler);
+  await memberPage.reload();
+  await memberPage.getByTestId('recover-publication-edit').waitFor();
+  await memberPage.unroute(`**/api/publications/${recoverGuardDraft.id}`, pubCancelledHandler);
+
+  // If editor GET fails with 503/network error, cached private manifest/docs stay hidden until reload succeeds.
+  let failEditorGetOnce = true;
+  const editorGet503Handler = (route: any) => {
+    if (failEditorGetOnce && route.request().method() === 'GET') {
+      failEditorGetOnce = false;
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE', message: '编辑上下文暂时不可用' } }),
+      });
+    }
+    return route.continue();
+  };
+  await memberPage.route(`**/api/publications/${recoverGuardDraft.id}/editor*`, editorGet503Handler);
+  await memberPage.getByTestId('recover-publication-edit').click();
+  await memberPage.getByTestId('metadata-editor').waitFor();
+  await memberPage.getByTestId('metadata-editor').getByText('编辑上下文暂时不可用').waitFor();
+  assert.equal(await memberPage.getByTestId('editor-name').count(), 0);
+  assert.equal((await memberPage.getByTestId('metadata-editor').innerText()).includes('涉密待恢复名称'), false);
+  assert.equal((await memberPage.getByTestId('metadata-editor').innerText()).includes('私有待恢复正文'), false);
+  await memberPage.unroute(`**/api/publications/${recoverGuardDraft.id}/editor*`, editorGet503Handler);
+
+  await memberPage.getByTestId('metadata-editor').getByRole('button', { name: '重新读取', exact: true }).click();
+  await memberPage.getByTestId('editor-name').waitFor();
+  assert.equal(await memberPage.getByTestId('editor-name').inputValue(), '涉密待恢复名称');
+  await memberPage.getByRole('button', { name: '重试本次保存', exact: true }).waitFor();
+  await memberPage.getByRole('button', { name: '取消', exact: true }).click();
+  await memberPage.locator('.el-message-box').getByRole('button', { name: '关闭', exact: true }).click();
+  await memberPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  // When publication GET fails with 404 (access revoked), recovery button is hidden and pending cache is purged.
+  const pubGet404Handler = (route: any) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'PUBLICATION_NOT_FOUND', message: '未找到本次发布。' } }),
+      });
+    }
+    return route.continue();
+  };
+  await memberPage.route(`**/api/publications/${recoverGuardDraft.id}`, pubGet404Handler);
+  await memberPage.reload();
+  await memberPage.getByText('未找到本次发布。').waitFor();
+  assert.equal(await memberPage.getByTestId('recover-publication-edit').count(), 0);
+  assert.equal(await memberPage.getByTestId('edit-publication').count(), 0);
+  await memberPage.waitForFunction(
+    id => window.sessionStorage.getItem(`ai-app-plaza:pending-edit:/plaza:pub:${id}`) === null,
+    recoverGuardDraft.id,
+  );
+  await memberPage.unroute(`**/api/publications/${recoverGuardDraft.id}`, pubGet404Handler);
+
+  // Entry key isolation (pub vs mgmt-pub) + TAG_CONFLICT unlocks version input without trapping draft.
+  const isolationPublishKey = randomBytes(32).toString('base64url');
+  const isolationV1 = await h.managed.submit(makeBundle({
+    appKey: 'entry-isolation-tag-conflict',
+    name: '入口隔离与冲突解锁测试',
+    summary: '验证管理后台与私有链接待恢复隔离，以及 TAG_CONFLICT 后改版本保存。',
+    entry: 'agent',
+    version: '1.0.0',
+  }), isolationPublishKey, randomUUID());
+  const isolationV1Raw = await h.service.publication(isolationV1.id, isolationV1.ticket, adminApi.user.id);
+  await h.service.confirm(isolationV1.id, isolationV1.ticket, { revision: isolationV1Raw.revision, digest: isolationV1Raw.digest! }, adminApi.user.id);
+
+  const crossEntryDraft = await h.managed.submit({
+    ...makeBundle({
+      appKey: 'entry-isolation-tag-conflict',
+      name: '入口隔离与冲突解锁测试',
+      summary: '验证管理后台与私有链接待恢复隔离，以及 TAG_CONFLICT 后改版本保存。',
+      entry: 'agent',
+      version: '1.1.0',
+    }),
+    managedAppId: isolationV1.managedAppId,
+    expectedAppRevision: 1,
+  }, isolationPublishKey, randomUUID());
+  await adminPage.goto(crossEntryDraft.previewUrl);
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('editor-name').fill('私有链接待恢复草稿');
+
+  let abortPublicPost = true;
+  const publicAbortHandler = (route: any) => {
+    if (abortPublicPost && route.request().method() === 'POST') {
+      abortPublicPost = false;
+      return route.abort('failed');
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/publications/${crossEntryDraft.id}/editor*`, publicAbortHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByRole('button', { name: '重试本次保存', exact: true }).waitFor();
+  await adminPage.unroute(`**/api/publications/${crossEntryDraft.id}/editor*`, publicAbortHandler);
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  await adminPage.locator('.el-message-box').getByRole('button', { name: '关闭', exact: true }).click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+
+  await adminPage.goto(`${h.origin}/plaza/admin#publish=${crossEntryDraft.id}`);
+  await adminPage.getByTestId('edit-publication').waitFor();
+  assert.equal(await adminPage.getByTestId('recover-publication-edit').count(), 0, 'management entry ignores pub:<id> pending edit');
+
+  await adminPage.getByTestId('edit-publication').click();
+  await adminPage.getByTestId('editor-name').fill('版本冲突后改版本保存');
+  await adminPage.getByTestId('editor-version').fill('1.1.1');
+
+  let tagConflictOnce = true;
+  const tagConflictHandler = (route: any) => {
+    if (tagConflictOnce && route.request().method() === 'POST') {
+      tagConflictOnce = false;
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'TAG_CONFLICT', message: 'GitLab 中该版本 tag 已指向其他提交。' } }),
+      });
+    }
+    return route.continue();
+  };
+  await adminPage.route(`**/api/management/publications/${crossEntryDraft.id}/editor*`, tagConflictHandler);
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByTestId('metadata-editor').getByText('GitLab 中该版本 tag 已指向其他提交。').waitFor();
+  await adminPage.unroute(`**/api/management/publications/${crossEntryDraft.id}/editor*`, tagConflictHandler);
+
+  assert.equal(await adminPage.getByTestId('editor-version').isDisabled(), false, 'TAG_CONFLICT unlocks version input');
+  assert.equal(await adminPage.getByTestId('editor-name').inputValue(), '版本冲突后改版本保存');
+  assert.equal(await adminPage.getByTestId('editor-save').innerText(), '保存并刷新预览');
+
+  await adminPage.getByTestId('editor-version').fill('1.1.2');
+  await adminPage.getByTestId('editor-save').click();
+  await adminPage.getByTestId('metadata-editor').waitFor({ state: 'hidden' });
+  await adminPage.locator('.publication-preview .public-app-title-row h2').filter({ hasText: '版本冲突后改版本保存' }).waitFor();
+  assert.match(await adminPage.locator('.publication-preview .public-app-version').first().innerText(), /v1\.1\.2/);
+  report.checks.push('req3-auth-gated-cache-isolation-and-tag-conflict-unlock');
+
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpectedRequests, []);
   report.status = 'PASS';

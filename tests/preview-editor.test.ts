@@ -1152,3 +1152,240 @@ test('revoking maintainer mid-confirm rejects revoked caller without poisoning p
   assert.equal(ownerConfirm.statusCode, 200, ownerConfirm.body);
   assert.equal(ownerConfirm.json().status, 'registered');
 });
+
+test('concurrent confirm revocation of maintainer only clears maintainer attempt without failing owner confirm', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let onMaintainerConfirmRead: (() => Promise<void>) | null = null;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      const chunks: Buffer[] = [];
+      upstreamRes.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      upstreamRes.on('end', () => {
+        const finalize = async () => {
+          if (onMaintainerConfirmRead && req.method === 'GET' && /\/api\/v4\/projects\/\d+$/.test((req.url ?? '').split('?')[0])) {
+            const hook = onMaintainerConfirmRead;
+            onMaintainerConfirmRead = null;
+            await hook();
+          }
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          res.end(Buffer.concat(chunks));
+        };
+        void finalize();
+      });
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const access = createAppAccessService(h.db, h.config.audience);
+  const publishKey = randomBytes(32).toString('base64url');
+  const v1 = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: 1, digest: v1.digest! }, owner.user.id);
+  const appId = reg1.appId!;
+  await access.update(owner.user.id, appId, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: v1.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  assert.equal(v11.status, 'preview_ready');
+
+  let markConfirmEntered!: () => void;
+  const confirmEntered = new Promise<void>(resolve => { markConfirmEntered = resolve; });
+  onMaintainerConfirmRead = async () => {
+    markConfirmEntered();
+    await access.update(owner.user.id, appId, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+  };
+
+  const maintainerConfirmPromise = integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/confirm`,
+    headers: h.headers({ cookie: maintainer.cookie, 'x-plaza-portal-token': 'fixture-admin' }),
+    payload: { revision: 1, digest: v11.digest },
+  });
+  await confirmEntered;
+  const ownerConfirmPromise = integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/confirm`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member' }),
+    payload: { revision: 1, digest: v11.digest },
+  });
+
+  const [maintainerRes, ownerRes] = await Promise.all([maintainerConfirmPromise, ownerConfirmPromise]);
+  assert.equal(maintainerRes.statusCode, 404);
+  assert.equal(ownerRes.statusCode, 200, ownerRes.body);
+  assert.equal(ownerRes.json().status, 'registered');
+});
+
+test('owner retrying failed revision after original maintainer lost access marks revision submit_again and keeps original preview', async t => {
+  const h = await startIdentityHarness('/plaza', { superAdminAccount: 'fixture.admin' });
+  const managedGitlab = await startManagedGitLabFixture('main');
+  let sawReleaseCreate = false;
+  let failNextProjectRead = false;
+  const targetUrl = new URL(managedGitlab.url);
+  const proxy = createServer((req, res) => {
+    const pathOnly = (req.url ?? '').split('?')[0];
+    if (failNextProjectRead && req.method === 'GET' && /\/api\/v4\/projects\/\d+$/.test(pathOnly)) {
+      failNextProjectRead = false;
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'transient gitlab outage' }));
+      return;
+    }
+    const upstreamReq = httpRequest(new URL(req.url!, targetUrl), {
+      method: req.method,
+      headers: req.headers,
+    }, upstreamRes => {
+      const chunks: Buffer[] = [];
+      upstreamRes.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      upstreamRes.on('end', () => {
+        if (sawReleaseCreate && req.method === 'POST' && /\/api\/v4\/projects\/\d+\/releases$/.test(pathOnly)) {
+          sawReleaseCreate = false;
+          failNextProjectRead = true;
+        }
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        res.end(Buffer.concat(chunks));
+      });
+    });
+    upstreamReq.on('error', err => {
+      res.writeHead(502);
+      res.end(String(err));
+    });
+    req.pipe(upstreamReq);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+
+  const integrated = await createApp({
+    ...h.config,
+    gitlabUrl: proxyUrl,
+    managedPublishing: { token: MANAGED_GITLAB_TOKEN, groupId: '63', groupPath: 'fixture/apps' },
+  }, h.db);
+  t.after(async () => {
+    await integrated.app.close();
+    proxy.closeAllConnections();
+    await new Promise<void>(resolve => proxy.close(() => resolve()));
+    await managedGitlab.close();
+    await h.close();
+  });
+
+  const owner = await h.login('fixture-member');
+  const maintainer = await h.login('fixture-admin');
+  const access = createAppAccessService(h.db, h.config.audience);
+  const publishKey = randomBytes(32).toString('base64url');
+  const v1 = await integrated.managed!.submit(bundleFiles('1.0.0'), publishKey, randomUUID());
+  const reg1 = await integrated.service.confirm(v1.id, v1.ticket, { revision: 1, digest: v1.digest! }, owner.user.id);
+  const appId = reg1.appId!;
+  await access.update(owner.user.id, appId, { revision: 1, requestId: randomUUID(), maintainerIds: [maintainer.user.id] });
+
+  const v11 = await integrated.managed!.submit({ ...bundleFiles('1.1.0'), managedAppId: v1.managedAppId, expectedAppRevision: 1 }, publishKey, randomUUID());
+  assert.equal(v11.status, 'preview_ready');
+
+  sawReleaseCreate = true;
+  const edited = structuredClone(v11.preview!.manifest);
+  edited.name = '失权维护者遗留的失败修订';
+  edited.projectVersion = '1.1.1';
+  const editRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${v11.id}/editor`,
+    headers: h.headers({ cookie: maintainer.cookie, 'x-plaza-portal-token': 'fixture-admin', 'idempotency-key': randomUUID() }),
+    payload: { expectedAppRevision: 1, manifest: edited, documents: v11.preview!.documents },
+  });
+  assert.equal(editRes.statusCode, 200, editRes.body);
+  const failedCandidate = editRes.json().managementPublication;
+  assert.equal(failedCandidate.status, 'failed');
+  assert.equal(failedCandidate.nextAction, 'retry');
+
+  // Revoke maintainer, then have the owner retry the leftover failed candidate.
+  await access.update(owner.user.id, appId, { revision: 2, requestId: randomUUID(), maintainerIds: [] });
+  const retryRes = await integrated.app.inject({
+    method: 'POST',
+    url: `/plaza/api/management/publications/${failedCandidate.id}/retry`,
+    headers: h.headers({ cookie: owner.cookie, 'x-plaza-portal-token': 'fixture-member' }),
+  });
+  assert.equal(retryRes.statusCode, 200, retryRes.body);
+  assert.equal(retryRes.json().status, 'failed');
+  assert.equal(retryRes.json().nextAction, 'submit_again');
+  assert.equal(retryRes.json().error.code, 'PUBLICATION_STATE_CONFLICT');
+
+  const v11After = (await h.db.query<{ status: string; superseded_by_publication_id: string | null }>('SELECT status, superseded_by_publication_id FROM publications WHERE id = $1', [v11.id])).rows[0];
+  assert.equal(v11After.status, 'preview_ready');
+  assert.equal(v11After.superseded_by_publication_id, null);
+});
+
+test('promoteLegacyPublicationTicket keeps legacy key when sessionStorage setItem throws QuotaExceededError', async t => {
+  const {
+    promoteLegacyPublicationTicket,
+    readLegacyPublicationTicket,
+    readPublicationTicket,
+  } = await import(new URL('../src/lib/publication-tickets.ts', import.meta.url).href);
+  const prevWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const prevDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const backing = new Map<string, string>();
+  let failScopedWrite = true;
+  const id = randomUUID();
+  backing.set(`ai-app-plaza:publication:${id}`, 'legacy-ticket-value');
+
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      baseURI: 'http://127.0.0.1/plaza/',
+      querySelector: () => ({ getAttribute: () => '/plaza' }),
+    },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { origin: 'http://127.0.0.1' },
+      sessionStorage: {
+        get length() { return backing.size; },
+        key(index: number) { return [...backing.keys()][index] ?? null; },
+        getItem(key: string) { return backing.get(key) ?? null; },
+        setItem(key: string, value: string) {
+          if (failScopedWrite && key.startsWith('ai-app-plaza:publication:/')) {
+            throw new Error('QuotaExceededError');
+          }
+          backing.set(key, value);
+        },
+        removeItem(key: string) { backing.delete(key); },
+      },
+    },
+  });
+  t.after(() => {
+    if (prevWindow) Object.defineProperty(globalThis, 'window', prevWindow);
+    else delete (globalThis as any).window;
+    if (prevDocument) Object.defineProperty(globalThis, 'document', prevDocument);
+    else delete (globalThis as any).document;
+  });
+
+  assert.equal(promoteLegacyPublicationTicket(id, 'legacy-ticket-value'), false);
+  assert.equal(readLegacyPublicationTicket(id), 'legacy-ticket-value');
+  assert.equal(backing.get(`ai-app-plaza:publication:${id}`), 'legacy-ticket-value');
+
+  failScopedWrite = false;
+  assert.equal(promoteLegacyPublicationTicket(id, 'legacy-ticket-value'), true);
+  assert.equal(readLegacyPublicationTicket(id), '');
+  assert.equal(backing.has(`ai-app-plaza:publication:${id}`), false);
+  assert.equal(readPublicationTicket(id), 'legacy-ticket-value');
+});
